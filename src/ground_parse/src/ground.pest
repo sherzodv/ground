@@ -1,0 +1,69 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+
+ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
+value   = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
+integer = @{ ASCII_DIGIT+ }
+sep     = _{ "," }
+
+// -- service -----------------------------------------------------------------
+
+scaling_key   = { "min" | "max" }
+scaling_entry = { scaling_key ~ ":" ~ integer ~ sep? }
+scaling       = { "{" ~ scaling_entry+ ~ "}" }
+
+image_field   = { "image"   ~ ":" ~ value }
+scaling_field = { "scaling" ~ ":" ~ scaling }
+
+port_entry   = { ident ~ ":" ~ integer ~ sep? }
+ports_field  = { "ports" ~ ":" ~ "{" ~ port_entry* ~ "}" }
+
+access_port  = { !(ident ~ ":") ~ !"}" ~ ident ~ sep? }
+access_entry = { ident ~ ":" ~ access_port* }
+access_block = { "access" ~ "{" ~ access_entry* ~ "}" }
+
+service_field = { image_field | scaling_field | ports_field }
+service_def   = { "service" ~ ident ~ "{" ~ (service_field | access_block)* ~ "}" }
+
+// -- group -------------------------------------------------------------------
+
+group_def = { "group" ~ ident ~ "{" ~ ident* ~ "}" }
+
+// -- region / zone -----------------------------------------------------------
+
+zone_def   = { "zone" ~ integer ~ "{" ~ "aws" ~ ":" ~ value ~ "}" }
+region_def = { "region" ~ ident ~ "{" ~ "aws" ~ ":" ~ value ~ sep? ~ zone_def* ~ "}" }
+
+// -- env ---------------------------------------------------------------------
+
+env_entry = { ident ~ ":" ~ value ~ sep? }
+env_def   = { "env" ~ ident ~ "{" ~ env_entry* ~ "}" }
+
+// -- stack -------------------------------------------------------------------
+
+zone_list          = { "[" ~ (integer ~ sep?)+ ~ "]" }
+stack_env_field    = { "env"    ~ ":" ~ ident }
+stack_region_field = { "region" ~ ":" ~ ident }
+stack_zone_field   = { "zone"   ~ ":" ~ zone_list }
+stack_group_field  = { "group"  ~ ":" ~ ident }
+stack_field        = { stack_env_field | stack_region_field | stack_zone_field | stack_group_field }
+stack_def          = { "stack" ~ ident ~ "{" ~ stack_field* ~ "}" }
+
+// -- deploy ------------------------------------------------------------------
+
+stack_list = { "[" ~ (ident ~ sep?)+ ~ "]" }
+
+// override block: the content between { } is raw JSON captured as a single string
+override_raw       = @{ "{" ~ override_raw_inner* ~ "}" }
+override_raw_inner = _{
+    override_raw
+  | "\"" ~ (("\\" ~ ANY) | (!"\"" ~ ANY))* ~ "\""
+  | (!("{" | "}" | "\"") ~ ANY)
+}
+override_block = { "override" ~ override_raw }
+
+deploy_def = { "deploy" ~ "to" ~ ident ~ "{" ~ "stacks" ~ ":" ~ stack_list ~ override_block? ~ "}" }
+
+// -- file --------------------------------------------------------------------
+
+file = { SOI ~ (service_def | group_def | region_def | env_def | stack_def | deploy_def)* ~ EOI }

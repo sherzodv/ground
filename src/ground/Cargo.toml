@@ -1,0 +1,9 @@
+[package]
+name = "ground"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+ground_parse    = { path = "../ground_parse" }
+ground_core     = { path = "../ground_core" }
+ground_be_terra = { path = "../ground_be_terra" }
