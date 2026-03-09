@@ -63,6 +63,7 @@ dependencies = [
  "ground_be_terra",
  "ground_core",
  "ground_parse",
+ "ground_run",
 ]
 
 [[package]]
@@ -70,6 +71,7 @@ name = "ground_be_terra"
 version = "0.0.0"
 dependencies = [
  "ground_core",
+ "ground_run",
  "serde_json",
 ]
 
@@ -85,6 +87,10 @@ dependencies = [
  "pest",
  "pest_derive",
 ]
+
+[[package]]
+name = "ground_run"
+version = "0.0.0"
 
 [[package]]
 name = "ground_test"

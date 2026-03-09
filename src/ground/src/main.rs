@@ -1,4 +1,10 @@
+mod ops_display;
+
 use std::{env, fs, path::Path, process};
+
+use ground_run::RunEvent;
+use ground_be_terra::terra_ops::OpsEvent;
+use ops_display::{Op, TerraEnricher};
 
 const GREEN:  &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
@@ -145,7 +151,7 @@ fn cmd_gen_terra() {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum GroundKind {
-    Service(String),    // shown first, alphabetical
+    Service(String),
     Stack(String),
     Region(String),
 }
@@ -190,8 +196,71 @@ fn dominant_verb(changes: &[&ground_be_terra::terra_ops::ResourceChange]) -> (&'
 
 // -- ground plan -------------------------------------------------------------
 
-fn cmd_plan() {
+fn render(ev: &ops_display::DisplayEvent) {
+    println!("{}", ev.message);
+    if let Some(detail) = &ev.detail {
+        println!("  {detail}");
+    }
+}
+
+fn run_events(rx: std::sync::mpsc::Receiver<RunEvent<OpsEvent>>, enricher: &mut TerraEnricher) -> bool {
+    let mut ok = true;
+    for event in rx {
+        if let RunEvent::Exited(ref s) = event { ok = s.success; }
+        for d in enricher.enrich(&event) { render(&d); }
+    }
+    ok
+}
+
+fn display_plan_summary(
+    summary:    &ground_be_terra::terra_ops::PlanSummary,
+    stack_name: &str,
+    plan:       &ground_core::low::Plan,
+) {
     use std::collections::BTreeMap;
+    use ground_be_terra::terra_ops;
+
+    let mut groups: BTreeMap<GroundKind, Vec<&terra_ops::ResourceChange>> = BTreeMap::new();
+    for c in &summary.changes {
+        groups
+            .entry(classify(&c.resource_type, &c.resource_name, plan))
+            .or_default()
+            .push(c);
+    }
+
+    println!();
+    println!("{BOLD}stack {stack_name}{RESET} {DIM}→ {}{RESET}", plan.provider_name);
+    println!("{DIM}region {}{RESET}", plan.region_name);
+    println!("{DIM}env    {}{RESET}", plan.env_name);
+    println!("{DIM}group  {}{RESET}", plan.group_name);
+    println!();
+
+    if groups.is_empty() {
+        println!("{DIM}no changes{RESET}");
+    } else {
+        for (kind, changes) in &groups {
+            let (verb, color) = dominant_verb(changes);
+            let label = match kind {
+                GroundKind::Service(name) => format!("service {name}"),
+                GroundKind::Stack(name)   => format!("stack {name}"),
+                GroundKind::Region(name)  => format!("region {name}"),
+            };
+            println!("{color}{verb}{RESET} {BOLD}{label}{RESET}");
+            let w = changes.iter().map(|c| c.resource_type.len()).max().unwrap_or(0);
+            for c in changes {
+                let (glyph, gcolor) = action_glyph(&c.action);
+                println!("  {gcolor}{glyph}{RESET} {DIM}{:<w$}  {}{RESET}", c.resource_type, c.resource_name);
+            }
+            println!();
+        }
+    }
+
+    let (c, u, d) = (summary.creates(), summary.updates(), summary.destroys());
+    println!("{GREEN}create {c}{RESET}  {YELLOW}modify {u}{RESET}  {RED}delete {d}{RESET}");
+    println!();
+}
+
+fn cmd_plan() {
     use ground_be_terra::terra_ops;
 
     for (stack_name, plan) in load_stacks() {
@@ -200,55 +269,32 @@ fn cmd_plan() {
         let dir = Path::new(".ground/terra").join(&stack_name);
 
         if !dir.join(".terraform").exists() {
-            println!("{DIM}initializing stack {stack_name}…{RESET}");
-            if let Err(e) = terra_ops::init(&dir) {
-                eprintln!("error: {e}"); process::exit(1);
+            let rx = terra_ops::init(&dir)
+                .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+            let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, plan.provider_name.clone(), plan.region_name.clone());
+            if !run_events(rx, &mut enricher) {
+                eprintln!("error: terraform init failed");
+                process::exit(1);
             }
         }
 
-        let summary = match terra_ops::plan(&dir) {
-            Ok(s)   => s,
-            Err(e)  => { eprintln!("error: {e}"); process::exit(1); }
-        };
+        let rx = terra_ops::plan(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, plan.provider_name.clone(), plan.region_name.clone());
 
-        // group resource changes → ground entities
-        let mut groups: BTreeMap<GroundKind, Vec<&ground_be_terra::terra_ops::ResourceChange>> = BTreeMap::new();
-        for c in &summary.changes {
-            groups
-                .entry(classify(&c.resource_type, &c.resource_name, &plan))
-                .or_default()
-                .push(c);
-        }
-
-        println!();
-        println!("{BOLD}stack {stack_name}{RESET} {DIM}→ {}{RESET}", plan.provider_name);
-        println!("{DIM}region {}{RESET}", plan.region_name);
-        println!("{DIM}env    {}{RESET}", plan.env_name);
-        println!("{DIM}group  {}{RESET}", plan.group_name);
-        println!();
-
-        if groups.is_empty() {
-            println!("{DIM}no changes{RESET}");
-        } else {
-            for (kind, changes) in &groups {
-                let (verb, color) = dominant_verb(changes);
-                let label = match kind {
-                    GroundKind::Service(name) => format!("service {name}"),
-                    GroundKind::Stack(name)   => format!("stack {name}"),
-                    GroundKind::Region(name)  => format!("region {name}"),
-                };
-                println!("{color}{verb}{RESET} {BOLD}{label}{RESET}");
-                let w = changes.iter().map(|c| c.resource_type.len()).max().unwrap_or(0);
-                for c in changes {
-                    let (glyph, gcolor) = action_glyph(&c.action);
-                    println!("  {gcolor}{glyph}{RESET} {DIM}{:<w$}  {}{RESET}", c.resource_type, c.resource_name);
+        for event in rx {
+            match event {
+                RunEvent::Exited(s) if !s.success => {
+                    eprintln!("error: terraform plan failed");
+                    process::exit(1);
                 }
-                println!();
+                RunEvent::Line(OpsEvent::PlanReady { summary }) => {
+                    display_plan_summary(&summary, &stack_name, &plan);
+                }
+                other => {
+                    for d in enricher.enrich(&other) { render(&d); }
+                }
             }
         }
-
-        let (c, u, d) = (summary.creates(), summary.updates(), summary.destroys());
-        println!("{GREEN}create {c}{RESET}  {YELLOW}modify {u}{RESET}  {RED}delete {d}{RESET}");
-        println!();
     }
 }

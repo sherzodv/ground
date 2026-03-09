@@ -27,8 +27,10 @@ infra is yours; Ground owns only the service layer.
 ## For Coding Agents
 
 Never ever do infra, git or other changes other than current project file changes.
+Do not assume, try to discuss if there is no sufficient info before taking any actions.
 For any big changes: first show what are you going to do and only do after user confirmation.
 RFC process can be requested by user:
+  - Be concise and techinical, no story telling
   - Feature is designed in a corresponding devspec/000x-rfc-feature.md: reqs, approach, archtecture, tech reqs, libs etc.
   - Discuss and iterate with user on the rfc
   - After rfc is confirmed as finished by the user, create a correspnding devspec/000x-pln-feature.md with implementation plan
