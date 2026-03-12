@@ -77,7 +77,7 @@ mod parse {
         "#)]).unwrap();
         let access = &spec.services[0].access;
         assert_eq!(access.len(), 1);
-        assert_eq!(access[0].service, "svc-internal");
+        assert_eq!(access[0].target, "svc-internal");
         assert_eq!(access[0].ports,   ["http", "grpc"]);
     }
 
@@ -110,7 +110,7 @@ mod parse {
             deploy to aws { stacks: [s] }
         "#)]).unwrap();
         let es = ground_core::compile::compile(&spec).unwrap_err();
-        assert!(es.iter().any(|e| e.contains("unknown service")));
+        assert!(es.iter().any(|e| e.contains("unknown target")));
     }
 
     #[test]
@@ -133,7 +133,7 @@ mod parse {
         let spec = parse(&[("test", "service svc-api { image: svc-api:prod } group backend { svc-api }")]).unwrap();
         assert_eq!(spec.groups.len(), 1);
         assert_eq!(spec.groups[0].name, "backend");
-        assert_eq!(spec.groups[0].services, ["svc-api"]);
+        assert_eq!(spec.groups[0].members, ["svc-api"]);
     }
 
     #[test]
@@ -176,6 +176,179 @@ mod parse {
             deploy to aws { stacks: [staging] }
         "#)]).unwrap();
         assert_eq!(spec.deploys.len(), 2);
+    }
+
+    #[test]
+    fn test_database_minimal() {
+        let spec = parse(&[("test", "database db-main { engine: postgres }")]).unwrap();
+        assert_eq!(spec.rdbs.len(), 1);
+        assert_eq!(spec.rdbs[0].name, "db-main");
+        assert!(matches!(spec.rdbs[0].engine, ground_core::high::RdbEngine::Postgres));
+        assert!(spec.rdbs[0].version.is_none());
+        assert!(spec.rdbs[0].size.is_none());
+        assert!(spec.rdbs[0].storage.is_none());
+    }
+
+    #[test]
+    fn test_database_all_fields() {
+        let spec = parse(&[("test", r#"
+            database db-main {
+                engine:  postgres
+                version: 15
+                size:    large
+                storage: 100
+            }
+        "#)]).unwrap();
+        let db = &spec.rdbs[0];
+        assert_eq!(db.version, Some(15));
+        assert!(matches!(db.size, Some(ground_core::high::RdbSize::Large)));
+        assert_eq!(db.storage, Some(100));
+    }
+
+    #[test]
+    fn test_database_missing_engine() {
+        let es = err("database db-main {}");
+        assert!(es.iter().any(|e| e.message.contains("missing required field 'engine'")));
+    }
+
+    #[test]
+    fn test_service_access_database() {
+        let spec = parse(&[("test", r#"
+            database db-main { engine: postgres }
+            service svc-api { image: svc-api:prod access { db-main } }
+        "#)]).unwrap();
+        assert_eq!(spec.services[0].access[0].target, "db-main");
+    }
+
+    #[test]
+    fn test_access_database_compile() {
+        let spec = parse(&[("test", r#"
+            database db-main { engine: postgres }
+            service svc-api { image: svc-api:prod access { db-main } }
+            group g { svc-api db-main }
+            region r { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env e {}
+            stack s { env: e region: r zone: [1] group: g }
+            deploy to aws { stacks: [s] }
+        "#)]).unwrap();
+        let plan = ground_core::compile::compile(&spec).unwrap().remove(0).1;
+        assert_eq!(plan.db_access_rules.len(), 1);
+        assert_eq!(plan.db_access_rules[0].service_network, "svc-api");
+        assert_eq!(plan.db_access_rules[0].rdb, "db-main");
+        assert_eq!(plan.workloads[0].rdb_access, ["db-main"]);
+    }
+
+    #[test]
+    fn test_compute_parse() {
+        let spec = parse(&[("test", r#"
+            compute spot {
+              cpu:    512
+              memory: 1024
+              aws:    fargate:spot
+            }
+        "#)]).unwrap();
+        assert_eq!(spec.computes.len(), 1);
+        let c = &spec.computes[0];
+        assert_eq!(c.name,   "spot");
+        assert_eq!(c.cpu,    Some(512));
+        assert_eq!(c.memory, Some(1024));
+        assert_eq!(c.aws,    Some("fargate:spot".into()));
+    }
+
+    #[test]
+    fn test_compute_service_ref() {
+        let spec = parse(&[("test", r#"
+            compute spot { cpu: 512 memory: 1024 aws: fargate:spot }
+            service svc-api { image: svc-api:prod compute: spot }
+        "#)]).unwrap();
+        assert_eq!(spec.services[0].compute, Some("spot".into()));
+    }
+
+    #[test]
+    fn test_compute_rdb_ref() {
+        let spec = parse(&[("test", r#"
+            compute db-large { aws: db.r6g.large }
+            database db-main { engine: postgres compute: db-large }
+        "#)]).unwrap();
+        assert_eq!(spec.rdbs[0].compute, Some("db-large".into()));
+    }
+
+    #[test]
+    fn test_compute_resolves_in_service() {
+        let spec = parse(&[("test", r#"
+            compute spot { cpu: 512 memory: 1024 aws: fargate:spot }
+            service svc-api { image: svc-api:prod compute: spot }
+            group g { svc-api }
+            region r { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env e {}
+            stack s { env: e region: r zone: [1] group: g }
+            deploy to aws { stacks: [s] }
+        "#)]).unwrap();
+        let plan = ground_core::compile::compile(&spec).unwrap().remove(0).1;
+        let wl = &plan.workloads[0];
+        assert_eq!(wl.compute.cpu,    512);
+        assert_eq!(wl.compute.memory, 1024);
+        assert_eq!(wl.compute.aws,    "fargate:spot");
+    }
+
+    #[test]
+    fn test_compute_rdb_instance_class() {
+        let spec = parse(&[("test", r#"
+            compute db-large { aws: db.r6g.large }
+            database db-main { engine: postgres compute: db-large }
+            group g { db-main }
+            region r { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env e {}
+            stack s { env: e region: r zone: [1] group: g }
+            deploy to aws { stacks: [s] }
+        "#)]).unwrap();
+        let plan = ground_core::compile::compile(&spec).unwrap().remove(0).1;
+        assert_eq!(plan.rdbs[0].instance_class, "db.r6g.large");
+    }
+
+    #[test]
+    fn test_compute_default_when_absent() {
+        let spec = parse(&[("test", r#"
+            service svc-api { image: svc-api:prod }
+            group g { svc-api }
+            region r { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env e {}
+            stack s { env: e region: r zone: [1] group: g }
+            deploy to aws { stacks: [s] }
+        "#)]).unwrap();
+        let plan = ground_core::compile::compile(&spec).unwrap().remove(0).1;
+        let wl = &plan.workloads[0];
+        assert_eq!(wl.compute.cpu,    256);
+        assert_eq!(wl.compute.memory, 512);
+        assert_eq!(wl.compute.aws,    "FARGATE");
+    }
+
+    #[test]
+    fn test_compute_unknown_ref_error() {
+        let spec = parse(&[("test", r#"
+            service svc-api { image: svc-api:prod compute: missing }
+            group g { svc-api }
+            region r { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env e {}
+            stack s { env: e region: r zone: [1] group: g }
+            deploy to aws { stacks: [s] }
+        "#)]).unwrap();
+        let es = ground_core::compile::compile(&spec).unwrap_err();
+        assert!(es.iter().any(|e| e.contains("unknown compute")));
+    }
+
+    #[test]
+    fn test_access_unknown_database() {
+        let spec = parse(&[("test", r#"
+            service svc-api { image: svc-api:prod access { db-missing } }
+            group g { svc-api }
+            region r { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env e {}
+            stack s { env: e region: r zone: [1] group: g }
+            deploy to aws { stacks: [s] }
+        "#)]).unwrap();
+        let es = ground_core::compile::compile(&spec).unwrap_err();
+        assert!(es.iter().any(|e| e.contains("unknown target")));
     }
 }
 
@@ -308,7 +481,7 @@ mod codegen {
 
     fn gen(input: &str) -> Value {
         let mut spec = parse(&[("test", input)]).unwrap_or_else(|es| panic!("{}", es[0]));
-        spec.groups.push(Group { name: "backend".into(), services: spec.services.iter().map(|s| s.name.clone()).collect() });
+        spec.groups.push(Group { name: "backend".into(), members: spec.services.iter().map(|s| s.name.clone()).collect() });
         spec.regions.push(Region { name: "us-east".into(), aws: "us-east-1".into(), zones: vec![Zone { id: 1, aws: "us-east-1a".into() }] });
         spec.envs.push(Env { name: "prod".into(), vars: vec![] });
         spec.stacks.push(Stack { name: "prod".into(), env: "prod".into(), region: "us-east".into(), zones: vec![1], group: "backend".into() });
@@ -384,6 +557,71 @@ mod codegen {
         let task_def = &v["resource"]["aws_ecs_task_definition"]["svc_api"];
         let container_defs = task_def["container_definitions"].as_str().unwrap();
         assert!(container_defs.contains("LOG_LEVEL"), "env var not injected: {container_defs}");
+    }
+
+    #[test]
+    fn test_database_resources_generated() {
+        let input = r#"
+            database db-main { engine: postgres version: 15 size: medium storage: 50 }
+            service svc-api { image: svc-api:prod access { db-main } }
+            group   backend { svc-api db-main }
+            region  us-east { aws: us-east-1 zone 1 { aws: us-east-1a } zone 2 { aws: us-east-1b } }
+            env     prod    {}
+            stack   prod    { env: prod region: us-east zone: [1, 2] group: backend }
+            deploy to aws   { stacks: [prod] }
+        "#;
+        let spec = ground_parse::parse(&[("test", input)]).unwrap();
+        let plan = ground_core::compile::compile(&spec)
+            .unwrap_or_else(|es| panic!("{}", es[0]))
+            .remove(0).1;
+        let v: Value = serde_json::from_str(&aws::generate(&plan)).unwrap();
+
+        // DB instance with correct class and storage
+        let db = &v["resource"]["aws_db_instance"]["db_main"];
+        assert_eq!(db["instance_class"], "db.t3.medium");
+        assert_eq!(db["allocated_storage"], 50);
+        assert_eq!(db["multi_az"], true);   // 2 zones → multi-AZ
+        assert_eq!(db["engine_version"], "15");
+
+        // random password
+        assert!(!v["resource"]["random_password"]["db_main"].is_null());
+
+        // security group rule: svc-api → db-main
+        assert!(!v["resource"]["aws_vpc_security_group_ingress_rule"]["svc_api_to_db_main_db"].is_null());
+
+        // DB env vars injected into task definition
+        let td = &v["resource"]["aws_ecs_task_definition"]["svc_api"];
+        let cdefs = td["container_definitions"].as_str().unwrap();
+        assert!(cdefs.contains("DB_MAIN_HOST"));
+        assert!(cdefs.contains("DB_MAIN_PASSWORD"));
+
+        // random provider added
+        assert!(v["terraform"]["required_providers"]["random"].is_object());
+    }
+
+    #[test]
+    fn test_compute_in_task_definition() {
+        let input = r#"
+            compute spot { cpu: 512 memory: 1024 aws: fargate:spot }
+            service svc-api { image: svc-api:prod compute: spot }
+            group   backend { svc-api }
+            region  us-east { aws: us-east-1 zone 1 { aws: us-east-1a } }
+            env     prod    {}
+            stack   prod    { env: prod region: us-east zone: [1] group: backend }
+            deploy to aws   { stacks: [prod] }
+        "#;
+        let spec = ground_parse::parse(&[("test", input)]).unwrap();
+        let plan = ground_core::compile::compile(&spec)
+            .unwrap_or_else(|es| panic!("{}", es[0]))
+            .remove(0).1;
+        let v: Value = serde_json::from_str(&aws::generate(&plan)).unwrap();
+
+        let td = &v["resource"]["aws_ecs_task_definition"]["svc_api"];
+        assert_eq!(td["cpu"],    "512");
+        assert_eq!(td["memory"], "1024");
+
+        let svc = &v["resource"]["aws_ecs_service"]["svc_api"];
+        assert_eq!(svc["capacity_provider_strategy"][0]["capacity_provider"], "fargate:spot");
     }
 
     #[test]

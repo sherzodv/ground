@@ -1,11 +1,13 @@
 #[derive(Debug, Clone)]
 pub struct Spec {
-    pub services: Vec<Service>,
-    pub groups:   Vec<Group>,
-    pub regions:  Vec<Region>,
-    pub envs:     Vec<Env>,
-    pub stacks:   Vec<Stack>,
-    pub deploys:  Vec<Deploy>,
+    pub services:  Vec<Service>,
+    pub rdbs:      Vec<Rdb>,
+    pub computes:  Vec<Compute>,
+    pub groups:    Vec<Group>,
+    pub regions:   Vec<Region>,
+    pub envs:      Vec<Env>,
+    pub stacks:    Vec<Stack>,
+    pub deploys:   Vec<Deploy>,
 }
 
 #[derive(Debug, Clone)]
@@ -15,6 +17,7 @@ pub struct Service {
     pub scaling: Option<Scaling>,
     pub ports:   Vec<Port>,
     pub access:  Vec<AccessEntry>,
+    pub compute: Option<String>,    // ref → Compute
 }
 
 #[derive(Debug, Clone)]
@@ -25,8 +28,8 @@ pub struct Port {
 
 #[derive(Debug, Clone)]
 pub struct AccessEntry {
-    pub service: String,
-    pub ports:   Vec<String>,   // port names; empty = all declared ports
+    pub target: String,
+    pub ports:  Vec<String>,   // port names; empty = all declared ports (or rdb, no ports)
 }
 
 #[derive(Debug, Clone)]
@@ -36,9 +39,41 @@ pub struct Scaling {
 }
 
 #[derive(Debug, Clone)]
+pub struct Rdb {
+    pub name:    String,
+    pub engine:  RdbEngine,
+    pub version: Option<u32>,
+    pub size:    Option<RdbSize>,
+    pub storage: Option<u32>,
+    pub compute: Option<String>,    // ref → Compute
+}
+
+#[derive(Debug, Clone)]
+pub enum RdbEngine {
+    Postgres,
+    Mysql,
+}
+
+#[derive(Debug, Clone)]
+pub enum RdbSize {
+    Small,
+    Medium,
+    Large,
+    Xlarge,
+}
+
+#[derive(Debug, Clone)]
+pub struct Compute {
+    pub name:   String,
+    pub cpu:    Option<u32>,
+    pub memory: Option<u32>,
+    pub aws:    Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Group {
-    pub name:     String,
-    pub services: Vec<String>,
+    pub name:    String,
+    pub members: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

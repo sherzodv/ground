@@ -15,27 +15,30 @@ pub fn generate(plan: &Plan) -> String {
     if let Some(igw) = &plan.internet_gateway { gen_internet_gateway(&mut res, igw, plan); }
     if let Some(nat) = &plan.nat_gateway      { gen_nat_gateway(&mut res, nat); }
 
-    for subnet   in &plan.subnets      { gen_subnet(&mut res, subnet, plan); }
-    for rt       in &plan.route_tables { gen_route_table(&mut res, rt, plan); }
-    for identity in &plan.identities   { gen_identity(&mut res, identity); }
+    for subnet   in &plan.subnets        { gen_subnet(&mut res, subnet, plan); }
+    for rt       in &plan.route_tables   { gen_route_table(&mut res, rt, plan); }
+    for identity in &plan.identities     { gen_identity(&mut res, identity); }
     for group    in &plan.network_groups { gen_network_group(&mut res, group, plan); }
-    for log      in &plan.log_streams  { gen_log_stream(&mut res, log); }
-    for workload in &plan.workloads    { gen_workload(&mut res, workload, plan); }
-    for scaler   in &plan.scalers      { gen_scaler(&mut res, scaler, plan); }
-    for rule     in &plan.ingress_rules { gen_ingress_rule(&mut res, rule); }
+    for log      in &plan.log_streams    { gen_log_stream(&mut res, log); }
+    for rdb      in &plan.rdbs           { gen_rdb(&mut res, rdb, plan); }
+    for workload in &plan.workloads      { gen_workload(&mut res, workload, plan); }
+    for scaler   in &plan.scalers        { gen_scaler(&mut res, scaler, plan); }
+    for rule     in &plan.ingress_rules  { gen_ingress_rule(&mut res, rule); }
+    for rule     in &plan.db_access_rules { gen_db_access_rule(&mut res, rule, plan); }
 
     let region = plan.provider.as_ref().map(|p| p.region.as_str()).unwrap_or("");
 
+    let mut required_providers = json!({
+        "aws": { "source": "hashicorp/aws", "version": "~> 5.0" }
+    });
+    if !plan.rdbs.is_empty() {
+        required_providers["random"] = json!({ "source": "hashicorp/random", "version": "~> 3.0" });
+    }
+
     let mut out = json!({
-        "terraform": {
-            "required_providers": {
-                "aws": { "source": "hashicorp/aws", "version": "~> 5.0" }
-            }
-        },
-        "provider": {
-            "aws": { "region": region }
-        },
-        "resource": res
+        "terraform": { "required_providers": required_providers },
+        "provider":  { "aws": { "region": region } },
+        "resource":  res
     });
 
     if let Some(raw) = &plan.override_json {
@@ -70,6 +73,78 @@ fn gen_ingress_rule(res: &mut Resources, rule: &IngressRule) {
     }
 }
 
+fn gen_db_access_rule(res: &mut Resources, rule: &DbAccessRule, plan: &Plan) {
+    let svc_s = sid(&rule.service_network);
+    let rdb   = match plan.rdbs.iter().find(|r| r.name == rule.rdb) {
+        Some(r) => r,
+        None    => return,
+    };
+    let db_s = sid(&rdb.network);
+    let port = rdb_port(&rdb.engine);
+
+    add(res, "aws_vpc_security_group_ingress_rule", &format!("{svc_s}_to_{db_s}"), json!({
+        "security_group_id":            r(&format!("aws_security_group.{db_s}.id")),
+        "referenced_security_group_id": r(&format!("aws_security_group.{svc_s}.id")),
+        "ip_protocol": "tcp",
+        "from_port":   port,
+        "to_port":     port
+    }));
+}
+
+fn gen_rdb(res: &mut Resources, rdb: &ManagedRdb, plan: &Plan) {
+    let s         = sid(&rdb.name);
+    let db_s      = sid(&rdb.network);
+    let sub_grp_s = sid(&rdb.subnet_group_name);
+
+    let (engine, default_version) = match rdb.engine {
+        RdbEngine::Postgres => ("postgres", "15"),
+        RdbEngine::Mysql    => ("mysql",    "8.0"),
+    };
+
+    let version_str = match (rdb.version, &rdb.engine) {
+        (Some(v), RdbEngine::Mysql) if v < 10 => format!("{v}.0"),
+        (Some(v), _)                           => v.to_string(),
+        (None, _)                              => default_version.to_string(),
+    };
+
+    let instance_class = rdb.instance_class.as_str();
+
+    let db_name = rdb.name.replace('-', "_");
+
+    // password
+    add(res, "random_password", &s, json!({
+        "length":  32,
+        "special": false
+    }));
+
+    // subnet group — spans all private subnets
+    let private_subnet_ids: Vec<Value> = plan.subnets.iter()
+        .filter(|s| !s.public)
+        .map(|s| Value::String(r(&format!("aws_subnet.{}.id", sid(&s.name)))))
+        .collect();
+
+    add(res, "aws_db_subnet_group", &sub_grp_s, json!({
+        "name":       &rdb.subnet_group_name,
+        "subnet_ids": private_subnet_ids
+    }));
+
+    // instance
+    add(res, "aws_db_instance", &s, json!({
+        "identifier":             &rdb.name,
+        "engine":                 engine,
+        "engine_version":         version_str,
+        "instance_class":         instance_class,
+        "allocated_storage":      rdb.storage,
+        "db_name":                db_name,
+        "username":               "ground",
+        "password":               r(&format!("random_password.{s}.result")),
+        "db_subnet_group_name":   r(&format!("aws_db_subnet_group.{sub_grp_s}.name")),
+        "vpc_security_group_ids": [r(&format!("aws_security_group.{db_s}.id"))],
+        "multi_az":               rdb.multi_az,
+        "skip_final_snapshot":    true
+    }));
+}
+
 fn deep_merge(base: &mut Value, overlay: Value) {
     match (base, overlay) {
         (Value::Object(base_map), Value::Object(overlay_map)) => {
@@ -93,6 +168,13 @@ fn sid(name: &str) -> String {
 
 fn r(s: &str) -> String {
     format!("${{{s}}}")
+}
+
+fn rdb_port(engine: &RdbEngine) -> u16 {
+    match engine {
+        RdbEngine::Postgres => 5432,
+        RdbEngine::Mysql    => 3306,
+    }
 }
 
 fn vpc_id(plan: &Plan) -> String {
@@ -147,6 +229,25 @@ fn iam_assume_ecs() -> String {
             "Principal": { "Service": "ecs-tasks.amazonaws.com" }
         }]
     })).unwrap()
+}
+
+fn db_env_vars(plan: &Plan, rdb_names: &[String]) -> Vec<Value> {
+    let mut vars = Vec::new();
+    for rdb_name in rdb_names {
+        if let Some(rdb) = plan.rdbs.iter().find(|r| r.name == *rdb_name) {
+            let s      = sid(rdb_name);
+            let prefix = rdb_name.to_uppercase().replace('-', "_");
+            let port   = rdb_port(&rdb.engine);
+            let db_name = rdb_name.replace('-', "_");
+
+            vars.push(json!({ "name": format!("{prefix}_HOST"),     "value": r(&format!("aws_db_instance.{s}.address")) }));
+            vars.push(json!({ "name": format!("{prefix}_PORT"),     "value": port.to_string() }));
+            vars.push(json!({ "name": format!("{prefix}_NAME"),     "value": db_name }));
+            vars.push(json!({ "name": format!("{prefix}_USER"),     "value": "ground" }));
+            vars.push(json!({ "name": format!("{prefix}_PASSWORD"), "value": r(&format!("random_password.{s}.result")) }));
+        }
+    }
+    vars
 }
 
 // -- Generators --------------------------------------------------------------
@@ -290,9 +391,11 @@ fn gen_workload(res: &mut Resources, wl: &Workload, plan: &Plan) {
 
     let region = plan.provider.as_ref().map(|p| p.region.as_str()).unwrap_or("");
 
-    let env_json: Vec<Value> = wl.env.iter()
+    let mut env_json: Vec<Value> = wl.env.iter()
         .map(|(k, v)| json!({ "name": k, "value": v }))
         .collect();
+
+    env_json.extend(db_env_vars(plan, &wl.rdb_access));
 
     let mut container = json!({
         "name":  &wl.name,
@@ -317,8 +420,8 @@ fn gen_workload(res: &mut Resources, wl: &Workload, plan: &Plan) {
         "family":                   &wl.name,
         "network_mode":             "awsvpc",
         "requires_compatibilities": ["FARGATE"],
-        "cpu":                      "256",
-        "memory":                   "512",
+        "cpu":                      wl.compute.cpu.to_string(),
+        "memory":                   wl.compute.memory.to_string(),
         "execution_role_arn":       r(&format!("aws_iam_role.{exec_s}.arn")),
         "task_role_arn":            r(&format!("aws_iam_role.{task_s}.arn")),
         "container_definitions":    container_def
@@ -329,7 +432,7 @@ fn gen_workload(res: &mut Resources, wl: &Workload, plan: &Plan) {
         "cluster":         cluster_id(plan),
         "task_definition": r(&format!("aws_ecs_task_definition.{s}.arn")),
         "desired_count":   1,
-        "capacity_provider_strategy": [{ "capacity_provider": "FARGATE", "weight": 1 }],
+        "capacity_provider_strategy": [{ "capacity_provider": &wl.compute.aws, "weight": 1 }],
         "network_configuration": {
             "subnets":         private_subnet_ids(plan),
             "security_groups": [r(&format!("aws_security_group.{s}.id"))]

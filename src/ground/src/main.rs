@@ -268,14 +268,12 @@ fn cmd_plan() {
 
         let dir = Path::new(".ground/terra").join(&stack_name);
 
-        if !dir.join(".terraform").exists() {
-            let rx = terra_ops::init(&dir)
-                .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-            let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, plan.provider_name.clone(), plan.region_name.clone());
-            if !run_events(rx, &mut enricher) {
-                eprintln!("error: terraform init failed");
-                process::exit(1);
-            }
+        let rx = terra_ops::init(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, plan.provider_name.clone(), plan.region_name.clone());
+        if !run_events(rx, &mut enricher) {
+            eprintln!("error: terraform init failed");
+            process::exit(1);
         }
 
         let rx = terra_ops::plan(&dir)

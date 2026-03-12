@@ -12,6 +12,8 @@ pub struct Plan {
     pub log_streams:      Vec<LogStream>,
     pub scalers:          Vec<Scaler>,
     pub ingress_rules:    Vec<IngressRule>,
+    pub rdbs:             Vec<ManagedRdb>,
+    pub db_access_rules:  Vec<DbAccessRule>,
     pub provider:         Option<Provider>,
     pub cluster:          Option<Cluster>,
     pub vpc:              Option<Vpc>,
@@ -23,12 +25,21 @@ pub struct Plan {
 
 #[derive(Debug, Clone)]
 pub struct Workload {
-    pub name:     String,
-    pub image:    String,
-    pub identity: String,           // ref → Identity
-    pub network:  String,           // ref → NetworkGroup
-    pub log:      String,           // ref → LogStream
-    pub env:      Vec<(String, String)>,
+    pub name:       String,
+    pub image:      String,
+    pub identity:   String,         // ref → Identity
+    pub network:    String,         // ref → NetworkGroup
+    pub log:        String,         // ref → LogStream
+    pub env:        Vec<(String, String)>,
+    pub rdb_access: Vec<String>,    // ref → ManagedRdb names
+    pub compute:    ComputeSpec,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComputeSpec {
+    pub cpu:    u32,
+    pub memory: u32,
+    pub aws:    String,             // e.g. "FARGATE", "fargate:spot"
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +69,30 @@ pub struct IngressRule {
     pub source_network: String,     // ref → NetworkGroup (the service requesting access)
     pub target_network: String,     // ref → NetworkGroup (the service being accessed)
     pub ports:          Vec<u16>,   // resolved port numbers; empty = all traffic
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedRdb {
+    pub name:              String,
+    pub engine:            RdbEngine,
+    pub version:           Option<u32>,
+    pub instance_class:    String,  // resolved AWS RDS instance class
+    pub storage:           u32,
+    pub multi_az:          bool,
+    pub subnet_group_name: String,  // name for the aws_db_subnet_group resource
+    pub network:           String,  // ref → NetworkGroup (db security group)
+}
+
+#[derive(Debug, Clone)]
+pub enum RdbEngine {
+    Postgres,
+    Mysql,
+}
+
+#[derive(Debug, Clone)]
+pub struct DbAccessRule {
+    pub service_network: String,    // ref → NetworkGroup (service SG)
+    pub rdb:             String,    // ref → ManagedRdb name
 }
 
 #[derive(Debug, Clone)]

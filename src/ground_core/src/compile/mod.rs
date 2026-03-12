@@ -59,6 +59,8 @@ fn compile_stack(spec: &high::Spec, stack_name: &str, provider_name: String, ove
         return Err(errors);
     }
 
+    let multi_az = zones.len() >= 2;
+
     let mut plan = Plan {
         stack_name:       stack.name.clone(),
         region_name:      region.name.clone(),
@@ -72,6 +74,8 @@ fn compile_stack(spec: &high::Spec, stack_name: &str, provider_name: String, ove
         log_streams:      vec![],
         scalers:          vec![],
         ingress_rules:    vec![],
+        rdbs:             vec![],
+        db_access_rules:  vec![],
         provider:         None,
         cluster:          None,
         vpc:              None,
@@ -110,27 +114,128 @@ fn compile_stack(spec: &high::Spec, stack_name: &str, provider_name: String, ove
     let first_pub = plan.subnets.iter().find(|s| s.public).map(|s| s.name.clone()).unwrap();
     plan.nat_gateway = Some(NatGateway { name: format!("ground-{}", stack.name), public_subnet: first_pub });
 
-    // Services
+    // Group members: services and rdbs
     let env_vars: Vec<(String, String)> = env.vars.clone();
-    for svc_name in &group.services {
-        match spec.services.iter().find(|s| s.name == *svc_name) {
-            Some(svc) => compile_service(&mut plan, svc, &spec.services, &env_vars, &mut errors),
-            None      => errors.push(format!("group '{}': unknown service '{svc_name}'", group.name)),
+    for member_name in &group.members {
+        if let Some(svc) = spec.services.iter().find(|s| s.name == *member_name) {
+            compile_service(&mut plan, svc, &spec.services, &spec.rdbs, &spec.computes, &env_vars, &mut errors);
+        } else if let Some(rdb) = spec.rdbs.iter().find(|r| r.name == *member_name) {
+            compile_rdb(&mut plan, rdb, &spec.computes, multi_az, stack_name, &mut errors);
+        } else {
+            errors.push(format!("group '{}': unknown member '{member_name}'", group.name));
         }
     }
 
     if errors.is_empty() { Ok(plan) } else { Err(errors) }
 }
 
-fn compile_service(plan: &mut Plan, svc: &high::Service, all_services: &[high::Service], env_vars: &[(String, String)], errors: &mut Vec<String>) {
+fn resolve_compute(name: Option<&str>, all_computes: &[high::Compute], context: &str, errors: &mut Vec<String>) -> ComputeSpec {
+    let default = ComputeSpec { cpu: 256, memory: 512, aws: "FARGATE".into() };
+    let name = match name { Some(n) => n, None => return default };
+    match all_computes.iter().find(|c| c.name == name) {
+        Some(c) => ComputeSpec {
+            cpu:    c.cpu.unwrap_or(256),
+            memory: c.memory.unwrap_or(512),
+            aws:    c.aws.clone().unwrap_or_else(|| "FARGATE".into()),
+        },
+        None => {
+            errors.push(format!("{context}: unknown compute '{name}'"));
+            default
+        }
+    }
+}
+
+fn rdb_instance_class(rdb: &high::Rdb, all_computes: &[high::Compute], context: &str, errors: &mut Vec<String>) -> String {
+    if let Some(compute_name) = &rdb.compute {
+        match all_computes.iter().find(|c| c.name == *compute_name) {
+            Some(c) => if let Some(aws) = &c.aws {
+                return aws.clone();
+            },
+            None => errors.push(format!("{context}: unknown compute '{compute_name}'")),
+        }
+    }
+    // fall back to size
+    match rdb.size {
+        Some(high::RdbSize::Medium) => "db.t3.medium".into(),
+        Some(high::RdbSize::Large)  => "db.r6g.large".into(),
+        Some(high::RdbSize::Xlarge) => "db.r6g.xlarge".into(),
+        _                           => "db.t3.micro".into(),
+    }
+}
+
+fn compile_rdb(plan: &mut Plan, rdb: &high::Rdb, all_computes: &[high::Compute], multi_az: bool, stack_name: &str, errors: &mut Vec<String>) {
+    let network_name      = format!("{}-db", rdb.name);
+    let subnet_group_name = format!("ground-{}-{}", stack_name, rdb.name);
+    let context           = format!("database '{}'", rdb.name);
+
+    plan.network_groups.push(NetworkGroup { name: network_name.clone() });
+
+    plan.rdbs.push(ManagedRdb {
+        name:              rdb.name.clone(),
+        engine:            match rdb.engine {
+            high::RdbEngine::Postgres => RdbEngine::Postgres,
+            high::RdbEngine::Mysql    => RdbEngine::Mysql,
+        },
+        version:           rdb.version,
+        instance_class:    rdb_instance_class(rdb, all_computes, &context, errors),
+        storage:           rdb.storage.unwrap_or(20),
+        multi_az,
+        subnet_group_name,
+        network:           network_name,
+    });
+}
+
+fn compile_service(plan: &mut Plan, svc: &high::Service, all_services: &[high::Service], all_rdbs: &[high::Rdb], all_computes: &[high::Compute], env_vars: &[(String, String)], errors: &mut Vec<String>) {
     let task_id  = format!("{}-task", svc.name);
     let log_name = format!("/ground/{}", svc.name);
+    let context  = format!("service '{}'", svc.name);
 
     plan.identities.push(Identity { name: task_id.clone(), kind: IdentityKind::TaskRole });
 
     plan.network_groups.push(NetworkGroup { name: svc.name.clone() });
 
     plan.log_streams.push(LogStream { name: log_name.clone(), retention_days: 7 });
+
+    // Collect rdb access while processing access entries
+    let mut rdb_access: Vec<String> = Vec::new();
+
+    for entry in &svc.access {
+        if let Some(target) = all_services.iter().find(|s| s.name == entry.target) {
+            // service → service access
+            let ports = if entry.ports.is_empty() {
+                target.ports.iter().map(|p| p.number).collect()
+            } else {
+                let mut resolved = Vec::new();
+                for pname in &entry.ports {
+                    match target.ports.iter().find(|p| p.name == *pname) {
+                        Some(p) => resolved.push(p.number),
+                        None    => errors.push(format!(
+                            "service '{}': access to '{}' references unknown port '{pname}'",
+                            svc.name, target.name
+                        )),
+                    }
+                }
+                resolved
+            };
+
+            plan.ingress_rules.push(IngressRule {
+                source_network: svc.name.clone(),
+                target_network: target.name.clone(),
+                ports,
+            });
+        } else if all_rdbs.iter().any(|r| r.name == entry.target) {
+            // service → rdb access
+            rdb_access.push(entry.target.clone());
+            plan.db_access_rules.push(DbAccessRule {
+                service_network: svc.name.clone(),
+                rdb:             entry.target.clone(),
+            });
+        } else {
+            errors.push(format!("service '{}': access references unknown target '{}'", svc.name, entry.target));
+        }
+    }
+
+    let compute = resolve_compute(svc.compute.as_deref(), all_computes, &context, errors);
 
     plan.workloads.push(Workload {
         name:     svc.name.clone(),
@@ -139,6 +244,8 @@ fn compile_service(plan: &mut Plan, svc: &high::Service, all_services: &[high::S
         network:  svc.name.clone(),
         log:      log_name,
         env:      env_vars.to_vec(),
+        rdb_access,
+        compute,
     });
 
     if let Some(scaling) = &svc.scaling {
@@ -148,38 +255,6 @@ fn compile_service(plan: &mut Plan, svc: &high::Service, all_services: &[high::S
             max:        scaling.max,
             metric:     ScalingMetric::Cpu,
             target_pct: 70.0,
-        });
-    }
-
-    for entry in &svc.access {
-        let target = match all_services.iter().find(|s| s.name == entry.service) {
-            Some(t) => t,
-            None    => {
-                errors.push(format!("service '{}': access references unknown service '{}'", svc.name, entry.service));
-                continue;
-            }
-        };
-
-        let ports = if entry.ports.is_empty() {
-            target.ports.iter().map(|p| p.number).collect()
-        } else {
-            let mut resolved = Vec::new();
-            for pname in &entry.ports {
-                match target.ports.iter().find(|p| p.name == *pname) {
-                    Some(p) => resolved.push(p.number),
-                    None    => errors.push(format!(
-                        "service '{}': access to '{}' references unknown port '{pname}'",
-                        svc.name, target.name
-                    )),
-                }
-            }
-            resolved
-        };
-
-        plan.ingress_rules.push(IngressRule {
-            source_network: svc.name.clone(),
-            target_network: target.name.clone(),
-            ports,
         });
     }
 }

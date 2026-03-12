@@ -1,6 +1,10 @@
 # ground
 
-A cloud-agnostic infrastructure tool with a declarative DSL. Define services, access rules, and placement once — generate provider-specific infrastructure.
+**Infrastructure as Derivation.**
+
+With `ground` you design a system not the infrastructure. The system description stays truely declarative, unlike terraform or pulumi, ground does not define a path to build a system, it defines the system itself, as core elements and relations between them.
+
+You only describe what matters, and all the boring details like providing secrets, setting up networking and access rules or handling image repos are derived by `ground`.
 
 ```
 service svc-api {
@@ -9,7 +13,16 @@ service svc-api {
 }
 ```
 
+Ground is a DSL for defining systems — services, databases, placement, access
+rules. Infrastructure is an output, not the input. Not IaC. IaD.
+
 See [`devspec/0001-rfc-ground.md`](devspec/0001-rfc-ground.md) for the full DSL spec, primitives, and examples.
+
+## Provider abstraction
+
+Ground uses wrapper enums for provider-specific concepts — regions, zones,
+and compute configs. This creates a decoupling layer from providers,
+essentially eliminating vendor lock-in.
 
 ## Ownership modes
 

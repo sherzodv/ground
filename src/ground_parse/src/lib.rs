@@ -30,10 +30,20 @@ fn err_at(path: &str, line: usize, col: usize, message: impl Into<String>) -> Pa
     ParseError { path: path.to_string(), line, col, message: message.into() }
 }
 
+// -- Helpers ----------------------------------------------------------------
+
+fn token_at(content: &str, line: usize, col: usize) -> &str {
+    let line_str = content.lines().nth(line.saturating_sub(1)).unwrap_or("");
+    let start    = col.saturating_sub(1).min(line_str.len());
+    let rest     = &line_str[start..];
+    let end      = rest.find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').unwrap_or(rest.len());
+    &rest[..end]
+}
+
 // -- Public -----------------------------------------------------------------
 
 pub fn parse(req: ParseReq<'_>) -> ParseRes {
-    let mut spec   = Spec { services: vec![], groups: vec![], regions: vec![], envs: vec![], stacks: vec![], deploys: vec![] };
+    let mut spec   = Spec { services: vec![], rdbs: vec![], computes: vec![], groups: vec![], regions: vec![], envs: vec![], stacks: vec![], deploys: vec![] };
     let mut errors = Vec::new();
 
     for (path, content) in req {
@@ -48,7 +58,13 @@ pub fn parse(req: ParseReq<'_>) -> ParseRes {
                     pest::error::LineColLocation::Pos(lc)     => lc,
                     pest::error::LineColLocation::Span(lc, _) => lc,
                 };
-                errors.push(err_at(path, line, col, e.variant.message()));
+                let token = token_at(content, line, col);
+                let msg = if token.is_empty() {
+                    "expected a top-level keyword: service, database, compute, group, region, env, stack, deploy".to_string()
+                } else {
+                    format!("unknown keyword '{token}' — expected one of: service, database, compute, group, region, env, stack, deploy")
+                };
+                errors.push(err_at(path, line, col, msg));
             }
         }
     }
@@ -58,6 +74,8 @@ pub fn parse(req: ParseReq<'_>) -> ParseRes {
 
 fn merge_spec(dst: &mut Spec, src: Spec) {
     dst.services.extend(src.services);
+    dst.rdbs.extend(src.rdbs);
+    dst.computes.extend(src.computes);
     dst.groups.extend(src.groups);
     dst.regions.extend(src.regions);
     dst.envs.extend(src.envs);
@@ -68,7 +86,7 @@ fn merge_spec(dst: &mut Spec, src: Spec) {
 // -- File -------------------------------------------------------------------
 
 fn parse_file(path: &str, pairs: Pairs<Rule>) -> (Spec, Vec<ParseError>) {
-    let mut spec   = Spec { services: vec![], groups: vec![], regions: vec![], envs: vec![], stacks: vec![], deploys: vec![] };
+    let mut spec   = Spec { services: vec![], rdbs: vec![], computes: vec![], groups: vec![], regions: vec![], envs: vec![], stacks: vec![], deploys: vec![] };
     let mut errors = Vec::new();
 
     let file = match pairs.into_iter().next() {
@@ -80,6 +98,14 @@ fn parse_file(path: &str, pairs: Pairs<Rule>) -> (Spec, Vec<ParseError>) {
         match pair.as_rule() {
             Rule::service_def => match parse_service(path, pair) {
                 (Some(v), es) => { spec.services.push(v); errors.extend(es); }
+                (None,    es) => errors.extend(es),
+            },
+            Rule::rdb_def => match parse_rdb(path, pair) {
+                (Some(v), es) => { spec.rdbs.push(v); errors.extend(es); }
+                (None,    es) => errors.extend(es),
+            },
+            Rule::compute_def => match parse_compute(path, pair) {
+                (Some(v), es) => { spec.computes.push(v); errors.extend(es); }
                 (None,    es) => errors.extend(es),
             },
             Rule::group_def => match parse_group(path, pair) {
@@ -126,6 +152,7 @@ fn parse_service(path: &str, pair: Pair<Rule>) -> Parsed<Service> {
     let mut scaling: Option<Scaling> = None;
     let mut ports:   Vec<Port>       = Vec::new();
     let mut access:  Vec<AccessEntry>= Vec::new();
+    let mut compute: Option<String>  = None;
     let mut errors                   = Vec::new();
 
     for field in inner {
@@ -164,20 +191,26 @@ fn parse_service(path: &str, pair: Pair<Rule>) -> Parsed<Service> {
                             ports.push(Port { name: pname, number });
                         }
                     }
+                    Rule::service_compute_field => {
+                        if compute.is_some() {
+                            errors.push(err(path, &f, format!("service '{name}': duplicate 'compute' field")));
+                        }
+                        compute = f.into_inner().next().map(|p| p.as_str().to_string());
+                    }
                     r => errors.push(err_at(path, fline, fcol, format!("unexpected field: {r:?}"))),
                 }
             }
             Rule::access_block => {
                 for entry in field.into_inner() {
-                    let mut ei  = entry.into_inner();
-                    let service = match ei.next() {
+                    let mut ei = entry.into_inner();
+                    let target = match ei.next() {
                         Some(p) => p.as_str().to_string(),
                         None    => continue,
                     };
                     let entry_ports = ei
                         .filter_map(|p| p.into_inner().next().map(|id| id.as_str().to_string()))
                         .collect();
-                    access.push(AccessEntry { service, ports: entry_ports });
+                    access.push(AccessEntry { target, ports: entry_ports });
                 }
             }
             r => errors.push(err_at(path, fline, fcol, format!("unexpected rule: {r:?}"))),
@@ -195,7 +228,7 @@ fn parse_service(path: &str, pair: Pair<Rule>) -> Parsed<Service> {
         }
     }
 
-    finish(Service { name, image: image.unwrap_or_default(), scaling, ports, access }, errors)
+    finish(Service { name, image: image.unwrap_or_default(), scaling, ports, access, compute }, errors)
 }
 
 fn parse_scaling(path: &str, pair: Pair<Rule>) -> Parsed<Scaling> {
@@ -238,6 +271,100 @@ fn parse_str_val(path: &str, pair: Pair<Rule>) -> Result<String, ParseError> {
         .ok_or_else(|| err_at(path, line, col, "expected value"))
 }
 
+// -- Rdb --------------------------------------------------------------------
+
+fn parse_rdb(path: &str, pair: Pair<Rule>) -> Parsed<Rdb> {
+    let (line, col) = pair.as_span().start_pos().line_col();
+    let mut inner   = pair.into_inner();
+
+    let name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return fail(err_at(path, line, col, "expected rdb name")),
+    };
+
+    let mut engine:  Option<RdbEngine> = None;
+    let mut version: Option<u32>       = None;
+    let mut size:    Option<RdbSize>   = None;
+    let mut storage: Option<u32>       = None;
+    let mut compute: Option<String>    = None;
+    let mut errors                     = Vec::new();
+
+    for field in inner {
+        let f = match field.into_inner().next() {
+            Some(p) => p,
+            None    => continue,
+        };
+        match f.as_rule() {
+            Rule::rdb_engine_field => {
+                let val = f.into_inner().next().map(|p| p.as_str()).unwrap_or("");
+                engine = Some(match val {
+                    "postgres" => RdbEngine::Postgres,
+                    "mysql"    => RdbEngine::Mysql,
+                    e          => { errors.push(err_at(path, line, col, format!("database '{name}': unknown engine '{e}'"))); continue; }
+                });
+            }
+            Rule::rdb_version_field => {
+                version = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok());
+            }
+            Rule::rdb_size_field => {
+                let val = f.into_inner().next().map(|p| p.as_str()).unwrap_or("");
+                size = Some(match val {
+                    "small"  => RdbSize::Small,
+                    "medium" => RdbSize::Medium,
+                    "large"  => RdbSize::Large,
+                    "xlarge" => RdbSize::Xlarge,
+                    s        => { errors.push(err_at(path, line, col, format!("database '{name}': unknown size '{s}'"))); continue; }
+                });
+            }
+            Rule::rdb_storage_field => {
+                storage = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok());
+            }
+            Rule::rdb_compute_field => {
+                compute = f.into_inner().next().map(|p| p.as_str().to_string());
+            }
+            r => errors.push(err_at(path, line, col, format!("unexpected database field: {r:?}"))),
+        }
+    }
+
+    if engine.is_none() {
+        errors.push(err_at(path, line, col, format!("database '{name}': missing required field 'engine'")));
+    }
+
+    finish(Rdb { name, engine: engine.unwrap_or(RdbEngine::Postgres), version, size, storage, compute }, errors)
+}
+
+// -- Compute ----------------------------------------------------------------
+
+fn parse_compute(path: &str, pair: Pair<Rule>) -> Parsed<Compute> {
+    let (line, col) = pair.as_span().start_pos().line_col();
+    let mut inner   = pair.into_inner();
+
+    let name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return fail(err_at(path, line, col, "expected compute name")),
+    };
+
+    let mut cpu:    Option<u32>    = None;
+    let mut memory: Option<u32>    = None;
+    let mut aws:    Option<String> = None;
+    let mut errors                 = Vec::new();
+
+    for field in inner {
+        let f = match field.into_inner().next() {
+            Some(p) => p,
+            None    => continue,
+        };
+        match f.as_rule() {
+            Rule::compute_cpu_field    => cpu    = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok()),
+            Rule::compute_memory_field => memory = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok()),
+            Rule::compute_aws_field    => aws    = f.into_inner().next().map(|p| p.as_str().to_string()),
+            r => errors.push(err_at(path, line, col, format!("unexpected compute field: {r:?}"))),
+        }
+    }
+
+    finish(Compute { name, cpu, memory, aws }, errors)
+}
+
 // -- Group ------------------------------------------------------------------
 
 fn parse_group(path: &str, pair: Pair<Rule>) -> Parsed<Group> {
@@ -249,9 +376,9 @@ fn parse_group(path: &str, pair: Pair<Rule>) -> Parsed<Group> {
         None    => return fail(err_at(path, line, col, "expected group name")),
     };
 
-    let services = inner.map(|p| p.as_str().to_string()).collect();
+    let members = inner.map(|p| p.as_str().to_string()).collect();
 
-    finish(Group { name, services }, vec![])
+    finish(Group { name, members }, vec![])
 }
 
 // -- Region -----------------------------------------------------------------

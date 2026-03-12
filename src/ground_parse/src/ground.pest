@@ -2,6 +2,7 @@ WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
 ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
+tag     = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | ":" | "-" | "_")* }
 value   = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
 integer = @{ ASCII_DIGIT+ }
 sep     = _{ "," }
@@ -18,12 +19,34 @@ scaling_field = { "scaling" ~ ":" ~ scaling }
 port_entry   = { ident ~ ":" ~ integer ~ sep? }
 ports_field  = { "ports" ~ ":" ~ "{" ~ port_entry* ~ "}" }
 
+service_compute_field = { "compute" ~ ":" ~ tag }
+
 access_port  = { !(ident ~ ":") ~ !"}" ~ ident ~ sep? }
-access_entry = { ident ~ ":" ~ access_port* }
+access_entry = { ident ~ (":" ~ access_port*)? }
 access_block = { "access" ~ "{" ~ access_entry* ~ "}" }
 
-service_field = { image_field | scaling_field | ports_field }
+service_field = { image_field | scaling_field | ports_field | service_compute_field }
 service_def   = { "service" ~ ident ~ "{" ~ (service_field | access_block)* ~ "}" }
+
+// -- database ----------------------------------------------------------------
+
+rdb_engine          = { "postgres" | "mysql" }
+rdb_engine_field    = { "engine"  ~ ":" ~ rdb_engine }
+rdb_version_field   = { "version" ~ ":" ~ integer }
+rdb_size_val        = { "small" | "medium" | "large" | "xlarge" }
+rdb_size_field      = { "size"    ~ ":" ~ rdb_size_val }
+rdb_storage_field   = { "storage" ~ ":" ~ integer }
+rdb_compute_field   = { "compute" ~ ":" ~ tag }
+rdb_field           = { rdb_engine_field | rdb_version_field | rdb_size_field | rdb_storage_field | rdb_compute_field }
+rdb_def             = { "database" ~ ident ~ "{" ~ rdb_field* ~ "}" }
+
+// -- compute -----------------------------------------------------------------
+
+compute_cpu_field    = { "cpu"    ~ ":" ~ integer }
+compute_memory_field = { "memory" ~ ":" ~ integer }
+compute_aws_field    = { "aws"    ~ ":" ~ value }
+compute_field        = { compute_cpu_field | compute_memory_field | compute_aws_field }
+compute_def          = { "compute" ~ tag ~ "{" ~ compute_field* ~ "}" }
 
 // -- group -------------------------------------------------------------------
 
@@ -66,4 +89,4 @@ deploy_def = { "deploy" ~ "to" ~ ident ~ "{" ~ "stacks" ~ ":" ~ stack_list ~ ove
 
 // -- file --------------------------------------------------------------------
 
-file = { SOI ~ (service_def | group_def | region_def | env_def | stack_def | deploy_def)* ~ EOI }
+file = { SOI ~ (service_def | rdb_def | compute_def | group_def | region_def | env_def | stack_def | deploy_def)* ~ EOI }
