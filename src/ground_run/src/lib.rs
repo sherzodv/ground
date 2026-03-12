@@ -19,6 +19,7 @@ pub struct ExitStatus {
 
 pub enum RunEvent<E> {
     Spawned,
+    Raw(String),           // raw stdout line, always emitted before the parsed Line
     Line(E),
     Stderr(String),        // raw stderr line the parser returned None for
     Exited(ExitStatus),    // always last
@@ -84,6 +85,9 @@ pub fn spawn<P: OutputParser>(
 
         for (source, line) in rx_raw {
             let is_stderr = matches!(source, Source::Stderr);
+            if !is_stderr {
+                let _ = tx_ev.send(RunEvent::Raw(line.clone()));
+            }
             match parser.parse(&line, source) {
                 Some(ev) => { let _ = tx_ev.send(RunEvent::Line(ev)); }
                 None if is_stderr => { let _ = tx_ev.send(RunEvent::Stderr(line)); }

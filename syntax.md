@@ -151,36 +151,36 @@ plan to deploy prod stack to aws /
 stack prod → aws
 
 create service:api
-  + aws_ecs_service:svc_api
-  + aws_ecs_task_definition:svc_api
-  + aws_iam_role:svc_api_task
-  + aws_iam_role:svc_api_exec
-  + aws_iam_role_policy_attachment:svc_api_exec
-  + aws_security_group:svc_api
-  + aws_vpc_security_group_egress_rule:svc_api_all
-  + aws_cloudwatch_log_group:_ground_svc_api
+  + aws_ecs_service.svc_api
+  + aws_ecs_task_definition.svc_api
+  + aws_iam_role.svc_api_task
+  + aws_iam_role.svc_api_exec
+  + aws_iam_role_policy_attachment.svc_api_exec
+  + aws_security_group.svc_api
+  + aws_vpc_security_group_egress_rule.svc_api_all
+  + aws_cloudwatch_log_group._ground_svc_api
 
 create database:db-main
-  + aws_db_instance:db_main
-  + aws_db_subnet_group:db_main
-  + aws_security_group:db_main_db
-  + aws_vpc_security_group_egress_rule:db_main_db_all
-  + aws_vpc_security_group_ingress_rule:svc_api_to_db_main_db
+  + aws_db_instance.db_main
+  + aws_db_subnet_group.db_main
+  + aws_security_group.db_main_db
+  + aws_vpc_security_group_egress_rule.db_main_db_all
+  + aws_vpc_security_group_ingress_rule.svc_api_to_db_main_db
 
 create prod
-  + aws_ecs_cluster:ground_prod
-  + aws_vpc:ground_prod
-  + aws_subnet:prod_pub_1
-  + aws_subnet:prod_priv_1
-  + aws_subnet:prod_pub_2
-  + aws_subnet:prod_priv_2
-  + aws_internet_gateway:ground_prod
-  + aws_eip:ground_prod_eip
-  + aws_nat_gateway:ground_prod
-  + aws_route_table:rt_prod_pub_1
-  + aws_route_table:rt_prod_priv_1
-  + aws_route_table:rt_prod_pub_2
-  + aws_route_table:rt_prod_priv_2
+  + aws_ecs_cluster.ground_prod
+  + aws_vpc.ground_prod
+  + aws_subnet.prod_pub_1
+  + aws_subnet.prod_priv_1
+  + aws_subnet.prod_pub_2
+  + aws_subnet.prod_priv_2
+  + aws_internet_gateway.ground_prod
+  + aws_eip.ground_prod_eip
+  + aws_nat_gateway.ground_prod
+  + aws_route_table.rt_prod_pub_1
+  + aws_route_table.rt_prod_priv_1
+  + aws_route_table.rt_prod_pub_2
+  + aws_route_table.rt_prod_priv_2
   …
 
 create 31  modify 0  delete 0

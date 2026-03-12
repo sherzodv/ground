@@ -108,6 +108,7 @@ pub fn plan(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
         for event in raw {
             match event {
                 RunEvent::Spawned     => { let _ = tx.send(RunEvent::Spawned); }
+                RunEvent::Raw(s)      => { let _ = tx.send(RunEvent::Raw(s)); }
                 RunEvent::Stderr(s)   => { let _ = tx.send(RunEvent::Stderr(s)); }
                 RunEvent::Line(ev)    => {
                     if let Some(ops) = tf_to_ops(ev) {
@@ -188,6 +189,7 @@ where
         for event in raw {
             let out = match event {
                 RunEvent::Spawned     => Some(RunEvent::Spawned),
+                RunEvent::Raw(s)      => Some(RunEvent::Raw(s)),
                 RunEvent::Stderr(s)   => Some(RunEvent::Stderr(s)),
                 RunEvent::Line(ev)    => f(ev).map(RunEvent::Line),
                 RunEvent::Exited(s)   => Some(RunEvent::Exited(s)),

@@ -19,15 +19,17 @@ fn main() {
     match args.as_slice() {
         [cmd] if cmd == "init"                                 => cmd_init(false),
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
-        [cmd, sub] if cmd == "gen" && sub == "terra"           => cmd_gen_terra(),
-        [cmd] if cmd == "plan"                                 => cmd_plan(),
-        [cmd] if cmd == "apply"                                => cmd_apply(),
+        [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
+        [cmd] if cmd == "plan"                                                     => cmd_plan(false),
+        [cmd, flag] if cmd == "plan" && flag == "--verbose"                        => cmd_plan(true),
+        [cmd] if cmd == "apply"                                                    => cmd_apply(false),
+        [cmd, flag] if cmd == "apply" && flag == "--verbose"                       => cmd_apply(true),
         _ => {
             eprintln!("usage:");
             eprintln!("  ground init [--git-ignore]");
             eprintln!("  ground gen terra");
-            eprintln!("  ground plan");
-            eprintln!("  ground apply");
+            eprintln!("  ground plan [--verbose]");
+            eprintln!("  ground apply [--verbose]");
             process::exit(1);
         }
     }
@@ -157,6 +159,16 @@ fn cmd_gen_terra() {
 }
 
 // ---------------------------------------------------------------------------
+// Ground entity lookup
+// ---------------------------------------------------------------------------
+
+fn build_lookup(spec: &ground_core::Spec) -> Vec<(String, String)> {
+    spec.instances.iter()
+        .map(|i| (i.name.replace('-', "_"), format!("{}:{}", i.type_name, i.name)))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Action display helpers
 // ---------------------------------------------------------------------------
 
@@ -211,13 +223,9 @@ fn display_plan_summary(
     use std::collections::BTreeMap;
     use ground_be_terra::terra_ops;
 
-    // Build lookup: underscored terraform prefix → "type:name" label
-    let instance_names: Vec<(String, String)> = spec.instances.iter()
-        .map(|i| (i.name.replace('-', "_"), format!("{}:{}", i.type_name, i.name)))
-        .collect();
-
+    let lookup = build_lookup(spec);
     let ground_entity = |resource_name: &str| -> String {
-        for (underscored, label) in &instance_names {
+        for (underscored, label) in &lookup {
             if resource_name == underscored.as_str()
                 || resource_name.starts_with(&format!("{underscored}_"))
             {
@@ -245,7 +253,7 @@ fn display_plan_summary(
             println!("{color}{verb}{RESET} {BOLD}{entity}{RESET}");
             for c in changes {
                 let (glyph, gcolor) = action_glyph(&c.action);
-                println!("  {gcolor}{glyph}{RESET} {DIM}{}:{}{RESET}", c.resource_type, c.resource_name);
+                println!("  {gcolor}{glyph}{RESET} {DIM}{}.{}{RESET}", c.resource_type, c.resource_name);
             }
             println!();
         }
@@ -256,11 +264,12 @@ fn display_plan_summary(
     println!();
 }
 
-fn cmd_apply() {
+fn cmd_apply(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (_spec, json, stack_name) = parse_and_gen();
+    let (spec, json, stack_name) = parse_and_gen();
     let provider = "aws".to_string();
+    let lookup = build_lookup(&spec);
 
     write_stack(&stack_name, &json);
 
@@ -268,7 +277,7 @@ fn cmd_apply() {
 
     let rx = terra_ops::init(&dir)
         .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new());
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
     if !run_events(rx, &mut enricher) {
         eprintln!("error: terraform init failed");
         process::exit(1);
@@ -276,18 +285,19 @@ fn cmd_apply() {
 
     let rx = terra_ops::apply(&dir)
         .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Apply, provider.clone(), String::new());
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Apply, provider.clone(), String::new(), lookup, verbose);
     if !run_events(rx, &mut enricher) {
         eprintln!("error: terraform apply failed");
         process::exit(1);
     }
 }
 
-fn cmd_plan() {
+fn cmd_plan(verbose: bool) {
     use ground_be_terra::terra_ops;
 
     let (spec, json, stack_name) = parse_and_gen();
     let provider = "aws".to_string();
+    let lookup = build_lookup(&spec);
 
     write_stack(&stack_name, &json);
 
@@ -295,7 +305,7 @@ fn cmd_plan() {
 
     let rx = terra_ops::init(&dir)
         .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new());
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
     if !run_events(rx, &mut enricher) {
         eprintln!("error: terraform init failed");
         process::exit(1);
@@ -303,7 +313,7 @@ fn cmd_plan() {
 
     let rx = terra_ops::plan(&dir)
         .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, provider.clone(), String::new());
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, provider.clone(), String::new(), lookup, verbose);
 
     for event in rx {
         match event {

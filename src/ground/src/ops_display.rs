@@ -16,18 +16,20 @@ pub struct DisplayEvent {
 pub enum Op { Init, Plan, Apply }
 
 pub struct TerraEnricher {
-    pub stack:          String,
-    pub op:             Op,
-    pub provider:       String,
-    pub region:         String,
-    refresh_started:    bool,
-    refresh_done:       bool,
-    drift_header_shown: bool,
+    pub stack:       String,
+    pub op:          Op,
+    pub provider:    String,
+    pub region:      String,
+    pub verbose:     bool,
+    lookup:          Vec<(String, String)>,  // (underscored_tf_name, "type:name")
+    refresh_started: bool,
+    refresh_done:    bool,
+    drift_buffer:    Vec<(String, Action)>,  // (tf_address, action)
 }
 
 impl TerraEnricher {
-    pub fn new(stack: String, op: Op, provider: String, region: String) -> Self {
-        Self { stack, op, provider, region, refresh_started: false, refresh_done: false, drift_header_shown: false }
+    pub fn new(stack: String, op: Op, provider: String, region: String, lookup: Vec<(String, String)>, verbose: bool) -> Self {
+        Self { stack, op, provider, region, verbose, lookup, refresh_started: false, refresh_done: false, drift_buffer: vec![] }
     }
 
     pub fn enrich(&mut self, event: &RunEvent<OpsEvent>) -> Vec<DisplayEvent> {
@@ -46,6 +48,12 @@ impl TerraEnricher {
                 v.push(msg(format!("{DIM}running {cmd}{RESET}")));
                 v
             }
+
+            RunEvent::Raw(line) => if self.verbose {
+                vec![msg(format!("{DIM}{line}{RESET}"))]
+            } else {
+                vec![]
+            },
 
             RunEvent::Line(ev) => self.enrich_ops(ev),
 
@@ -86,11 +94,17 @@ impl TerraEnricher {
 
             OpsEvent::RefreshDone { .. } => vec![],
 
-            OpsEvent::Computing =>
-                vec![msg(format!("{DIM}computing plan{RESET}"))],
+            OpsEvent::Computing => {
+                let mut v = self.flush_drift();
+                v.push(msg(format!("{DIM}computing plan{RESET}")));
+                v
+            }
 
-            OpsEvent::ReadingPlan =>
-                vec![msg(format!("{DIM}running terraform show -json .tfplan{RESET}"))],
+            OpsEvent::ReadingPlan => {
+                let mut v = self.flush_drift();  // fallback: flush any drift not caught at Computing
+                v.push(msg(format!("{DIM}running terraform show -json .tfplan{RESET}")));
+                v
+            }
 
             OpsEvent::ProviderReady { name, version } =>
                 vec![msg(format!("{DIM}installing provider {name} {version}{RESET}"))],
@@ -116,17 +130,8 @@ impl TerraEnricher {
             }],
 
             OpsEvent::DriftDetected { address, action } => {
-                let mut v = vec![];
-                if !self.drift_header_shown {
-                    self.drift_header_shown = true;
-                    v.push(DisplayEvent {
-                        message: format!("{YELLOW}drift detected — changes made outside terraform{RESET}"),
-                        detail:  Some(format!("to get more details run {BOLD}terraform -chdir=.ground/terra/{} plan{RESET}", self.stack)),
-                    });
-                }
-                let (glyph, color) = action_style(action);
-                v.push(msg(format!("  {color}{glyph}{RESET} {address}")));
-                v
+                self.drift_buffer.push((address.clone(), *action));
+                vec![]
             }
 
             OpsEvent::Warning { message, detail, address } => {
@@ -139,14 +144,63 @@ impl TerraEnricher {
                 }]
             }
 
-            OpsEvent::ApplyDone =>
-                vec![msg(format!("{GREEN}apply complete{RESET}"))],
+            OpsEvent::ApplyDone => {
+                let mut v = self.flush_drift();  // fallback: flush any drift not caught at Computing
+                v.push(msg(format!("{GREEN}apply complete{RESET}")));
+                v
+            }
 
             OpsEvent::PlanReady { .. } => vec![],
         };
 
         prefix.append(&mut out);
         prefix
+    }
+
+    fn ground_entity(&self, tf_address: &str) -> String {
+        // tf_address is "resource_type.resource_name" — extract the name part
+        let resource_name = tf_address.splitn(2, '.').nth(1).unwrap_or(tf_address);
+        for (underscored, label) in &self.lookup {
+            if resource_name == underscored.as_str()
+                || resource_name.starts_with(&format!("{underscored}_"))
+            {
+                return label.clone();
+            }
+        }
+        self.stack.clone()
+    }
+
+    fn flush_drift(&mut self) -> Vec<DisplayEvent> {
+        if self.drift_buffer.is_empty() { return vec![]; }
+
+        // Group by ground entity, preserving first-seen order
+        let drained: Vec<(String, Action)> = self.drift_buffer.drain(..).collect();
+        let mut groups: Vec<(String, Vec<(String, Action)>)> = Vec::new();
+        for (address, action) in drained {
+            let entity = self.ground_entity(&address);
+            if let Some(g) = groups.iter_mut().find(|(e, _)| e == &entity) {
+                g.1.push((address, action));
+            } else {
+                groups.push((entity, vec![(address, action)]));
+            }
+        }
+
+        let mut v = vec![
+            DisplayEvent {
+                message: format!("{YELLOW}drift detected — changes made outside terraform{RESET}"),
+                detail:  None,
+            },
+            msg(String::new()),
+        ];
+        for (entity, changes) in &groups {
+            v.push(msg(format!("  {YELLOW}~{RESET} {BOLD}{entity}{RESET}")));
+            for (address, action) in changes {
+                let (glyph, color) = action_style(action);
+                v.push(msg(format!("      {color}{glyph}{RESET} {DIM}{address}{RESET}")));
+            }
+        }
+        v.push(msg(String::new()));
+        v
     }
 }
 
