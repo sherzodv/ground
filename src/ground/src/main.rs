@@ -17,10 +17,10 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     match args.as_slice() {
-        [cmd] if cmd == "init"                                          => cmd_init(false),
-        [cmd, flag] if cmd == "init" && flag == "--git-ignore"          => cmd_init(true),
-        [cmd, sub] if cmd == "gen" && sub == "terra"                    => cmd_gen_terra(),
-        [cmd] if cmd == "plan"                                          => cmd_plan(),
+        [cmd] if cmd == "init"                                 => cmd_init(false),
+        [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
+        [cmd, sub] if cmd == "gen" && sub == "terra"           => cmd_gen_terra(),
+        [cmd] if cmd == "plan"                                 => cmd_plan(),
         _ => {
             eprintln!("usage:");
             eprintln!("  ground init [--git-ignore]");
@@ -83,7 +83,11 @@ fn cmd_init(git_ignore: bool) {
     }
 }
 
-fn load_stacks() -> Vec<(String, ground_core::low::Plan)> {
+// ---------------------------------------------------------------------------
+// Parse .grd files and run code generation
+// ---------------------------------------------------------------------------
+
+fn parse_and_gen() -> (ground_core::Spec, String, String) {
     let entries = match fs::read_dir(".") {
         Ok(e)  => e,
         Err(e) => { eprintln!("error reading current directory: {e}"); process::exit(1); }
@@ -106,27 +110,32 @@ fn load_stacks() -> Vec<(String, ground_core::low::Plan)> {
         process::exit(1);
     }
 
-    let sources: Vec<(&str, &str)> = sources_data.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+    let sources: Vec<(&str, &str)> = sources_data.iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
 
-    let spec = match ground_parse::parse(&sources) {
+    let spec = match ground_compile::compile(&sources) {
         Ok(s)   => s,
         Err(es) => { for e in es { eprintln!("{e}"); } process::exit(1); }
     };
 
-    let stacks = match ground_core::compile::compile(&spec) {
-        Ok(s)   => s,
-        Err(es) => { for e in es { eprintln!("error: {e}"); } process::exit(1); }
-    };
-
-    if stacks.is_empty() {
+    if spec.deploys.is_empty() {
         eprintln!("no deploy declarations found — nothing to generate");
         process::exit(1);
     }
 
-    stacks
+    let json = match ground_be_terra::generate(&spec) {
+        Ok(j)  => j,
+        Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+    };
+
+    // Use the first deploy's alias as the stack name
+    let stack_name = spec.deploys[0].alias.clone();
+
+    (spec, json, stack_name)
 }
 
-fn write_stack(stack_name: &str, plan: &ground_core::low::Plan) {
+fn write_stack(stack_name: &str, json: &str) {
     let dir      = format!(".ground/terra/{stack_name}");
     let out_path = format!("{dir}/main.tf.json");
 
@@ -134,43 +143,20 @@ fn write_stack(stack_name: &str, plan: &ground_core::low::Plan) {
         eprintln!("error: {dir}: {e}"); process::exit(1);
     }
 
-    let json = ground_be_terra::terra_gen::aws::generate(plan);
-    if let Err(e) = fs::write(&out_path, &json) {
+    if let Err(e) = fs::write(&out_path, json) {
         eprintln!("error: {out_path}: {e}"); process::exit(1);
     }
 }
 
 fn cmd_gen_terra() {
-    for (stack_name, plan) in load_stacks() {
-        write_stack(&stack_name, &plan);
-        println!("wrote .ground/terra/{stack_name}/main.tf.json");
-    }
+    let (_spec, json, stack_name) = parse_and_gen();
+    write_stack(&stack_name, &json);
+    println!("wrote .ground/terra/{stack_name}/main.tf.json");
 }
 
-// -- Ground entity classification --------------------------------------------
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum GroundKind {
-    Service(String),
-    Stack(String),
-    Region(String),
-}
-
-fn classify(rtype: &str, rname: &str, plan: &ground_core::low::Plan) -> GroundKind {
-    if rtype == "aws_ecs_cluster" {
-        return GroundKind::Stack(plan.stack_name.clone());
-    }
-    for wl in &plan.workloads {
-        let s = wl.name.replace(['-', '/'], "_");
-        if rname == s
-            || rname.starts_with(&format!("{s}_"))
-            || rname == format!("_ground_{s}")
-        {
-            return GroundKind::Service(wl.name.clone());
-        }
-    }
-    GroundKind::Region(plan.region_name.clone())
-}
+// ---------------------------------------------------------------------------
+// Action display helpers
+// ---------------------------------------------------------------------------
 
 fn action_glyph(action: &ground_be_terra::terra_ops::Action) -> (&'static str, &'static str) {
     use ground_be_terra::terra_ops::Action::*;
@@ -194,7 +180,9 @@ fn dominant_verb(changes: &[&ground_be_terra::terra_ops::ResourceChange]) -> (&'
     }
 }
 
-// -- ground plan -------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ground plan
+// ---------------------------------------------------------------------------
 
 fn render(ev: &ops_display::DisplayEvent) {
     println!("{}", ev.message);
@@ -214,84 +202,91 @@ fn run_events(rx: std::sync::mpsc::Receiver<RunEvent<OpsEvent>>, enricher: &mut 
 
 fn display_plan_summary(
     summary:    &ground_be_terra::terra_ops::PlanSummary,
+    spec:       &ground_core::Spec,
     stack_name: &str,
-    plan:       &ground_core::low::Plan,
+    provider:   &str,
 ) {
     use std::collections::BTreeMap;
     use ground_be_terra::terra_ops;
 
-    let mut groups: BTreeMap<GroundKind, Vec<&terra_ops::ResourceChange>> = BTreeMap::new();
+    // Build lookup: underscored terraform prefix → "type:name" label
+    let instance_names: Vec<(String, String)> = spec.instances.iter()
+        .map(|i| (i.name.replace('-', "_"), format!("{}:{}", i.type_name, i.name)))
+        .collect();
+
+    let ground_entity = |resource_name: &str| -> String {
+        for (underscored, label) in &instance_names {
+            if resource_name == underscored.as_str()
+                || resource_name.starts_with(&format!("{underscored}_"))
+            {
+                return label.clone();
+            }
+        }
+        stack_name.to_string()
+    };
+
+    // Group by ground entity name
+    let mut groups: BTreeMap<String, Vec<&terra_ops::ResourceChange>> = BTreeMap::new();
     for c in &summary.changes {
-        groups
-            .entry(classify(&c.resource_type, &c.resource_name, plan))
-            .or_default()
-            .push(c);
+        groups.entry(ground_entity(&c.resource_name)).or_default().push(c);
     }
 
     println!();
-    println!("{BOLD}stack {stack_name}{RESET} {DIM}→ {}{RESET}", plan.provider_name);
-    println!("{DIM}region {}{RESET}", plan.region_name);
-    println!("{DIM}env    {}{RESET}", plan.env_name);
-    println!("{DIM}group  {}{RESET}", plan.group_name);
+    println!("{BOLD}stack {stack_name}{RESET} {DIM}→ {provider}{RESET}");
     println!();
 
     if groups.is_empty() {
         println!("{DIM}no changes{RESET}");
     } else {
-        for (kind, changes) in &groups {
+        for (entity, changes) in &groups {
             let (verb, color) = dominant_verb(changes);
-            let label = match kind {
-                GroundKind::Service(name) => format!("service {name}"),
-                GroundKind::Stack(name)   => format!("stack {name}"),
-                GroundKind::Region(name)  => format!("region {name}"),
-            };
-            println!("{color}{verb}{RESET} {BOLD}{label}{RESET}");
-            let w = changes.iter().map(|c| c.resource_type.len()).max().unwrap_or(0);
+            println!("{color}{verb}{RESET} {BOLD}{entity}{RESET}");
             for c in changes {
                 let (glyph, gcolor) = action_glyph(&c.action);
-                println!("  {gcolor}{glyph}{RESET} {DIM}{:<w$}  {}{RESET}", c.resource_type, c.resource_name);
+                println!("  {gcolor}{glyph}{RESET} {DIM}{}{RESET}", c.resource_type);
             }
             println!();
         }
     }
 
-    let (c, u, d) = (summary.creates(), summary.updates(), summary.destroys());
-    println!("{GREEN}create {c}{RESET}  {YELLOW}modify {u}{RESET}  {RED}delete {d}{RESET}");
+    let (cr, up, de) = (summary.creates(), summary.updates(), summary.destroys());
+    println!("{GREEN}create {cr}{RESET}  {YELLOW}modify {up}{RESET}  {RED}delete {de}{RESET}");
     println!();
 }
 
 fn cmd_plan() {
     use ground_be_terra::terra_ops;
 
-    for (stack_name, plan) in load_stacks() {
-        write_stack(&stack_name, &plan);
+    let (spec, json, stack_name) = parse_and_gen();
+    let provider = "aws".to_string();
 
-        let dir = Path::new(".ground/terra").join(&stack_name);
+    write_stack(&stack_name, &json);
 
-        let rx = terra_ops::init(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, plan.provider_name.clone(), plan.region_name.clone());
-        if !run_events(rx, &mut enricher) {
-            eprintln!("error: terraform init failed");
-            process::exit(1);
-        }
+    let dir = Path::new(".ground/terra").join(&stack_name);
 
-        let rx = terra_ops::plan(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, plan.provider_name.clone(), plan.region_name.clone());
+    let rx = terra_ops::init(&dir)
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new());
+    if !run_events(rx, &mut enricher) {
+        eprintln!("error: terraform init failed");
+        process::exit(1);
+    }
 
-        for event in rx {
-            match event {
-                RunEvent::Exited(s) if !s.success => {
-                    eprintln!("error: terraform plan failed");
-                    process::exit(1);
-                }
-                RunEvent::Line(OpsEvent::PlanReady { summary }) => {
-                    display_plan_summary(&summary, &stack_name, &plan);
-                }
-                other => {
-                    for d in enricher.enrich(&other) { render(&d); }
-                }
+    let rx = terra_ops::plan(&dir)
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, provider.clone(), String::new());
+
+    for event in rx {
+        match event {
+            RunEvent::Exited(s) if !s.success => {
+                eprintln!("error: terraform plan failed");
+                process::exit(1);
+            }
+            RunEvent::Line(OpsEvent::PlanReady { summary }) => {
+                display_plan_summary(&summary, &spec, &stack_name, &provider);
+            }
+            other => {
+                for d in enricher.enrich(&other) { render(&d); }
             }
         }
     }

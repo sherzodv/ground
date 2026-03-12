@@ -1,30 +1,12 @@
 # minimal service
 
 ```ground
-service svc-api { image: svc-api:prod }
-
-group backend {
-  svc-api
+service svc-api {
+  image: svc-api:prod
 }
 
-region us-east {
-  aws:  us-east-1
-  zone 1 { aws: us-east-1a }
-}
-
-env prod {
-  LOG_LEVEL: info
-}
-
-stack prod {
-  env:    prod
-  region: us-east
-  zone:   [1]
-  group:  backend
-}
-
-deploy to aws {
-  stacks: [prod]
+deploy prod to aws as prod {
+  region: us-east:1
 }
 ```
 
@@ -36,6 +18,30 @@ deploy to aws {
     }
   },
   "resource": {
+    "aws_appautoscaling_policy": {
+      "svc_api_scale": {
+        "name": "svc-api-scale",
+        "policy_type": "TargetTrackingScaling",
+        "resource_id": "${aws_appautoscaling_target.svc_api.resource_id}",
+        "scalable_dimension": "${aws_appautoscaling_target.svc_api.scalable_dimension}",
+        "service_namespace": "${aws_appautoscaling_target.svc_api.service_namespace}",
+        "target_tracking_scaling_policy_configuration": {
+          "predefined_metric_specification": {
+            "predefined_metric_type": "ECSServiceAverageCPUUtilization"
+          },
+          "target_value": 70.0
+        }
+      }
+    },
+    "aws_appautoscaling_target": {
+      "svc_api": {
+        "max_capacity": 1,
+        "min_capacity": 1,
+        "resource_id": "service/${aws_ecs_cluster.ground_prod.name}/svc-api",
+        "scalable_dimension": "ecs:service:DesiredCount",
+        "service_namespace": "ecs"
+      }
+    },
     "aws_cloudwatch_log_group": {
       "_ground_svc_api": {
         "name": "/ground/svc-api",
@@ -71,7 +77,7 @@ deploy to aws {
     },
     "aws_ecs_task_definition": {
       "svc_api": {
-        "container_definitions": "[{\"environment\":[{\"name\":\"LOG_LEVEL\",\"value\":\"info\"}],\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}},\"name\":\"svc-api\"}]",
+        "container_definitions": "[{\"name\":\"svc-api\",\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
         "cpu": "256",
         "execution_role_arn": "${aws_iam_role.svc_api_exec.arn}",
         "family": "svc-api",
@@ -211,79 +217,3 @@ deploy to aws {
   }
 }
 ```
-
-## Explain
-
-A single `service` declaration generates six AWS resources that together run one
-container reliably in the cloud.
-
-**IAM roles — identity and permissions**
-
-AWS requires every piece of infrastructure to have an explicit identity (a
-"role") before it is allowed to do anything.
-
-- `svc-api-exec` — used by AWS itself, not your code. When ECS starts your
-  container it needs permission to pull the Docker image and write logs. The
-  attached policy `AmazonECSTaskExecutionRolePolicy` is an AWS-managed set of
-  permissions built exactly for this. Your code never assumes this role.
-- `svc-api-task` — the identity your container runs as at runtime. Nothing is
-  attached to it yet; permissions get added as the service gains access to
-  databases, buckets, etc.
-
-**Security group — virtual firewall**
-
-`aws_security_group` is attached to the container's network interface. No
-inbound rules means nothing can open a connection to this container from
-outside. The single egress rule (`protocol: -1`, `cidr: 0.0.0.0/0`) lets the
-container reach any address on any port — needed for outbound HTTP calls,
-package pulls, etc. It lives inside `var.vpc_id`, the private AWS network you
-provide to Ground.
-
-**CloudWatch log group — log storage**
-
-`aws_cloudwatch_log_group` named `/ground/svc-api` is where container stdout
-and stderr land. ECS streams logs there automatically via the `awslogs` driver
-declared inside the task definition. Retention is set to 7 days; after that AWS
-discards old entries automatically.
-
-**ECS task definition — the container blueprint**
-
-`aws_ecs_task_definition` is a versioned template describing how to run the
-container:
-
-- image: `svc-api:prod`
-- resources: 256 CPU units (¼ vCPU) and 512 MB RAM
-- networking: `awsvpc` — each container gets its own network interface,
-  required for Fargate
-- roles: the exec role (for startup) and the task role (for runtime)
-- logging: ship to the log group above via `awslogs`
-
-The task definition is immutable; changing it creates a new version.
-
-**ECS service — the runtime scheduler**
-
-`aws_ecs_service` is what actually keeps the container running. It reads the
-task definition and maintains `desired_count: 1` copy alive at all times — if
-the container crashes or the host fails, ECS replaces it automatically. It
-places the container in `var.private_subnet_ids` (internal subnets, not
-internet-reachable) and attaches the security group. It runs on the ECS cluster
-identified by `var.ecs_cluster_id`, a logical grouping of services you provide.
-
-**Variables expected from outside**
-
-The generated Terraform is not standalone — it references four variables that
-must be provided by a root Terraform module wrapping it:
-
-- `vpc_id` — the private AWS network your services live in. A VPC has IP
-  ranges, routing tables, and gateway config. It is typically shared across many
-  projects and created once separately; Ground does not create it.
-- `aws_region` — e.g. `us-east-1`. Ground generates region-agnostic resources;
-  the actual deployment target is injected here at apply time.
-- `ecs_cluster_id` — an ECS cluster is a logical namespace that groups ECS
-  services. Usually one per environment, shared, created outside Ground.
-- `private_subnet_ids` — subnets are subdivisions of the VPC. Private means no
-  direct inbound internet access. Ground places containers in them but does not
-  create them.
-
-Ground owns the service layer. The network and cluster layer is infrastructure
-you bring.

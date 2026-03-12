@@ -1,0 +1,47 @@
+// ground_stdlib.grd — built-in ground declarations
+
+// --- Primitive types ---
+type zone   = 1 | 2 | 3
+type region = eu-central | eu-west | us-east | us-west | ap-southeast
+type engine = postgres | mysql
+type size   = small | medium | large | xlarge
+
+// --- Primitive links ---
+link image   = reference
+link compute = reference
+link version = integer
+link storage = integer
+
+// --- Structured type ---
+type scaling = {
+  link min = integer
+  link max = integer
+}
+
+// --- Link declarations ---
+link scaling = type:scaling
+link engine  = engine
+link size    = size
+link access  = [ service:(port)?  | database ]
+link region  = type:region:type:zone
+
+// --- Composite types ---
+type service = {
+  image
+  link access  = [ service:(port)?  | database ]
+  scaling = { min: 1  max: 1 }
+  link compute = reference
+}
+
+type database = {
+  engine
+  link version = integer
+  link size    = size
+  link storage = integer
+  link compute = reference
+}
+
+type stack = {
+  link service  = service
+  link database = database
+}

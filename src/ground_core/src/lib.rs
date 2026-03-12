@@ -1,3 +1,4 @@
-pub mod high;
-pub mod low;
-pub mod compile;
+pub mod spec;
+pub mod error;
+pub use spec::*;
+pub use error::ParseError;

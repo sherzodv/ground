@@ -17,10 +17,9 @@ pub enum TfEvent {
     ResourceDone     { address: String, action: Action, elapsed_secs: u32 },
     ResourceErrored  { address: String, message: String },
     ResourceDrift    { address: String, action: Action },
-    ChangeSummary    { add: u32, change: u32, remove: u32 },
+    ChangeSummary,
 
     Diagnostic { severity: String, summary: String, detail: Option<String>, address: Option<String> },
-    Unknown    { raw: String },
 }
 
 pub enum Mode { Init, PlanApply }
@@ -103,12 +102,7 @@ fn parse_json(line: &str) -> Option<TfEvent> {
             let msg  = v["@message"].as_str().unwrap_or("unknown error").to_string();
             Some(TfEvent::ResourceErrored { address: addr, message: msg })
         }
-        "change_summary" => {
-            let add    = v["changes"]["add"].as_u64().unwrap_or(0) as u32;
-            let change = v["changes"]["change"].as_u64().unwrap_or(0) as u32;
-            let remove = v["changes"]["remove"].as_u64().unwrap_or(0) as u32;
-            Some(TfEvent::ChangeSummary { add, change, remove })
-        }
+        "change_summary" => Some(TfEvent::ChangeSummary),
         "resource_drift" => {
             let addr   = v["change"]["resource"]["addr"].as_str()?.to_string();
             let action = parse_action(v["change"]["action"].as_str().unwrap_or(""))?;

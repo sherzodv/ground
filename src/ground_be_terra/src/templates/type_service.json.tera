@@ -1,0 +1,101 @@
+{%- set svc_u   = instance.name | replace(from="-", to="_") -%}
+{%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+{%- set image   = instance.image | default(value="") -%}
+{
+  "resource": {
+    "aws_cloudwatch_log_group": {
+      "_ground_{{ svc_u }}": {
+        "name": "/ground/{{ instance.name }}",
+        "retention_in_days": 7
+      }
+    },
+    "aws_iam_role": {
+      "{{ svc_u }}_task": {
+        "name": "{{ instance.name }}-task",
+        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}"
+      },
+      "{{ svc_u }}_exec": {
+        "name": "{{ instance.name }}-exec",
+        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}"
+      }
+    },
+    "aws_iam_role_policy_attachment": {
+      "{{ svc_u }}_exec": {
+        "role": "${aws_iam_role.{{ svc_u }}_exec.name}",
+        "policy_arn": "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      }
+    },
+    "aws_security_group": {
+      "{{ svc_u }}": {
+        "name": "{{ instance.name }}",
+        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}"
+      }
+    },
+    "aws_vpc_security_group_egress_rule": {
+      "{{ svc_u }}_all": {
+        "security_group_id": "${aws_security_group.{{ svc_u }}.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      }
+    },
+    "aws_ecs_task_definition": {
+      "{{ svc_u }}": {
+        "family": "{{ instance.name }}",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.{{ svc_u }}_exec.arn}",
+        "task_role_arn": "${aws_iam_role.{{ svc_u }}_task.arn}",
+        "container_definitions": "[{\"name\":\"{{ instance.name }}\",\"image\":\"{{ image }}\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/{{ instance.name }}\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]"
+      }
+    },
+    "aws_ecs_service": {
+      "{{ svc_u }}": {
+        "name": "{{ instance.name }}",
+        "cluster": "${aws_ecs_cluster.ground_{{ alias_u }}.id}",
+        "task_definition": "${aws_ecs_task_definition.{{ svc_u }}.arn}",
+        "desired_count": 1,
+        "capacity_provider_strategy": [
+          {
+            "capacity_provider": "FARGATE",
+            "weight": 1
+          }
+        ],
+        "network_configuration": {
+          "subnets": [
+            {% for zone_entry in deploy.region %}"${aws_subnet.{{ deploy.alias }}_priv_{{ loop.index }}.id}"{% if not loop.last %},{% endif %}
+            {% endfor %}
+          ],
+          "security_groups": [
+            "${aws_security_group.{{ svc_u }}.id}"
+          ]
+        }
+      }
+    }{% if instance.scaling is defined and instance.scaling is object %},
+    "aws_appautoscaling_target": {
+      "{{ svc_u }}": {
+        "max_capacity": {{ instance.scaling.max }},
+        "min_capacity": {{ instance.scaling.min }},
+        "resource_id": "service/${aws_ecs_cluster.ground_{{ alias_u }}.name}/{{ instance.name }}",
+        "scalable_dimension": "ecs:service:DesiredCount",
+        "service_namespace": "ecs"
+      }
+    },
+    "aws_appautoscaling_policy": {
+      "{{ svc_u }}_scale": {
+        "name": "{{ instance.name }}-scale",
+        "policy_type": "TargetTrackingScaling",
+        "resource_id": "${aws_appautoscaling_target.{{ svc_u }}.resource_id}",
+        "scalable_dimension": "${aws_appautoscaling_target.{{ svc_u }}.scalable_dimension}",
+        "service_namespace": "${aws_appautoscaling_target.{{ svc_u }}.service_namespace}",
+        "target_tracking_scaling_policy_configuration": {
+          "predefined_metric_specification": {
+            "predefined_metric_type": "ECSServiceAverageCPUUtilization"
+          },
+          "target_value": 70.0
+        }
+      }
+    }{% endif %}
+  }
+}

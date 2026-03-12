@@ -1,0 +1,8 @@
+[package]
+name = "ground_gen"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+tera       = "1"
+serde_json = "1"

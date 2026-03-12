@@ -1,6 +1,4 @@
-use std::fmt;
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParseError {
     pub path:    String,
     pub line:    usize,
@@ -8,8 +6,8 @@ pub struct ParseError {
     pub message: String,
 }
 
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}:{}: {}", self.path, self.line, self.col, self.message)
     }
 }

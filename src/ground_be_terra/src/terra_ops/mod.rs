@@ -147,7 +147,7 @@ pub fn apply(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
             Some(OpsEvent::ResourceDone { address, action, elapsed_secs }),
         TfEvent::ResourceErrored { address, message } =>
             Some(OpsEvent::ResourceFailed { address, reason: message }),
-        TfEvent::ChangeSummary { .. } =>
+        TfEvent::ChangeSummary =>
             Some(OpsEvent::ApplyDone),
         TfEvent::Diagnostic { summary, detail, address, .. } =>
             Some(OpsEvent::Warning { message: summary, detail, address }),

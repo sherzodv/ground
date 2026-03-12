@@ -1,92 +1,68 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
-ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
-tag     = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | ":" | "-" | "_")* }
-value   = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
-integer = @{ ASCII_DIGIT+ }
-sep     = _{ "," }
+// Restricted name: no : or /
+name        = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
+// Value token: allows : and / for paths
+value_token = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
+// Integer literal
+integer     = @{ ASCII_DIGIT+ }
+// Enum value: integer digits OR name
+enum_value  = @{ ASCII_DIGIT+ | ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
 
-// -- service -----------------------------------------------------------------
+// ---- Type declarations ----
 
-scaling_key   = { "min" | "max" }
-scaling_entry = { scaling_key ~ ":" ~ integer ~ sep? }
-scaling       = { "{" ~ scaling_entry+ ~ "}" }
+// Primitive kinds
+primitive_kind = { "integer" | "float" | "boolean" | "string" | "reference" }
 
-image_field   = { "image"   ~ ":" ~ value }
-scaling_field = { "scaling" ~ ":" ~ scaling }
+// Enum body: at least two variants
+enum_variant = { enum_value }
+enum_body    = { enum_variant ~ ("|" ~ enum_variant)+ }
 
-port_entry   = { ident ~ ":" ~ integer ~ sep? }
-ports_field  = { "ports" ~ ":" ~ "{" ~ port_entry* ~ "}" }
+// Composite body members
+// Order matters: try composite_inline first (starts with "link" keyword)
+composite_inline  = { "link" ~ name ~ "=" ~ link_type_raw }
+composite_default = { name ~ "=" ~ composite_default_val }
+composite_bare    = { name }
+composite_member  = { composite_inline | composite_default | composite_bare }
+composite_body    = { "{" ~ composite_member* ~ "}" }
 
-service_compute_field = { "compute" ~ ":" ~ tag }
+// Default value for composite members: block or single token
+composite_default_val = { comp_def_block | value_token }
+comp_def_block        = { "{" ~ comp_def_entry* ~ "}" }
+comp_def_entry        = { name ~ ":" ~ value_token }
 
-access_port  = { !(ident ~ ":") ~ !"}" ~ ident ~ sep? }
-access_entry = { ident ~ (":" ~ access_port*)? }
-access_block = { "access" ~ "{" ~ access_entry* ~ "}" }
+// Type body: try composite first (starts with {), then enum (has |), then primitive
+type_body = { composite_body | enum_body | primitive_kind }
+type_decl = { "type" ~ name ~ "=" ~ type_body }
 
-service_field = { image_field | scaling_field | ports_field | service_compute_field }
-service_def   = { "service" ~ ident ~ "{" ~ (service_field | access_block)* ~ "}" }
+// ---- Link declarations ----
 
-// -- database ----------------------------------------------------------------
+// Raw link type expression captured as string
+// List form: [ anything ]
+// Shape form: tokens without spaces (type:scaling, service:(port)?, etc.)
+link_list_inner = @{ (!"]" ~ ANY)* }
+link_shape      = @{ (ASCII_ALPHANUMERIC | "-" | "_" | ":" | "/" | "(" | ")" | "?" | ".")+ }
+link_type_raw   = { "[" ~ link_list_inner ~ "]" | link_shape }
 
-rdb_engine          = { "postgres" | "mysql" }
-rdb_engine_field    = { "engine"  ~ ":" ~ rdb_engine }
-rdb_version_field   = { "version" ~ ":" ~ integer }
-rdb_size_val        = { "small" | "medium" | "large" | "xlarge" }
-rdb_size_field      = { "size"    ~ ":" ~ rdb_size_val }
-rdb_storage_field   = { "storage" ~ ":" ~ integer }
-rdb_compute_field   = { "compute" ~ ":" ~ tag }
-rdb_field           = { rdb_engine_field | rdb_version_field | rdb_size_field | rdb_storage_field | rdb_compute_field }
-rdb_def             = { "database" ~ ident ~ "{" ~ rdb_field* ~ "}" }
+link_decl = { "link" ~ name ~ "=" ~ link_type_raw }
 
-// -- compute -----------------------------------------------------------------
+// ---- Instance definitions ----
 
-compute_cpu_field    = { "cpu"    ~ ":" ~ integer }
-compute_memory_field = { "memory" ~ ":" ~ integer }
-compute_aws_field    = { "aws"    ~ ":" ~ value }
-compute_field        = { compute_cpu_field | compute_memory_field | compute_aws_field }
-compute_def          = { "compute" ~ tag ~ "{" ~ compute_field* ~ "}" }
+// Field value
+single_value = { value_token }
+list_entry   = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
+list_value   = { "[" ~ list_entry* ~ "]" }
+block_value  = { "{" ~ field_entry* ~ "}" }
+field_value  = { block_value | list_value | single_value }
 
-// -- group -------------------------------------------------------------------
+field_entry  = { name ~ ":" ~ field_value }
 
-group_def = { "group" ~ ident ~ "{" ~ ident* ~ "}" }
+// Generic instance: type_name instance_name { fields }
+instance_def = { name ~ name ~ "{" ~ field_entry* ~ "}" }
 
-// -- region / zone -----------------------------------------------------------
+// Deploy: special form
+deploy_def   = { "deploy" ~ name ~ "to" ~ name ~ "as" ~ name ~ "{" ~ field_entry* ~ "}" }
 
-zone_def   = { "zone" ~ integer ~ "{" ~ "aws" ~ ":" ~ value ~ "}" }
-region_def = { "region" ~ ident ~ "{" ~ "aws" ~ ":" ~ value ~ sep? ~ zone_def* ~ "}" }
-
-// -- env ---------------------------------------------------------------------
-
-env_entry = { ident ~ ":" ~ value ~ sep? }
-env_def   = { "env" ~ ident ~ "{" ~ env_entry* ~ "}" }
-
-// -- stack -------------------------------------------------------------------
-
-zone_list          = { "[" ~ (integer ~ sep?)+ ~ "]" }
-stack_env_field    = { "env"    ~ ":" ~ ident }
-stack_region_field = { "region" ~ ":" ~ ident }
-stack_zone_field   = { "zone"   ~ ":" ~ zone_list }
-stack_group_field  = { "group"  ~ ":" ~ ident }
-stack_field        = { stack_env_field | stack_region_field | stack_zone_field | stack_group_field }
-stack_def          = { "stack" ~ ident ~ "{" ~ stack_field* ~ "}" }
-
-// -- deploy ------------------------------------------------------------------
-
-stack_list = { "[" ~ (ident ~ sep?)+ ~ "]" }
-
-// override block: the content between { } is raw JSON captured as a single string
-override_raw       = @{ "{" ~ override_raw_inner* ~ "}" }
-override_raw_inner = _{
-    override_raw
-  | "\"" ~ (("\\" ~ ANY) | (!"\"" ~ ANY))* ~ "\""
-  | (!("{" | "}" | "\"") ~ ANY)
-}
-override_block = { "override" ~ override_raw }
-
-deploy_def = { "deploy" ~ "to" ~ ident ~ "{" ~ "stacks" ~ ":" ~ stack_list ~ override_block? ~ "}" }
-
-// -- file --------------------------------------------------------------------
-
-file = { SOI ~ (service_def | rdb_def | compute_def | group_def | region_def | env_def | stack_def | deploy_def)* ~ EOI }
+// ---- File ----
+file = { SOI ~ (type_decl | link_decl | deploy_def | instance_def)* ~ EOI }

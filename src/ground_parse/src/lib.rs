@@ -1,552 +1,348 @@
-mod error;
-mod helpers;
+pub mod ast;
 
-pub use error::ParseError;
+pub use ground_core::ParseError;
+pub use ast::*;
 
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use pest_derive::Parser;
-
-use ground_core::high::*;
-use helpers::{fail, finish, Parsed};
 
 #[derive(Parser)]
 #[grammar = "src/ground.pest"]
 struct GroundParser;
 
-// -- Types ------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
-pub type Source<'a>  = (&'a str, &'a str);
-pub type ParseReq<'a> = &'a [Source<'a>];
-pub type ParseRes    = Result<Spec, Vec<ParseError>>;
+pub fn parse_to_items(path: &str, content: &str) -> Result<Vec<AstItem>, Vec<ParseError>> {
+    let pairs = <GroundParser as pest::Parser<Rule>>::parse(Rule::file, content)
+        .map_err(|e| {
+            let (line, col) = match e.line_col {
+                pest::error::LineColLocation::Pos(lc)     => lc,
+                pest::error::LineColLocation::Span(lc, _) => lc,
+            };
+            vec![ParseError {
+                path:    path.to_string(),
+                line,
+                col,
+                message: format!("parse error: {}", e),
+            }]
+        })?;
 
-// -- Error constructors -----------------------------------------------------
-
-fn err(path: &str, pair: &Pair<Rule>, message: impl Into<String>) -> ParseError {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    ParseError { path: path.to_string(), line, col, message: message.into() }
-}
-
-fn err_at(path: &str, line: usize, col: usize, message: impl Into<String>) -> ParseError {
-    ParseError { path: path.to_string(), line, col, message: message.into() }
-}
-
-// -- Helpers ----------------------------------------------------------------
-
-fn token_at(content: &str, line: usize, col: usize) -> &str {
-    let line_str = content.lines().nth(line.saturating_sub(1)).unwrap_or("");
-    let start    = col.saturating_sub(1).min(line_str.len());
-    let rest     = &line_str[start..];
-    let end      = rest.find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').unwrap_or(rest.len());
-    &rest[..end]
-}
-
-// -- Public -----------------------------------------------------------------
-
-pub fn parse(req: ParseReq<'_>) -> ParseRes {
-    let mut spec   = Spec { services: vec![], rdbs: vec![], computes: vec![], groups: vec![], regions: vec![], envs: vec![], stacks: vec![], deploys: vec![] };
+    let mut items  = Vec::new();
     let mut errors = Vec::new();
 
-    for (path, content) in req {
-        match <GroundParser as pest::Parser<Rule>>::parse(Rule::file, content) {
-            Ok(pairs) => {
-                let (partial, errs) = parse_file(path, pairs);
-                merge_spec(&mut spec, partial);
-                errors.extend(errs);
-            }
-            Err(e) => {
-                let (line, col) = match e.line_col {
-                    pest::error::LineColLocation::Pos(lc)     => lc,
-                    pest::error::LineColLocation::Span(lc, _) => lc,
-                };
-                let token = token_at(content, line, col);
-                let msg = if token.is_empty() {
-                    "expected a top-level keyword: service, database, compute, group, region, env, stack, deploy".to_string()
-                } else {
-                    format!("unknown keyword '{token}' — expected one of: service, database, compute, group, region, env, stack, deploy")
-                };
-                errors.push(err_at(path, line, col, msg));
-            }
-        }
-    }
-
-    if errors.is_empty() { Ok(spec) } else { Err(errors) }
-}
-
-fn merge_spec(dst: &mut Spec, src: Spec) {
-    dst.services.extend(src.services);
-    dst.rdbs.extend(src.rdbs);
-    dst.computes.extend(src.computes);
-    dst.groups.extend(src.groups);
-    dst.regions.extend(src.regions);
-    dst.envs.extend(src.envs);
-    dst.stacks.extend(src.stacks);
-    dst.deploys.extend(src.deploys);
-}
-
-// -- File -------------------------------------------------------------------
-
-fn parse_file(path: &str, pairs: Pairs<Rule>) -> (Spec, Vec<ParseError>) {
-    let mut spec   = Spec { services: vec![], rdbs: vec![], computes: vec![], groups: vec![], regions: vec![], envs: vec![], stacks: vec![], deploys: vec![] };
-    let mut errors = Vec::new();
-
-    let file = match pairs.into_iter().next() {
-        Some(p) => p,
-        None    => return (spec, vec![err_at(path, 1, 1, "empty source")]),
-    };
-
-    for pair in file.into_inner() {
-        match pair.as_rule() {
-            Rule::service_def => match parse_service(path, pair) {
-                (Some(v), es) => { spec.services.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::rdb_def => match parse_rdb(path, pair) {
-                (Some(v), es) => { spec.rdbs.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::compute_def => match parse_compute(path, pair) {
-                (Some(v), es) => { spec.computes.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::group_def => match parse_group(path, pair) {
-                (Some(v), es) => { spec.groups.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::region_def => match parse_region(path, pair) {
-                (Some(v), es) => { spec.regions.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::env_def => match parse_env(path, pair) {
-                (Some(v), es) => { spec.envs.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::stack_def => match parse_stack(path, pair) {
-                (Some(v), es) => { spec.stacks.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::deploy_def => match parse_deploy(path, pair) {
-                (Some(v), es) => { spec.deploys.push(v); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            Rule::EOI => {}
-            r => errors.push(err_at(path, 1, 1, format!("unexpected rule: {r:?}"))),
-        }
-    }
-
-    (spec, errors)
-}
-
-// -- Service ----------------------------------------------------------------
-
-fn parse_service(path: &str, pair: Pair<Rule>) -> Parsed<Service> {
-    let (svc_line, svc_col) = pair.as_span().start_pos().line_col();
-    let mut inner = pair.into_inner();
-
-    let ident = match inner.next() {
-        Some(p) => p,
-        None    => return fail(err_at(path, svc_line, svc_col, "expected service name")),
-    };
-    let name = ident.as_str().to_string();
-
-    let mut image:   Option<String>  = None;
-    let mut scaling: Option<Scaling> = None;
-    let mut ports:   Vec<Port>       = Vec::new();
-    let mut access:  Vec<AccessEntry>= Vec::new();
-    let mut compute: Option<String>  = None;
-    let mut errors                   = Vec::new();
-
-    for field in inner {
-        let (fline, fcol) = field.as_span().start_pos().line_col();
-        match field.as_rule() {
-            Rule::service_field => {
-                let f = match field.into_inner().next() {
-                    Some(f) => f,
-                    None    => { errors.push(err_at(path, fline, fcol, "expected field content")); continue; }
-                };
-                match f.as_rule() {
-                    Rule::image_field => {
-                        if image.is_some() {
-                            errors.push(err(path, &f, format!("service '{name}': duplicate 'image' field")));
-                        }
-                        match parse_str_val(path, f) {
-                            Ok(v)  => image = Some(v),
-                            Err(e) => errors.push(e),
-                        }
-                    }
-                    Rule::scaling_field => {
-                        if scaling.is_some() {
-                            errors.push(err(path, &f, format!("service '{name}': duplicate 'scaling' field")));
-                        }
-                        let (s, es) = parse_scaling(path, f);
-                        errors.extend(es);
-                        scaling = s;
-                    }
-                    Rule::ports_field => {
-                        for entry in f.into_inner() {
-                            let mut ei = entry.into_inner();
-                            let pname  = ei.next().map(|p| p.as_str().to_string()).unwrap_or_default();
-                            let number = ei.next()
-                                .and_then(|p| p.as_str().parse::<u16>().ok())
-                                .unwrap_or(0);
-                            ports.push(Port { name: pname, number });
-                        }
-                    }
-                    Rule::service_compute_field => {
-                        if compute.is_some() {
-                            errors.push(err(path, &f, format!("service '{name}': duplicate 'compute' field")));
-                        }
-                        compute = f.into_inner().next().map(|p| p.as_str().to_string());
-                    }
-                    r => errors.push(err_at(path, fline, fcol, format!("unexpected field: {r:?}"))),
+    // The outer rule is `file`; iterate its inner pairs
+    for pair in pairs {
+        if pair.as_rule() == Rule::file {
+            for inner in pair.into_inner() {
+                match inner.as_rule() {
+                    Rule::type_decl    => match convert_type_decl(path, inner) {
+                        Ok(td)     => items.push(AstItem::TypeDecl(td)),
+                        Err(mut e) => errors.append(&mut e),
+                    },
+                    Rule::link_decl    => match convert_link_decl(path, inner) {
+                        Ok(ld)     => items.push(AstItem::LinkDecl(ld)),
+                        Err(mut e) => errors.append(&mut e),
+                    },
+                    Rule::instance_def => match convert_instance_def(path, inner) {
+                        Ok(inst)   => items.push(AstItem::Instance(inst)),
+                        Err(mut e) => errors.append(&mut e),
+                    },
+                    Rule::deploy_def   => match convert_deploy_def(path, inner) {
+                        Ok(dep)    => items.push(AstItem::Deploy(dep)),
+                        Err(mut e) => errors.append(&mut e),
+                    },
+                    Rule::EOI          => {}
+                    r => errors.push(ParseError {
+                        path: path.to_string(),
+                        line: 1,
+                        col:  1,
+                        message: format!("unexpected top-level rule: {:?}", r),
+                    }),
                 }
             }
-            Rule::access_block => {
-                for entry in field.into_inner() {
-                    let mut ei = entry.into_inner();
-                    let target = match ei.next() {
-                        Some(p) => p.as_str().to_string(),
-                        None    => continue,
-                    };
-                    let entry_ports = ei
-                        .filter_map(|p| p.into_inner().next().map(|id| id.as_str().to_string()))
-                        .collect();
-                    access.push(AccessEntry { target, ports: entry_ports });
-                }
-            }
-            r => errors.push(err_at(path, fline, fcol, format!("unexpected rule: {r:?}"))),
         }
     }
 
-    if image.is_none() {
-        errors.push(err_at(path, svc_line, svc_col,
-            format!("service '{name}': missing required field 'image'")));
+    if errors.is_empty() {
+        Ok(items)
+    } else {
+        Err(errors)
     }
-    if let Some(ref s) = scaling {
-        if s.min > s.max {
-            errors.push(err_at(path, svc_line, svc_col,
-                format!("service '{name}': scaling min ({}) > max ({})", s.min, s.max)));
-        }
-    }
-
-    finish(Service { name, image: image.unwrap_or_default(), scaling, ports, access, compute }, errors)
 }
 
-fn parse_scaling(path: &str, pair: Pair<Rule>) -> Parsed<Scaling> {
-    let scaling_pair = match pair.into_inner().next() {
+// ---------------------------------------------------------------------------
+// CST → AST converters
+// ---------------------------------------------------------------------------
+
+fn pair_pos(pair: &Pair<Rule>) -> (usize, usize) {
+    pair.as_span().start_pos().line_col()
+}
+
+fn convert_type_decl(path: &str, pair: Pair<Rule>) -> Result<AstTypeDecl, Vec<ParseError>> {
+    let (line, col) = pair_pos(&pair);
+    let mut inner   = pair.into_inner();
+
+    let name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected type name".into() }]),
+    };
+
+    let type_body_pair = match inner.next() {
         Some(p) => p,
-        None    => return fail(err_at(path, 1, 1, "expected scaling block")),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected type body".into() }]),
     };
 
-    let mut s      = Scaling { min: 1, max: 1 };
-    let mut errors = Vec::new();
+    let body = convert_type_body(path, type_body_pair)?;
+    Ok(AstTypeDecl { name, body, line, col })
+}
 
-    for entry in scaling_pair.into_inner() {
-        let mut ei = entry.into_inner();
-        let key_pair = match ei.next() {
-            Some(p) => p,
-            None    => { errors.push(err_at(path, 1, 1, "expected min/max key")); continue; }
-        };
-        let val_pair = match ei.next() {
-            Some(p) => p,
-            None    => { errors.push(err(path, &key_pair, "expected scaling value")); continue; }
-        };
-        match val_pair.as_str().parse::<u32>() {
-            Ok(val) => match key_pair.as_str() {
-                "min" => s.min = val,
-                "max" => s.max = val,
-                k     => errors.push(err(path, &key_pair, format!("expected min or max, got: {k}"))),
-            },
-            Err(_) => errors.push(err(path, &val_pair,
-                format!("invalid integer: {}", val_pair.as_str()))),
+fn convert_type_body(path: &str, pair: Pair<Rule>) -> Result<AstTypeBody, Vec<ParseError>> {
+    // pair is `type_body` which has one inner child: composite_body | enum_body | primitive_kind
+    let inner = match pair.into_inner().next() {
+        Some(p) => p,
+        None    => return Err(vec![ParseError { path: path.to_string(), line: 1, col: 1, message: "empty type body".into() }]),
+    };
+
+    match inner.as_rule() {
+        Rule::primitive_kind => Ok(AstTypeBody::Primitive(inner.as_str().to_string())),
+        Rule::enum_body      => {
+            let variants = inner.into_inner()
+                .filter(|p| p.as_rule() == Rule::enum_variant)
+                .map(|p| p.as_str().to_string())
+                .collect();
+            Ok(AstTypeBody::Enum(variants))
         }
+        Rule::composite_body => {
+            let members = convert_composite_body(path, inner)?;
+            Ok(AstTypeBody::Composite(members))
+        }
+        r => Err(vec![ParseError {
+            path: path.to_string(), line: 1, col: 1,
+            message: format!("unexpected type body rule: {:?}", r),
+        }]),
     }
-
-    finish(s, errors)
 }
 
-fn parse_str_val(path: &str, pair: Pair<Rule>) -> Result<String, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    pair.into_inner().next()
-        .map(|p| p.as_str().to_string())
-        .ok_or_else(|| err_at(path, line, col, "expected value"))
-}
+fn convert_composite_body(path: &str, pair: Pair<Rule>) -> Result<Vec<AstCompositeMember>, Vec<ParseError>> {
+    let mut members = Vec::new();
+    let mut errors  = Vec::new();
 
-// -- Rdb --------------------------------------------------------------------
-
-fn parse_rdb(path: &str, pair: Pair<Rule>) -> Parsed<Rdb> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let name = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected rdb name")),
-    };
-
-    let mut engine:  Option<RdbEngine> = None;
-    let mut version: Option<u32>       = None;
-    let mut size:    Option<RdbSize>   = None;
-    let mut storage: Option<u32>       = None;
-    let mut compute: Option<String>    = None;
-    let mut errors                     = Vec::new();
-
-    for field in inner {
-        let f = match field.into_inner().next() {
+    for member_pair in pair.into_inner() {
+        if member_pair.as_rule() != Rule::composite_member {
+            continue;
+        }
+        let (ml, mc) = pair_pos(&member_pair);
+        let inner = match member_pair.into_inner().next() {
             Some(p) => p,
             None    => continue,
         };
-        match f.as_rule() {
-            Rule::rdb_engine_field => {
-                let val = f.into_inner().next().map(|p| p.as_str()).unwrap_or("");
-                engine = Some(match val {
-                    "postgres" => RdbEngine::Postgres,
-                    "mysql"    => RdbEngine::Mysql,
-                    e          => { errors.push(err_at(path, line, col, format!("database '{name}': unknown engine '{e}'"))); continue; }
-                });
-            }
-            Rule::rdb_version_field => {
-                version = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok());
-            }
-            Rule::rdb_size_field => {
-                let val = f.into_inner().next().map(|p| p.as_str()).unwrap_or("");
-                size = Some(match val {
-                    "small"  => RdbSize::Small,
-                    "medium" => RdbSize::Medium,
-                    "large"  => RdbSize::Large,
-                    "xlarge" => RdbSize::Xlarge,
-                    s        => { errors.push(err_at(path, line, col, format!("database '{name}': unknown size '{s}'"))); continue; }
-                });
-            }
-            Rule::rdb_storage_field => {
-                storage = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok());
-            }
-            Rule::rdb_compute_field => {
-                compute = f.into_inner().next().map(|p| p.as_str().to_string());
-            }
-            r => errors.push(err_at(path, line, col, format!("unexpected database field: {r:?}"))),
-        }
-    }
-
-    if engine.is_none() {
-        errors.push(err_at(path, line, col, format!("database '{name}': missing required field 'engine'")));
-    }
-
-    finish(Rdb { name, engine: engine.unwrap_or(RdbEngine::Postgres), version, size, storage, compute }, errors)
-}
-
-// -- Compute ----------------------------------------------------------------
-
-fn parse_compute(path: &str, pair: Pair<Rule>) -> Parsed<Compute> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let name = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected compute name")),
-    };
-
-    let mut cpu:    Option<u32>    = None;
-    let mut memory: Option<u32>    = None;
-    let mut aws:    Option<String> = None;
-    let mut errors                 = Vec::new();
-
-    for field in inner {
-        let f = match field.into_inner().next() {
-            Some(p) => p,
-            None    => continue,
-        };
-        match f.as_rule() {
-            Rule::compute_cpu_field    => cpu    = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok()),
-            Rule::compute_memory_field => memory = f.into_inner().next().and_then(|p| p.as_str().parse::<u32>().ok()),
-            Rule::compute_aws_field    => aws    = f.into_inner().next().map(|p| p.as_str().to_string()),
-            r => errors.push(err_at(path, line, col, format!("unexpected compute field: {r:?}"))),
-        }
-    }
-
-    finish(Compute { name, cpu, memory, aws }, errors)
-}
-
-// -- Group ------------------------------------------------------------------
-
-fn parse_group(path: &str, pair: Pair<Rule>) -> Parsed<Group> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let name = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected group name")),
-    };
-
-    let members = inner.map(|p| p.as_str().to_string()).collect();
-
-    finish(Group { name, members }, vec![])
-}
-
-// -- Region -----------------------------------------------------------------
-
-fn parse_region(path: &str, pair: Pair<Rule>) -> Parsed<Region> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let name = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected region name")),
-    };
-
-    let mut aws    = None;
-    let mut zones  = Vec::new();
-    let mut errors = Vec::new();
-
-    for p in inner {
-        match p.as_rule() {
-            Rule::value    => aws = Some(p.as_str().to_string()),
-            Rule::zone_def => match parse_zone(path, p) {
-                (Some(z), es) => { zones.push(z); errors.extend(es); }
-                (None,    es) => errors.extend(es),
-            },
-            _ => {}
-        }
-    }
-
-    if aws.is_none() {
-        errors.push(err_at(path, line, col, format!("region '{name}': missing 'aws' field")));
-    }
-
-    finish(Region { name, aws: aws.unwrap_or_default(), zones }, errors)
-}
-
-fn parse_zone(path: &str, pair: Pair<Rule>) -> Parsed<Zone> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let id = match inner.next() {
-        Some(p) => match p.as_str().parse::<u32>() {
-            Ok(v)  => v,
-            Err(_) => return fail(err_at(path, line, col, "expected zone id")),
-        },
-        None => return fail(err_at(path, line, col, "expected zone id")),
-    };
-
-    let aws = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, format!("zone {id}: missing 'aws' value"))),
-    };
-
-    finish(Zone { id, aws }, vec![])
-}
-
-// -- Env --------------------------------------------------------------------
-
-fn parse_env(path: &str, pair: Pair<Rule>) -> Parsed<Env> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let name = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected env name")),
-    };
-
-    let mut vars   = Vec::new();
-    let mut errors = Vec::new();
-
-    for entry in inner {
-        let mut ei = entry.into_inner();
-        let k = match ei.next() {
-            Some(p) => p.as_str().to_string(),
-            None    => { errors.push(err_at(path, line, col, "expected env key")); continue; }
-        };
-        let v = match ei.next() {
-            Some(p) => p.as_str().to_string(),
-            None    => { errors.push(err_at(path, line, col, format!("env '{name}': missing value for '{k}'"))); continue; }
-        };
-        vars.push((k, v));
-    }
-
-    finish(Env { name, vars }, errors)
-}
-
-// -- Stack ------------------------------------------------------------------
-
-fn parse_stack(path: &str, pair: Pair<Rule>) -> Parsed<Stack> {
-    let (line, col) = pair.as_span().start_pos().line_col();
-    let mut inner   = pair.into_inner();
-
-    let name = match inner.next() {
-        Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected stack name")),
-    };
-
-    let mut env    = None;
-    let mut region = None;
-    let mut zones  = None;
-    let mut group  = None;
-    let mut errors = Vec::new();
-
-    for field in inner {
-        let f = match field.into_inner().next() {
-            Some(p) => p,
-            None    => continue,
-        };
-        match f.as_rule() {
-            Rule::stack_env_field    => env    = f.into_inner().next().map(|p| p.as_str().to_string()),
-            Rule::stack_region_field => region = f.into_inner().next().map(|p| p.as_str().to_string()),
-            Rule::stack_group_field  => group  = f.into_inner().next().map(|p| p.as_str().to_string()),
-            Rule::stack_zone_field   => {
-                let ids = f.into_inner().next()
-                    .map(|list| list.into_inner()
-                        .filter_map(|p| p.as_str().parse::<u32>().ok())
-                        .collect::<Vec<_>>())
+        match inner.as_rule() {
+            Rule::composite_bare => {
+                let link_name = inner.into_inner().next()
+                    .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
-                zones = Some(ids);
+                members.push(AstCompositeMember::Bare { link_name, line: ml, col: mc });
             }
-            r => errors.push(err_at(path, line, col, format!("unexpected stack field: {r:?}"))),
+            Rule::composite_inline => {
+                let mut ci = inner.into_inner();
+                let link_name = ci.next().map(|p| p.as_str().to_string()).unwrap_or_default();
+                let type_expr = ci.next().map(|p| convert_link_type_raw(p)).unwrap_or_default();
+                members.push(AstCompositeMember::Inline { link_name, type_expr, line: ml, col: mc });
+            }
+            Rule::composite_default => {
+                let mut cd = inner.into_inner();
+                let link_name = cd.next().map(|p| p.as_str().to_string()).unwrap_or_default();
+                let def_val_pair = cd.next();
+                let default = if let Some(dvp) = def_val_pair {
+                    convert_composite_default_val(path, dvp)?
+                } else {
+                    AstDefaultVal::Single(String::new())
+                };
+                members.push(AstCompositeMember::Default { link_name, default, line: ml, col: mc });
+            }
+            r => errors.push(ParseError {
+                path: path.to_string(), line: ml, col: mc,
+                message: format!("unexpected composite member rule: {:?}", r),
+            }),
         }
     }
 
-    for field in [("env", env.is_none()), ("region", region.is_none()), ("zone", zones.is_none()), ("group", group.is_none())] {
-        if field.1 {
-            errors.push(err_at(path, line, col, format!("stack '{name}': missing required field '{}'", field.0)));
-        }
-    }
-
-    finish(Stack {
-        name,
-        env:    env.unwrap_or_default(),
-        region: region.unwrap_or_default(),
-        zones:  zones.unwrap_or_default(),
-        group:  group.unwrap_or_default(),
-    }, errors)
+    if errors.is_empty() { Ok(members) } else { Err(errors) }
 }
 
-// -- Deploy -----------------------------------------------------------------
+fn convert_composite_default_val(path: &str, pair: Pair<Rule>) -> Result<AstDefaultVal, Vec<ParseError>> {
+    // pair is composite_default_val which has: comp_def_block | value_token
+    let inner = match pair.into_inner().next() {
+        Some(p) => p,
+        None    => return Ok(AstDefaultVal::Single(String::new())),
+    };
+    match inner.as_rule() {
+        Rule::comp_def_block => {
+            let entries = inner.into_inner()
+                .filter(|p| p.as_rule() == Rule::comp_def_entry)
+                .map(|entry| {
+                    let mut ei = entry.into_inner();
+                    let k = ei.next().map(|p| p.as_str().to_string()).unwrap_or_default();
+                    let v = ei.next().map(|p| p.as_str().to_string()).unwrap_or_default();
+                    (k, v)
+                })
+                .collect();
+            Ok(AstDefaultVal::Block(entries))
+        }
+        Rule::value_token => Ok(AstDefaultVal::Single(inner.as_str().to_string())),
+        r => Err(vec![ParseError {
+            path: path.to_string(), line: 1, col: 1,
+            message: format!("unexpected default val rule: {:?}", r),
+        }]),
+    }
+}
 
-fn parse_deploy(path: &str, pair: Pair<Rule>) -> Parsed<Deploy> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+fn convert_link_type_raw(pair: Pair<Rule>) -> String {
+    // pair is link_type_raw
+    // It's either "[" ~ link_list_inner ~ "]" or link_shape
+    let raw = pair.as_str().trim().to_string();
+    raw
+}
+
+fn convert_link_decl(path: &str, pair: Pair<Rule>) -> Result<AstLinkDecl, Vec<ParseError>> {
+    let (line, col) = pair_pos(&pair);
     let mut inner   = pair.into_inner();
 
-    let provider_str = match inner.next() {
+    let name = match inner.next() {
         Some(p) => p.as_str().to_string(),
-        None    => return fail(err_at(path, line, col, "expected provider name after 'to'")),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected link name".into() }]),
     };
 
-    let provider = match provider_str.as_str() {
-        "aws" => Provider::Aws,
-        p     => return fail(err_at(path, line, col, format!("unknown provider '{p}'"))),
+    let type_raw = match inner.next() {
+        Some(p) => convert_link_type_raw(p),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected link type".into() }]),
     };
 
-    let mut stacks        = Vec::new();
-    let mut override_json = None;
+    Ok(AstLinkDecl { name, type_expr: type_raw, line, col })
+}
 
-    for p in inner {
-        match p.as_rule() {
-            Rule::stack_list    => stacks.extend(p.into_inner().map(|p| p.as_str().to_string())),
-            Rule::override_block => override_json = p.into_inner().next().map(|p| p.as_str().to_string()),
-            _                   => {}
+fn convert_instance_def(path: &str, pair: Pair<Rule>) -> Result<AstInstance, Vec<ParseError>> {
+    let (line, col) = pair_pos(&pair);
+    let mut inner   = pair.into_inner();
+
+    let type_name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected type name".into() }]),
+    };
+    let name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected instance name".into() }]),
+    };
+
+    let mut fields = Vec::new();
+    let mut errors = Vec::new();
+    for field_pair in inner {
+        if field_pair.as_rule() == Rule::field_entry {
+            match convert_field_entry(path, field_pair) {
+                Ok(f)      => fields.push(f),
+                Err(mut e) => errors.append(&mut e),
+            }
         }
     }
 
-    if stacks.is_empty() {
-        return fail(err_at(path, line, col, "deploy: stacks list must not be empty"));
+    if errors.is_empty() {
+        Ok(AstInstance { type_name, name, fields, line, col })
+    } else {
+        Err(errors)
+    }
+}
+
+fn convert_deploy_def(path: &str, pair: Pair<Rule>) -> Result<AstDeploy, Vec<ParseError>> {
+    let (line, col) = pair_pos(&pair);
+    let mut inner   = pair.into_inner();
+
+    // deploy NAME to PROVIDER as ALIAS { ... }
+    let name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected deploy name".into() }]),
+    };
+    let provider = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected provider".into() }]),
+    };
+    let alias = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected alias".into() }]),
+    };
+
+    let mut fields = Vec::new();
+    let mut errors = Vec::new();
+    for field_pair in inner {
+        if field_pair.as_rule() == Rule::field_entry {
+            match convert_field_entry(path, field_pair) {
+                Ok(f)      => fields.push(f),
+                Err(mut e) => errors.append(&mut e),
+            }
+        }
     }
 
-    finish(Deploy { provider, stacks, override_json }, vec![])
+    if errors.is_empty() {
+        Ok(AstDeploy { name, provider, alias, fields, line, col })
+    } else {
+        Err(errors)
+    }
+}
+
+fn convert_field_entry(path: &str, pair: Pair<Rule>) -> Result<AstField, Vec<ParseError>> {
+    let (line, col) = pair_pos(&pair);
+    let mut inner   = pair.into_inner();
+
+    let link_name = match inner.next() {
+        Some(p) => p.as_str().to_string(),
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "expected field name".into() }]),
+    };
+
+    let val_pair = match inner.next() {
+        Some(p) => p,
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: format!("expected value for field '{}'", link_name) }]),
+    };
+
+    // val_pair is field_value which has one child: block_value | list_value | single_value
+    let val_inner = match val_pair.into_inner().next() {
+        Some(p) => p,
+        None    => return Err(vec![ParseError { path: path.to_string(), line, col, message: "empty field value".into() }]),
+    };
+
+    let value = match val_inner.as_rule() {
+        Rule::single_value => {
+            let tok = val_inner.as_str().trim().to_string();
+            AstFieldValue::Single(tok)
+        }
+        Rule::list_value => {
+            let entries = val_inner.into_inner()
+                .filter(|p| p.as_rule() == Rule::list_entry)
+                .map(|p| p.as_str().to_string())
+                .collect();
+            AstFieldValue::List(entries)
+        }
+        Rule::block_value => {
+            let mut sub_fields = Vec::new();
+            let mut errors     = Vec::new();
+            for sub_pair in val_inner.into_inner() {
+                if sub_pair.as_rule() == Rule::field_entry {
+                    match convert_field_entry(path, sub_pair) {
+                        Ok(f)      => sub_fields.push(f),
+                        Err(mut e) => errors.append(&mut e),
+                    }
+                }
+            }
+            if !errors.is_empty() {
+                return Err(errors);
+            }
+            AstFieldValue::Block(sub_fields)
+        }
+        r => return Err(vec![ParseError {
+            path: path.to_string(), line, col,
+            message: format!("unexpected field value rule: {:?}", r),
+        }]),
+    };
+
+    Ok(AstField { link_name, value, line, col })
 }

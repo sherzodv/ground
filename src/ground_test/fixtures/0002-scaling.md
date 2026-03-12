@@ -1,30 +1,13 @@
 # service with autoscaling
 
 ```ground
-service svc-api { image: svc-api:prod scaling: { min: 2, max: 10 } }
-
-group backend {
-  svc-api
+service svc-api {
+  image: svc-api:prod
+  scaling: { min: 2  max: 10 }
 }
 
-region us-east {
-  aws:  us-east-1
-  zone 1 { aws: us-east-1a }
-}
-
-env prod {
-  LOG_LEVEL: info
-}
-
-stack prod {
-  env:    prod
-  region: us-east
-  zone:   [1]
-  group:  backend
-}
-
-deploy to aws {
-  stacks: [prod]
+deploy prod to aws as prod {
+  region: us-east:1
 }
 ```
 
@@ -53,9 +36,6 @@ deploy to aws {
     },
     "aws_appautoscaling_target": {
       "svc_api": {
-        "depends_on": [
-          "${aws_ecs_service.svc_api}"
-        ],
         "max_capacity": 10,
         "min_capacity": 2,
         "resource_id": "service/${aws_ecs_cluster.ground_prod.name}/svc-api",
@@ -98,7 +78,7 @@ deploy to aws {
     },
     "aws_ecs_task_definition": {
       "svc_api": {
-        "container_definitions": "[{\"environment\":[{\"name\":\"LOG_LEVEL\",\"value\":\"info\"}],\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}},\"name\":\"svc-api\"}]",
+        "container_definitions": "[{\"name\":\"svc-api\",\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
         "cpu": "256",
         "execution_role_arn": "${aws_iam_role.svc_api_exec.arn}",
         "family": "svc-api",
@@ -238,45 +218,3 @@ deploy to aws {
   }
 }
 ```
-
-## Explain
-
-Adding `scaling: { min: 2, max: 10 }` generates two additional resources on top
-of the six from a minimal service. Everything else is identical.
-
-**Application Auto Scaling target — registering what can scale**
-
-`aws_appautoscaling_target` tells AWS's general-purpose autoscaling system that
-this ECS service is a thing it is allowed to adjust. The key fields:
-
-- `scalable_dimension: ecs:service:DesiredCount` — the knob being turned is the
-  number of running container copies
-- `min_capacity: 2` / `max_capacity: 10` — hard bounds; autoscaling will never
-  go below 2 or above 10 regardless of load
-- `depends_on` the ECS service — the service must exist before it can be
-  registered
-
-Note that `desired_count: 1` in the ECS service is just the initial value at
-Terraform apply time. Autoscaling overrides it at runtime and takes ownership
-from there. Because `min` is 2, AWS will immediately correct to 2 when
-autoscaling first runs.
-
-**Application Auto Scaling policy — the scaling rule**
-
-`aws_appautoscaling_policy` defines when and how to move the desired count. This
-uses *target tracking*: you name a metric and a target value, and AWS
-continuously adjusts the count to keep the metric near that target — similar to
-a thermostat.
-
-- metric: `ECSServiceAverageCPUUtilization` — average CPU across all running
-  containers for this service, measured as a percentage
-- target: `70.0` — AWS tries to keep average CPU at 70 %
-
-When CPU rises above 70 % and stays there, AWS adds containers (scale out).
-When it drops well below, AWS removes containers (scale in) — with a built-in
-cooldown to avoid thrashing. AWS calculates how many containers to add or remove
-automatically; you only specify the target.
-
-An additional variable is required beyond the minimal set: `var.ecs_cluster_name`
-(the cluster name as a string, used to build the resource ID for the autoscaling
-target).

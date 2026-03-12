@@ -3,8 +3,12 @@ name = "ground"
 version = "0.0.0"
 edition = "2021"
 
+[[bin]]
+name = "ground"
+path = "src/main.rs"
+
 [dependencies]
-ground_parse    = { path = "../ground_parse" }
 ground_core     = { path = "../ground_core" }
-ground_run      = { path = "../ground_run" }
+ground_compile  = { path = "../ground_compile" }
 ground_be_terra = { path = "../ground_be_terra" }
+ground_run      = { path = "../ground_run" }

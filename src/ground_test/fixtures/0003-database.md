@@ -1,45 +1,19 @@
-# 0003 — database
+# database
 
 ```ground
-compute db-small {
-  aws: db.t3.micro
-}
-
 database db-main {
   engine:  postgres
-  version: 15
-  compute: db-small
+  size:    medium
+  storage: 20
 }
 
 service svc-api {
   image:  svc-api:prod
-  access { db-main }
+  access: db-main
 }
 
-group backend {
-  svc-api
-  db-main
-}
-
-region us-east {
-  aws:  us-east-1
-  zone 1 { aws: us-east-1a }
-  zone 2 { aws: us-east-1b }
-}
-
-env prod {
-  LOG_LEVEL: info
-}
-
-stack prod {
-  env:    prod
-  region: us-east
-  zone:   [1, 2]
-  group:  backend
-}
-
-deploy to aws {
-  stacks: [prod]
+deploy prod to aws as prod {
+  region: [ us-east:1  us-east:2 ]
 }
 ```
 
@@ -51,6 +25,30 @@ deploy to aws {
     }
   },
   "resource": {
+    "aws_appautoscaling_policy": {
+      "svc_api_scale": {
+        "name": "svc-api-scale",
+        "policy_type": "TargetTrackingScaling",
+        "resource_id": "${aws_appautoscaling_target.svc_api.resource_id}",
+        "scalable_dimension": "${aws_appautoscaling_target.svc_api.scalable_dimension}",
+        "service_namespace": "${aws_appautoscaling_target.svc_api.service_namespace}",
+        "target_tracking_scaling_policy_configuration": {
+          "predefined_metric_specification": {
+            "predefined_metric_type": "ECSServiceAverageCPUUtilization"
+          },
+          "target_value": 70.0
+        }
+      }
+    },
+    "aws_appautoscaling_target": {
+      "svc_api": {
+        "max_capacity": 1,
+        "min_capacity": 1,
+        "resource_id": "service/${aws_ecs_cluster.ground_prod.name}/svc-api",
+        "scalable_dimension": "ecs:service:DesiredCount",
+        "service_namespace": "ecs"
+      }
+    },
     "aws_cloudwatch_log_group": {
       "_ground_svc_api": {
         "name": "/ground/svc-api",
@@ -60,23 +58,22 @@ deploy to aws {
     "aws_db_instance": {
       "db_main": {
         "allocated_storage": 20,
-        "db_name": "db_main",
-        "db_subnet_group_name": "${aws_db_subnet_group.ground_prod_db_main.name}",
+        "db_subnet_group_name": "${aws_db_subnet_group.db_main.name}",
         "engine": "postgres",
         "engine_version": "15",
         "identifier": "db-main",
-        "instance_class": "db.t3.micro",
+        "instance_class": "db.t3.medium",
         "multi_az": true,
         "password": "${random_password.db_main.result}",
         "skip_final_snapshot": true,
-        "username": "ground",
+        "username": "admin",
         "vpc_security_group_ids": [
           "${aws_security_group.db_main_db.id}"
         ]
       }
     },
     "aws_db_subnet_group": {
-      "ground_prod_db_main": {
+      "db_main": {
         "name": "ground-prod-db-main",
         "subnet_ids": [
           "${aws_subnet.prod_priv_1.id}",
@@ -114,7 +111,7 @@ deploy to aws {
     },
     "aws_ecs_task_definition": {
       "svc_api": {
-        "container_definitions": "[{\"environment\":[{\"name\":\"LOG_LEVEL\",\"value\":\"info\"},{\"name\":\"DB_MAIN_HOST\",\"value\":\"${aws_db_instance.db_main.address}\"},{\"name\":\"DB_MAIN_PORT\",\"value\":\"5432\"},{\"name\":\"DB_MAIN_NAME\",\"value\":\"db_main\"},{\"name\":\"DB_MAIN_USER\",\"value\":\"ground\"},{\"name\":\"DB_MAIN_PASSWORD\",\"value\":\"${random_password.db_main.result}\"}],\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}},\"name\":\"svc-api\"}]",
+        "container_definitions": "[{\"name\":\"svc-api\",\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
         "cpu": "256",
         "execution_role_arn": "${aws_iam_role.svc_api_exec.arn}",
         "family": "svc-api",

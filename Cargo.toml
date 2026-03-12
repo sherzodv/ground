@@ -4,6 +4,8 @@ members = [
   "src/ground",
   "src/ground_parse",
   "src/ground_core",
+  "src/ground_compile",
+  "src/ground_gen",
   "src/ground_run",
   "src/ground_be_terra",
   "src/ground_test",
