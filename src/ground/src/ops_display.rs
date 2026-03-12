@@ -13,7 +13,7 @@ pub struct DisplayEvent {
     pub detail:  Option<String>,
 }
 
-pub enum Op { Init, Plan }
+pub enum Op { Init, Plan, Apply }
 
 pub struct TerraEnricher {
     pub stack:          String,
@@ -34,8 +34,9 @@ impl TerraEnricher {
         match event {
             RunEvent::Spawned => {
                 let (op_label, cmd) = match self.op {
-                    Op::Init => ("init", "terraform init"),
-                    Op::Plan => ("plan", "terraform plan"),
+                    Op::Init  => ("init",  "terraform init"),
+                    Op::Plan  => ("plan",  "terraform plan"),
+                    Op::Apply => ("apply", "terraform apply"),
                 };
                 let mut v = vec![];
                 if matches!(self.op, Op::Plan) {

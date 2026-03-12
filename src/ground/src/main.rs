@@ -21,11 +21,13 @@ fn main() {
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
         [cmd, sub] if cmd == "gen" && sub == "terra"           => cmd_gen_terra(),
         [cmd] if cmd == "plan"                                 => cmd_plan(),
+        [cmd] if cmd == "apply"                                => cmd_apply(),
         _ => {
             eprintln!("usage:");
             eprintln!("  ground init [--git-ignore]");
             eprintln!("  ground gen terra");
             eprintln!("  ground plan");
+            eprintln!("  ground apply");
             process::exit(1);
         }
     }
@@ -252,6 +254,33 @@ fn display_plan_summary(
     let (cr, up, de) = (summary.creates(), summary.updates(), summary.destroys());
     println!("{GREEN}create {cr}{RESET}  {YELLOW}modify {up}{RESET}  {RED}delete {de}{RESET}");
     println!();
+}
+
+fn cmd_apply() {
+    use ground_be_terra::terra_ops;
+
+    let (_spec, json, stack_name) = parse_and_gen();
+    let provider = "aws".to_string();
+
+    write_stack(&stack_name, &json);
+
+    let dir = Path::new(".ground/terra").join(&stack_name);
+
+    let rx = terra_ops::init(&dir)
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new());
+    if !run_events(rx, &mut enricher) {
+        eprintln!("error: terraform init failed");
+        process::exit(1);
+    }
+
+    let rx = terra_ops::apply(&dir)
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Apply, provider.clone(), String::new());
+    if !run_events(rx, &mut enricher) {
+        eprintln!("error: terraform apply failed");
+        process::exit(1);
+    }
 }
 
 fn cmd_plan() {

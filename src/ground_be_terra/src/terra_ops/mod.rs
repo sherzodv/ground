@@ -141,17 +141,8 @@ pub fn apply(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
     )?;
 
     Ok(map_events(raw, |ev| match ev {
-        TfEvent::ResourceApplying { address, action } =>
-            Some(OpsEvent::ResourceApplying { address, action }),
-        TfEvent::ResourceDone { address, action, elapsed_secs } =>
-            Some(OpsEvent::ResourceDone { address, action, elapsed_secs }),
-        TfEvent::ResourceErrored { address, message } =>
-            Some(OpsEvent::ResourceFailed { address, reason: message }),
-        TfEvent::ChangeSummary =>
-            Some(OpsEvent::ApplyDone),
-        TfEvent::Diagnostic { summary, detail, address, .. } =>
-            Some(OpsEvent::Warning { message: summary, detail, address }),
-        _ => None,
+        TfEvent::ChangeSummary => Some(OpsEvent::ApplyDone),
+        ev => tf_to_ops(ev),
     }))
 }
 

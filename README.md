@@ -33,6 +33,7 @@ See [`syntax.md`](syntax.md) for the full DSL reference.
 ground init [--git-ignore]   create .ground/ + settings.json; patch .gitignore
 ground gen terra             write .ground/terra/<deploy>/main.tf.json
 ground plan                  plan changes per Ground entity (no apply)
+ground apply                 apply changes
 ```
 
 ---
