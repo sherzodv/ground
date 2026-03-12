@@ -25,7 +25,10 @@
   "resource": {
     "aws_ecs_cluster": {
       "ground_{{ alias_u }}": {
-        "name": "ground-{{ deploy.alias }}"
+        "name": "ground-{{ deploy.alias }}",
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_vpc": {
@@ -34,7 +37,8 @@
         "enable_dns_hostnames": true,
         "enable_dns_support": true,
         "tags": {
-          "Name": "ground-{{ deploy.alias }}"
+          "Name": "ground-{{ deploy.alias }}",
+          "ground-managed": "true"
         }
       }
     },
@@ -42,13 +46,17 @@
       "ground_{{ alias_u }}": {
         "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
         "tags": {
-          "Name": "ground-{{ deploy.alias }}"
+          "Name": "ground-{{ deploy.alias }}",
+          "ground-managed": "true"
         }
       }
     },
     "aws_eip": {
       "ground_{{ alias_u }}_eip": {
-        "domain": "vpc"
+        "domain": "vpc",
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_nat_gateway": {
@@ -56,7 +64,8 @@
         "allocation_id": "${aws_eip.ground_{{ alias_u }}_eip.id}",
         "subnet_id": "${aws_subnet.{{ deploy.alias }}_pub_1.id}",
         "tags": {
-          "Name": "ground-{{ deploy.alias }}"
+          "Name": "ground-{{ deploy.alias }}",
+          "ground-managed": "true"
         }
       }
     },
@@ -87,7 +96,8 @@
         "availability_zone": "{{ az }}",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "{{ deploy.alias }}-pub-{{ loop_idx1 }}"
+          "Name": "{{ deploy.alias }}-pub-{{ loop_idx1 }}",
+          "ground-managed": "true"
         }
       },
       "{{ deploy.alias }}_priv_{{ loop_idx1 }}": {
@@ -96,7 +106,8 @@
         "availability_zone": "{{ az }}",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "{{ deploy.alias }}-priv-{{ loop_idx1 }}"
+          "Name": "{{ deploy.alias }}-priv-{{ loop_idx1 }}",
+          "ground-managed": "true"
         }
       }{% if not loop.last %},{% endif %}
       {% endfor %}
@@ -107,13 +118,15 @@
       "rt_{{ deploy.alias }}_pub_{{ loop_idx1 }}": {
         "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
         "tags": {
-          "Name": "rt-{{ deploy.alias }}-pub-{{ loop_idx1 }}"
+          "Name": "rt-{{ deploy.alias }}-pub-{{ loop_idx1 }}",
+          "ground-managed": "true"
         }
       },
       "rt_{{ deploy.alias }}_priv_{{ loop_idx1 }}": {
         "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
         "tags": {
-          "Name": "rt-{{ deploy.alias }}-priv-{{ loop_idx1 }}"
+          "Name": "rt-{{ deploy.alias }}-priv-{{ loop_idx1 }}",
+          "ground-managed": "true"
         }
       }{% if not loop.last %},{% endif %}
       {% endfor %}

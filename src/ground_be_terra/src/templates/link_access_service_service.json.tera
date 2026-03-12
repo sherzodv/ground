@@ -9,7 +9,10 @@
         "referenced_security_group_id": "${aws_security_group.{{ src_u }}.id}",
         "ip_protocol": "tcp",
         "from_port": 0,
-        "to_port": 65535
+        "to_port": 65535,
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     }
   }

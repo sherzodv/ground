@@ -243,7 +243,7 @@ fn display_plan_summary(
             println!("{color}{verb}{RESET} {BOLD}{entity}{RESET}");
             for c in changes {
                 let (glyph, gcolor) = action_glyph(&c.action);
-                println!("  {gcolor}{glyph}{RESET} {DIM}{}{RESET}", c.resource_type);
+                println!("  {gcolor}{glyph}{RESET} {DIM}{}:{}{RESET}", c.resource_type, c.resource_name);
             }
             println!();
         }

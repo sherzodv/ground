@@ -6,17 +6,26 @@
     "aws_cloudwatch_log_group": {
       "_ground_{{ svc_u }}": {
         "name": "/ground/{{ instance.name }}",
-        "retention_in_days": 7
+        "retention_in_days": 7,
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_iam_role": {
       "{{ svc_u }}_task": {
         "name": "{{ instance.name }}-task",
-        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}"
+        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+        "tags": {
+          "ground-managed": "true"
+        }
       },
       "{{ svc_u }}_exec": {
         "name": "{{ instance.name }}-exec",
-        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}"
+        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_iam_role_policy_attachment": {
@@ -28,14 +37,20 @@
     "aws_security_group": {
       "{{ svc_u }}": {
         "name": "{{ instance.name }}",
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}"
+        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_vpc_security_group_egress_rule": {
       "{{ svc_u }}_all": {
         "security_group_id": "${aws_security_group.{{ svc_u }}.id}",
         "cidr_ipv4": "0.0.0.0/0",
-        "ip_protocol": "-1"
+        "ip_protocol": "-1",
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_ecs_task_definition": {
@@ -47,7 +62,10 @@
         "memory": "512",
         "execution_role_arn": "${aws_iam_role.{{ svc_u }}_exec.arn}",
         "task_role_arn": "${aws_iam_role.{{ svc_u }}_task.arn}",
-        "container_definitions": "[{\"name\":\"{{ instance.name }}\",\"image\":\"{{ image }}\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/{{ instance.name }}\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]"
+        "container_definitions": "[{\"name\":\"{{ instance.name }}\",\"image\":\"{{ image }}\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/{{ instance.name }}\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
+        "tags": {
+          "ground-managed": "true"
+        }
       }
     },
     "aws_ecs_service": {
@@ -70,6 +88,9 @@
           "security_groups": [
             "${aws_security_group.{{ svc_u }}.id}"
           ]
+        },
+        "tags": {
+          "ground-managed": "true"
         }
       }
     }{% if instance.scaling is defined and instance.scaling is object %},
