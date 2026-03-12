@@ -1,5 +1,6 @@
 {%- set db_u    = instance.name | replace(from="-", to="_") -%}
 {%- set alias_u = deploy.alias  | replace(from="-", to="_") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
 {%- set engine_str = instance.engine | default(value="postgres") -%}
 {%- if engine_str == "postgres" -%}{%- set aws_engine = "postgres" -%}
 {%- elif engine_str == "mysql" -%}{%- set aws_engine = "mysql" -%}
@@ -43,9 +44,9 @@
     },
     "aws_db_subnet_group": {
       "{{ db_u }}": {
-        "name": "ground-{{ deploy.alias }}-{{ instance.name }}",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-ng",
         "subnet_ids": [
-          {% for zone_entry in deploy.region %}"${aws_subnet.{{ deploy.alias }}_priv_{{ loop.index }}.id}"{% if not loop.last %},{% endif %}
+          {% for zone_entry in deploy.region %}"${aws_subnet.{{ deploy.alias }}_priv_{{ zone_entry[1] }}.id}"{% if not loop.last %},{% endif %}
           {% endfor %}
         ],
         "tags": {
@@ -55,7 +56,7 @@
     },
     "aws_security_group": {
       "{{ db_u }}_db": {
-        "name": "{{ instance.name }}-db",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-sgd",
         "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
         "tags": {
           "ground-managed": "true"
@@ -74,7 +75,7 @@
     },
     "aws_db_instance": {
       "{{ db_u }}": {
-        "identifier": "{{ instance.name }}",
+        "identifier": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-db",
         "engine": "{{ aws_engine }}",
         "engine_version": "{{ db_version }}",
         "instance_class": "{{ instance_class }}",

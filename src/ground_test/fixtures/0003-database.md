@@ -27,7 +27,7 @@ deploy prod to aws as prod {
   "resource": {
     "aws_appautoscaling_policy": {
       "svc_api_scale": {
-        "name": "svc-api-scale",
+        "name": "prod-svc-api-scl",
         "policy_type": "TargetTrackingScaling",
         "resource_id": "${aws_appautoscaling_target.svc_api.resource_id}",
         "scalable_dimension": "${aws_appautoscaling_target.svc_api.scalable_dimension}",
@@ -44,14 +44,14 @@ deploy prod to aws as prod {
       "svc_api": {
         "max_capacity": 1,
         "min_capacity": 1,
-        "resource_id": "service/${aws_ecs_cluster.ground_prod.name}/svc-api",
+        "resource_id": "service/${aws_ecs_cluster.ground_prod.name}/prod-svc-api-svc",
         "scalable_dimension": "ecs:service:DesiredCount",
         "service_namespace": "ecs"
       }
     },
     "aws_cloudwatch_log_group": {
       "_ground_svc_api": {
-        "name": "/ground/svc-api",
+        "name": "/prod/svc-api-log",
         "retention_in_days": 7,
         "tags": {
           "ground-managed": "true"
@@ -64,7 +64,7 @@ deploy prod to aws as prod {
         "db_subnet_group_name": "${aws_db_subnet_group.db_main.name}",
         "engine": "postgres",
         "engine_version": "15",
-        "identifier": "db-main",
+        "identifier": "prod-db-main-db",
         "instance_class": "db.t3.medium",
         "multi_az": true,
         "password": "${random_password.db_main.result}",
@@ -80,7 +80,7 @@ deploy prod to aws as prod {
     },
     "aws_db_subnet_group": {
       "db_main": {
-        "name": "ground-prod-db-main",
+        "name": "prod-db-main-ng",
         "subnet_ids": [
           "${aws_subnet.prod_priv_1.id}",
           "${aws_subnet.prod_priv_2.id}"
@@ -92,7 +92,7 @@ deploy prod to aws as prod {
     },
     "aws_ecs_cluster": {
       "ground_prod": {
-        "name": "ground-prod",
+        "name": "prod-ecs",
         "tags": {
           "ground-managed": "true"
         }
@@ -108,7 +108,7 @@ deploy prod to aws as prod {
         ],
         "cluster": "${aws_ecs_cluster.ground_prod.id}",
         "desired_count": 1,
-        "name": "svc-api",
+        "name": "prod-svc-api-svc",
         "network_configuration": {
           "security_groups": [
             "${aws_security_group.svc_api.id}"
@@ -126,10 +126,10 @@ deploy prod to aws as prod {
     },
     "aws_ecs_task_definition": {
       "svc_api": {
-        "container_definitions": "[{\"name\":\"svc-api\",\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/svc-api\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
+        "container_definitions": "[{\"name\":\"svc-api\",\"image\":\"svc-api:prod\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/prod/svc-api-log\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
         "cpu": "256",
         "execution_role_arn": "${aws_iam_role.svc_api_exec.arn}",
-        "family": "svc-api",
+        "family": "prod-svc-api-td",
         "memory": "512",
         "network_mode": "awsvpc",
         "requires_compatibilities": [
@@ -152,14 +152,14 @@ deploy prod to aws as prod {
     "aws_iam_role": {
       "svc_api_exec": {
         "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
-        "name": "svc-api-exec",
+        "name": "prod-svc-api-x",
         "tags": {
           "ground-managed": "true"
         }
       },
       "svc_api_task": {
         "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
-        "name": "svc-api-task",
+        "name": "prod-svc-api-t",
         "tags": {
           "ground-managed": "true"
         }
@@ -174,7 +174,7 @@ deploy prod to aws as prod {
     "aws_internet_gateway": {
       "ground_prod": {
         "tags": {
-          "Name": "ground-prod",
+          "Name": "prod-gw",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
@@ -185,7 +185,7 @@ deploy prod to aws as prod {
         "allocation_id": "${aws_eip.ground_prod_eip.id}",
         "subnet_id": "${aws_subnet.prod_pub_1.id}",
         "tags": {
-          "Name": "ground-prod",
+          "Name": "prod-nat",
           "ground-managed": "true"
         }
       }
@@ -215,28 +215,28 @@ deploy prod to aws as prod {
     "aws_route_table": {
       "rt_prod_priv_1": {
         "tags": {
-          "Name": "rt-prod-priv-1",
+          "Name": "prod-rprv-1",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
       },
       "rt_prod_priv_2": {
         "tags": {
-          "Name": "rt-prod-priv-2",
+          "Name": "prod-rprv-2",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
       },
       "rt_prod_pub_1": {
         "tags": {
-          "Name": "rt-prod-pub-1",
+          "Name": "prod-rpub-1",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
       },
       "rt_prod_pub_2": {
         "tags": {
-          "Name": "rt-prod-pub-2",
+          "Name": "prod-rpub-2",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
@@ -262,14 +262,14 @@ deploy prod to aws as prod {
     },
     "aws_security_group": {
       "db_main_db": {
-        "name": "db-main-db",
+        "name": "prod-db-main-sgd",
         "tags": {
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
       },
       "svc_api": {
-        "name": "svc-api",
+        "name": "prod-svc-api-sgs",
         "tags": {
           "ground-managed": "true"
         },
@@ -282,7 +282,7 @@ deploy prod to aws as prod {
         "cidr_block": "10.0.1.0/24",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "prod-priv-1",
+          "Name": "prod-nprv-1",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
@@ -292,7 +292,7 @@ deploy prod to aws as prod {
         "cidr_block": "10.0.3.0/24",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "prod-priv-2",
+          "Name": "prod-nprv-2",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
@@ -302,7 +302,7 @@ deploy prod to aws as prod {
         "cidr_block": "10.0.0.0/24",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "prod-pub-1",
+          "Name": "prod-npub-1",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
@@ -312,7 +312,7 @@ deploy prod to aws as prod {
         "cidr_block": "10.0.2.0/24",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "prod-pub-2",
+          "Name": "prod-npub-2",
           "ground-managed": "true"
         },
         "vpc_id": "${aws_vpc.ground_prod.id}"
@@ -324,7 +324,7 @@ deploy prod to aws as prod {
         "enable_dns_hostnames": true,
         "enable_dns_support": true,
         "tags": {
-          "Name": "ground-prod",
+          "Name": "prod-vpc",
           "ground-managed": "true"
         }
       }

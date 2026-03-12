@@ -1,11 +1,12 @@
 {%- set svc_u   = instance.name | replace(from="-", to="_") -%}
 {%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
 {%- set image   = instance.image | default(value="") -%}
 {
   "resource": {
     "aws_cloudwatch_log_group": {
       "_ground_{{ svc_u }}": {
-        "name": "/ground/{{ instance.name }}",
+        "name": "/{{ pfx }}{{ deploy.alias }}/{{ instance.name }}-log",
         "retention_in_days": 7,
         "tags": {
           "ground-managed": "true"
@@ -14,14 +15,14 @@
     },
     "aws_iam_role": {
       "{{ svc_u }}_task": {
-        "name": "{{ instance.name }}-task",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-t",
         "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
         "tags": {
           "ground-managed": "true"
         }
       },
       "{{ svc_u }}_exec": {
-        "name": "{{ instance.name }}-exec",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-x",
         "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
         "tags": {
           "ground-managed": "true"
@@ -36,7 +37,7 @@
     },
     "aws_security_group": {
       "{{ svc_u }}": {
-        "name": "{{ instance.name }}",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-sgs",
         "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
         "tags": {
           "ground-managed": "true"
@@ -55,14 +56,14 @@
     },
     "aws_ecs_task_definition": {
       "{{ svc_u }}": {
-        "family": "{{ instance.name }}",
+        "family": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-td",
         "network_mode": "awsvpc",
         "requires_compatibilities": ["FARGATE"],
         "cpu": "256",
         "memory": "512",
         "execution_role_arn": "${aws_iam_role.{{ svc_u }}_exec.arn}",
         "task_role_arn": "${aws_iam_role.{{ svc_u }}_task.arn}",
-        "container_definitions": "[{\"name\":\"{{ instance.name }}\",\"image\":\"{{ image }}\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/ground/{{ instance.name }}\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
+        "container_definitions": "[{\"name\":\"{{ instance.name }}\",\"image\":\"{{ image }}\",\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"/{{ pfx }}{{ deploy.alias }}/{{ instance.name }}-log\",\"awslogs-region\":\"us-east-1\",\"awslogs-stream-prefix\":\"ecs\"}}}]",
         "tags": {
           "ground-managed": "true"
         }
@@ -70,7 +71,7 @@
     },
     "aws_ecs_service": {
       "{{ svc_u }}": {
-        "name": "{{ instance.name }}",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-svc",
         "cluster": "${aws_ecs_cluster.ground_{{ alias_u }}.id}",
         "task_definition": "${aws_ecs_task_definition.{{ svc_u }}.arn}",
         "desired_count": 1,
@@ -82,7 +83,7 @@
         ],
         "network_configuration": {
           "subnets": [
-            {% for zone_entry in deploy.region %}"${aws_subnet.{{ deploy.alias }}_priv_{{ loop.index }}.id}"{% if not loop.last %},{% endif %}
+            {% for zone_entry in deploy.region %}"${aws_subnet.{{ deploy.alias }}_priv_{{ zone_entry[1] }}.id}"{% if not loop.last %},{% endif %}
             {% endfor %}
           ],
           "security_groups": [
@@ -98,14 +99,14 @@
       "{{ svc_u }}": {
         "max_capacity": {{ instance.scaling.max }},
         "min_capacity": {{ instance.scaling.min }},
-        "resource_id": "service/${aws_ecs_cluster.ground_{{ alias_u }}.name}/{{ instance.name }}",
+        "resource_id": "service/${aws_ecs_cluster.ground_{{ alias_u }}.name}/{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-svc",
         "scalable_dimension": "ecs:service:DesiredCount",
         "service_namespace": "ecs"
       }
     },
     "aws_appautoscaling_policy": {
       "{{ svc_u }}_scale": {
-        "name": "{{ instance.name }}-scale",
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-scl",
         "policy_type": "TargetTrackingScaling",
         "resource_id": "${aws_appautoscaling_target.{{ svc_u }}.resource_id}",
         "scalable_dimension": "${aws_appautoscaling_target.{{ svc_u }}.scalable_dimension}",
