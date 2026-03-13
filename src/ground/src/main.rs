@@ -163,9 +163,22 @@ fn cmd_gen_terra() {
 // ---------------------------------------------------------------------------
 
 fn build_lookup(spec: &ground_core::Spec) -> Vec<(String, String)> {
-    spec.instances.iter()
-        .map(|i| (i.name.replace('-', "_"), format!("{}:{}", i.type_name, i.name)))
-        .collect()
+    use ground_core::ScalarValue;
+    let mut lookup = Vec::new();
+    for deploy in &spec.deploys {
+        let alias_u = deploy.alias.replace('-', "_");
+        let pfx_u = deploy.fields.iter()
+            .find(|f| f.link_name == "prefix")
+            .and_then(|f| if let ground_core::ResolvedValue::Scalar(ScalarValue::Ref(s) | ScalarValue::Str(s)) = &f.value { Some(s.replace('-', "_")) } else { None })
+            .unwrap_or_default();
+        for inst in &spec.instances {
+            let inst_u = inst.name.replace('-', "_");
+            let key   = format!("{pfx_u}{alias_u}_{inst_u}");
+            let label = format!("{}:{}", inst.type_name, inst.name);
+            lookup.push((key, label));
+        }
+    }
+    lookup
 }
 
 // ---------------------------------------------------------------------------

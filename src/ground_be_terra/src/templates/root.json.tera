@@ -1,7 +1,7 @@
 {%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
-{%- set pfx = deploy.prefix | default(value="") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
+{%- set pfx_u   = pfx | replace(from="-", to="_") -%}
 {%- set region_str = deploy.region[0][0] -%}
-{%- set zone_num   = deploy.region[0][1] -%}
 {%- if region_str == "us-east" -%}{%- set aws_region = "us-east-1" -%}
 {%- elif region_str == "us-west" -%}{%- set aws_region = "us-west-2" -%}
 {%- elif region_str == "eu-central" -%}{%- set aws_region = "eu-central-1" -%}
@@ -25,7 +25,7 @@
   },
   "resource": {
     "aws_ecs_cluster": {
-      "ground_{{ alias_u }}": {
+      "{{ pfx_u }}{{ alias_u }}_ecs": {
         "name": "{{ pfx }}{{ deploy.alias }}-ecs",
         "tags": {
           "ground-managed": "true"
@@ -33,7 +33,7 @@
       }
     },
     "aws_vpc": {
-      "ground_{{ alias_u }}": {
+      "{{ pfx_u }}{{ alias_u }}_vpc": {
         "cidr_block": "10.0.0.0/16",
         "enable_dns_hostnames": true,
         "enable_dns_support": true,
@@ -44,8 +44,8 @@
       }
     },
     "aws_internet_gateway": {
-      "ground_{{ alias_u }}": {
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_gw": {
+        "vpc_id": "${aws_vpc.{{ pfx_u }}{{ alias_u }}_vpc.id}",
         "tags": {
           "Name": "{{ pfx }}{{ deploy.alias }}-gw",
           "ground-managed": "true"
@@ -53,7 +53,7 @@
       }
     },
     "aws_eip": {
-      "ground_{{ alias_u }}_eip": {
+      "{{ pfx_u }}{{ alias_u }}_nat_eip": {
         "domain": "vpc",
         "tags": {
           "ground-managed": "true"
@@ -61,9 +61,9 @@
       }
     },
     "aws_nat_gateway": {
-      "ground_{{ alias_u }}": {
-        "allocation_id": "${aws_eip.ground_{{ alias_u }}_eip.id}",
-        "subnet_id": "${aws_subnet.{{ deploy.alias }}_pub_{{ deploy.region[0][1] }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_nat": {
+        "allocation_id": "${aws_eip.{{ pfx_u }}{{ alias_u }}_nat_eip.id}",
+        "subnet_id": "${aws_subnet.{{ pfx_u }}{{ alias_u }}_npub_{{ deploy.region[0][1] }}.id}",
         "tags": {
           "Name": "{{ pfx }}{{ deploy.alias }}-nat",
           "ground-managed": "true"
@@ -108,8 +108,8 @@
       {%- set az = base_region ~ az_letter -%}
       {%- set pub_cidr  = "10.0." ~ pub_idx  ~ ".0/24" -%}
       {%- set priv_cidr = "10.0." ~ priv_idx ~ ".0/24" -%}
-      "{{ deploy.alias }}_pub_{{ zone_n }}": {
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_npub_{{ zone_n }}": {
+        "vpc_id": "${aws_vpc.{{ pfx_u }}{{ alias_u }}_vpc.id}",
         "cidr_block": "{{ pub_cidr }}",
         "availability_zone": "{{ az }}",
         "map_public_ip_on_launch": true,
@@ -118,8 +118,8 @@
           "ground-managed": "true"
         }
       },
-      "{{ deploy.alias }}_priv_{{ zone_n }}": {
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_nprv_{{ zone_n }}": {
+        "vpc_id": "${aws_vpc.{{ pfx_u }}{{ alias_u }}_vpc.id}",
         "cidr_block": "{{ priv_cidr }}",
         "availability_zone": "{{ az }}",
         "map_public_ip_on_launch": false,
@@ -133,15 +133,15 @@
     "aws_route_table": {
       {% for zone_entry in deploy.region %}
       {%- set zone_n = zone_entry[1] -%}
-      "rt_{{ deploy.alias }}_pub_{{ zone_n }}": {
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_rpub_{{ zone_n }}": {
+        "vpc_id": "${aws_vpc.{{ pfx_u }}{{ alias_u }}_vpc.id}",
         "tags": {
           "Name": "{{ pfx }}{{ deploy.alias }}-rpub-{{ zone_n }}",
           "ground-managed": "true"
         }
       },
-      "rt_{{ deploy.alias }}_priv_{{ zone_n }}": {
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_rprv_{{ zone_n }}": {
+        "vpc_id": "${aws_vpc.{{ pfx_u }}{{ alias_u }}_vpc.id}",
         "tags": {
           "Name": "{{ pfx }}{{ deploy.alias }}-rprv-{{ zone_n }}",
           "ground-managed": "true"
@@ -152,28 +152,28 @@
     "aws_route_table_association": {
       {% for zone_entry in deploy.region %}
       {%- set zone_n = zone_entry[1] -%}
-      "rt_{{ deploy.alias }}_pub_{{ zone_n }}": {
-        "subnet_id": "${aws_subnet.{{ deploy.alias }}_pub_{{ zone_n }}.id}",
-        "route_table_id": "${aws_route_table.rt_{{ deploy.alias }}_pub_{{ zone_n }}.id}"
+      "{{ pfx_u }}{{ alias_u }}_rpub_{{ zone_n }}": {
+        "subnet_id": "${aws_subnet.{{ pfx_u }}{{ alias_u }}_npub_{{ zone_n }}.id}",
+        "route_table_id": "${aws_route_table.{{ pfx_u }}{{ alias_u }}_rpub_{{ zone_n }}.id}"
       },
-      "rt_{{ deploy.alias }}_priv_{{ zone_n }}": {
-        "subnet_id": "${aws_subnet.{{ deploy.alias }}_priv_{{ zone_n }}.id}",
-        "route_table_id": "${aws_route_table.rt_{{ deploy.alias }}_priv_{{ zone_n }}.id}"
+      "{{ pfx_u }}{{ alias_u }}_rprv_{{ zone_n }}": {
+        "subnet_id": "${aws_subnet.{{ pfx_u }}{{ alias_u }}_nprv_{{ zone_n }}.id}",
+        "route_table_id": "${aws_route_table.{{ pfx_u }}{{ alias_u }}_rprv_{{ zone_n }}.id}"
       }{% if not loop.last %},{% endif %}
       {% endfor %}
     },
     "aws_route": {
       {% for zone_entry in deploy.region %}
       {%- set zone_n = zone_entry[1] -%}
-      "rt_{{ deploy.alias }}_pub_{{ zone_n }}_default": {
-        "route_table_id": "${aws_route_table.rt_{{ deploy.alias }}_pub_{{ zone_n }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_rpub_{{ zone_n }}_default": {
+        "route_table_id": "${aws_route_table.{{ pfx_u }}{{ alias_u }}_rpub_{{ zone_n }}.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "gateway_id": "${aws_internet_gateway.ground_{{ alias_u }}.id}"
+        "gateway_id": "${aws_internet_gateway.{{ pfx_u }}{{ alias_u }}_gw.id}"
       },
-      "rt_{{ deploy.alias }}_priv_{{ zone_n }}_default": {
-        "route_table_id": "${aws_route_table.rt_{{ deploy.alias }}_priv_{{ zone_n }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_rprv_{{ zone_n }}_default": {
+        "route_table_id": "${aws_route_table.{{ pfx_u }}{{ alias_u }}_rprv_{{ zone_n }}.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "nat_gateway_id": "${aws_nat_gateway.ground_{{ alias_u }}.id}"
+        "nat_gateway_id": "${aws_nat_gateway.{{ pfx_u }}{{ alias_u }}_nat.id}"
       }{% if not loop.last %},{% endif %}
       {% endfor %}
     }

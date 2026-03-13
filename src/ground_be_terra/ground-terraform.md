@@ -1,6 +1,8 @@
 # Ground → Terraform AWS Resource Naming
 
-Variables: `{pfx}` = `deploy.prefix` (default: empty), `{alias}` = deploy alias, `{svc}` = service name, `{db}` = database name, `{n}` = zone number from the region entry (e.g. `us-east:2` → `2`; stable across reordering, range 1–20).
+Variables: `{pfx}` = `deploy.prefix` (default: empty), `{alias}` = deploy alias, `{svc}` = service name, `{db}` = database name, `{src}` / `{tgt}` = source/target name (links), `{n}` = zone number from the region entry (e.g. `us-east:2` → `2`; stable across reordering, range 1–20).
+
+AWS names use variables as-is. TF state keys use the same variables with hyphens replaced by underscores.
 
 Rule: `{pfx}{alias}-{suffix}` / `{pfx}{alias}-{svc}-{suffix}` / `{pfx}{alias}-{db}-{suffix}`
 
@@ -63,4 +65,41 @@ Rule: `{pfx}{alias}-{suffix}` / `{pfx}{alias}-{svc}-{suffix}` / `{pfx}{alias}-{d
 | `scl` | `aws_appautoscaling_policy` | 256 |
 | `ng` | `aws_db_subnet_group` | 255 |
 | `db` | `aws_db_instance` | 63 |
+
+## TF state keys
+
+TF state key = the resource address Terraform stores in state (`resource_type.key`). Renaming a key destroys + recreates the resource.
+
+| Resource | TF key |
+|---|---|
+| `aws_ecs_cluster` | `{pfx}{alias}_ecs` |
+| `aws_vpc` | `{pfx}{alias}_vpc` |
+| `aws_internet_gateway` | `{pfx}{alias}_gw` |
+| `aws_eip` | `{pfx}{alias}_nat_eip` |
+| `aws_nat_gateway` | `{pfx}{alias}_nat` |
+| `aws_subnet` public | `{pfx}{alias}_npub_{n}` |
+| `aws_subnet` private | `{pfx}{alias}_nprv_{n}` |
+| `aws_route_table` public | `{pfx}{alias}_rpub_{n}` |
+| `aws_route_table` private | `{pfx}{alias}_rprv_{n}` |
+| `aws_route_table_association` public | `{pfx}{alias}_rpub_{n}` |
+| `aws_route_table_association` private | `{pfx}{alias}_rprv_{n}` |
+| `aws_route` public | `{pfx}{alias}_rpub_{n}_default` |
+| `aws_route` private | `{pfx}{alias}_rprv_{n}_default` |
+| `aws_cloudwatch_log_group` | `{pfx}{alias}_{svc}_log` |
+| `aws_iam_role` task | `{pfx}{alias}_{svc}_t` |
+| `aws_iam_role` exec | `{pfx}{alias}_{svc}_x` |
+| `aws_iam_role_policy_attachment` exec | `{pfx}{alias}_{svc}_x` |
+| `aws_security_group` (service) | `{pfx}{alias}_{svc}_sgs` |
+| `aws_vpc_security_group_egress_rule` (service) | `{pfx}{alias}_{svc}_sgs_all` |
+| `aws_ecs_task_definition` | `{pfx}{alias}_{svc}_td` |
+| `aws_ecs_service` | `{pfx}{alias}_{svc}_svc` |
+| `aws_appautoscaling_target` | `{pfx}{alias}_{svc}_svc` |
+| `aws_appautoscaling_policy` | `{pfx}{alias}_{svc}_scl` |
+| `random_password` | `{pfx}{alias}_{db}_db` |
+| `aws_db_subnet_group` | `{pfx}{alias}_{db}_ng` |
+| `aws_security_group` (database) | `{pfx}{alias}_{db}_sgd` |
+| `aws_vpc_security_group_egress_rule` (database) | `{pfx}{alias}_{db}_sgd_all` |
+| `aws_db_instance` | `{pfx}{alias}_{db}_db` |
+| `aws_vpc_security_group_ingress_rule` (svc→svc) | `{pfx}{alias}_{src}_to_{tgt}` |
+| `aws_vpc_security_group_ingress_rule` (svc→db) | `{pfx}{alias}_{src}_to_{tgt}_db` |
 

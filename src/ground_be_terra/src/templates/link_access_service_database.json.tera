@@ -1,5 +1,8 @@
-{%- set src_u = source.name | replace(from="-", to="_") -%}
-{%- set db_u  = target.name | replace(from="-", to="_") -%}
+{%- set src_u   = source.name | replace(from="-", to="_") -%}
+{%- set db_u    = target.name | replace(from="-", to="_") -%}
+{%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
+{%- set pfx_u   = pfx | replace(from="-", to="_") -%}
 {%- set engine_str = target.engine | default(value="postgres") -%}
 {%- if engine_str == "postgres" -%}{%- set db_port = 5432 -%}
 {%- elif engine_str == "mysql" -%}{%- set db_port = 3306 -%}
@@ -8,9 +11,9 @@
 {
   "resource": {
     "aws_vpc_security_group_ingress_rule": {
-      "{{ src_u }}_to_{{ db_u }}_db": {
-        "security_group_id": "${aws_security_group.{{ db_u }}_db.id}",
-        "referenced_security_group_id": "${aws_security_group.{{ src_u }}.id}",
+      "{{ pfx_u }}{{ alias_u }}_{{ src_u }}_to_{{ db_u }}_db": {
+        "security_group_id": "${aws_security_group.{{ pfx_u }}{{ alias_u }}_{{ db_u }}_sgd.id}",
+        "referenced_security_group_id": "${aws_security_group.{{ pfx_u }}{{ alias_u }}_{{ src_u }}_sgs.id}",
         "ip_protocol": "tcp",
         "from_port": {{ db_port }},
         "to_port": {{ db_port }},

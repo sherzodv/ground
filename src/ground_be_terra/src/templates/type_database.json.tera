@@ -1,6 +1,7 @@
 {%- set db_u    = instance.name | replace(from="-", to="_") -%}
 {%- set alias_u = deploy.alias  | replace(from="-", to="_") -%}
 {%- set pfx     = deploy.prefix | default(value="") -%}
+{%- set pfx_u   = pfx | replace(from="-", to="_") -%}
 {%- set engine_str = instance.engine | default(value="postgres") -%}
 {%- if engine_str == "postgres" -%}{%- set aws_engine = "postgres" -%}
 {%- elif engine_str == "mysql" -%}{%- set aws_engine = "mysql" -%}
@@ -37,16 +38,18 @@
   },
   "resource": {
     "random_password": {
-      "{{ db_u }}": {
+      "{{ pfx_u }}{{ alias_u }}_{{ db_u }}_db": {
         "length": 32,
         "special": false
       }
     },
     "aws_db_subnet_group": {
-      "{{ db_u }}": {
+      "{{ pfx_u }}{{ alias_u }}_{{ db_u }}_ng": {
         "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-ng",
         "subnet_ids": [
-          {% for zone_entry in deploy.region %}"${aws_subnet.{{ deploy.alias }}_priv_{{ zone_entry[1] }}.id}"{% if not loop.last %},{% endif %}
+          {%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+          {%- set pfx_u   = deploy.prefix | default(value="") | replace(from="-", to="_") -%}
+          {% for zone_entry in deploy.region %}"${aws_subnet.{{ pfx_u }}{{ alias_u }}_nprv_{{ zone_entry[1] }}.id}"{% if not loop.last %},{% endif %}
           {% endfor %}
         ],
         "tags": {
@@ -55,17 +58,17 @@
       }
     },
     "aws_security_group": {
-      "{{ db_u }}_db": {
+      "{{ pfx_u }}{{ alias_u }}_{{ db_u }}_sgd": {
         "name": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-sgd",
-        "vpc_id": "${aws_vpc.ground_{{ alias_u }}.id}",
+        "vpc_id": "${aws_vpc.{{ pfx_u }}{{ alias_u }}_vpc.id}",
         "tags": {
           "ground-managed": "true"
         }
       }
     },
     "aws_vpc_security_group_egress_rule": {
-      "{{ db_u }}_db_all": {
-        "security_group_id": "${aws_security_group.{{ db_u }}_db.id}",
+      "{{ pfx_u }}{{ alias_u }}_{{ db_u }}_sgd_all": {
+        "security_group_id": "${aws_security_group.{{ pfx_u }}{{ alias_u }}_{{ db_u }}_sgd.id}",
         "cidr_ipv4": "0.0.0.0/0",
         "ip_protocol": "-1",
         "tags": {
@@ -74,16 +77,16 @@
       }
     },
     "aws_db_instance": {
-      "{{ db_u }}": {
+      "{{ pfx_u }}{{ alias_u }}_{{ db_u }}_db": {
         "identifier": "{{ pfx }}{{ deploy.alias }}-{{ instance.name }}-db",
         "engine": "{{ aws_engine }}",
         "engine_version": "{{ db_version }}",
         "instance_class": "{{ instance_class }}",
         "allocated_storage": {{ storage_val }},
-        "db_subnet_group_name": "${aws_db_subnet_group.{{ db_u }}.name}",
-        "vpc_security_group_ids": ["${aws_security_group.{{ db_u }}_db.id}"],
+        "db_subnet_group_name": "${aws_db_subnet_group.{{ pfx_u }}{{ alias_u }}_{{ db_u }}_ng.name}",
+        "vpc_security_group_ids": ["${aws_security_group.{{ pfx_u }}{{ alias_u }}_{{ db_u }}_sgd.id}"],
         "username": "admin",
-        "password": "${random_password.{{ db_u }}.result}",
+        "password": "${random_password.{{ pfx_u }}{{ alias_u }}_{{ db_u }}_db.result}",
         "skip_final_snapshot": true,
         "multi_az": {{ multi_az }},
         "tags": {
