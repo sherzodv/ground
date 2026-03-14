@@ -211,7 +211,7 @@ fn build_symbol_table(
 ) {
     for item in items {
         match item {
-            AstItem::TypeDecl(td) => {
+            AstItem::TypeDef(td) => {
                 let def = match &td.body {
                     AstTypeBody::Primitive(_) => TypeDef::Primitive,
                     AstTypeBody::Enum(variants) => TypeDef::Enum(variants.clone()),
@@ -219,7 +219,7 @@ fn build_symbol_table(
                         let mut member_defs = Vec::new();
                         for member in members {
                             match member {
-                                AstCompositeMember::Bare { link_name, line, col } => {
+                                AstCompositeMember::LinkRef { link_name, line, col } => {
                                     // Bare means required, link type resolved later from links table
                                     // For now, store as Ref and resolve in second pass
                                     member_defs.push(MemberDef {
@@ -230,7 +230,7 @@ fn build_symbol_table(
                                     });
                                     let _ = (line, col);
                                 }
-                                AstCompositeMember::Inline { link_name, type_expr, line, col } => {
+                                AstCompositeMember::LinkInline { link_name, type_expr, line, col } => {
                                     // We'll resolve the link type after all symbols are loaded
                                     member_defs.push(MemberDef {
                                         link_name: link_name.clone(),
@@ -240,7 +240,7 @@ fn build_symbol_table(
                                     });
                                     let _ = (type_expr, line, col);
                                 }
-                                AstCompositeMember::Default { link_name, default, line, col } => {
+                                AstCompositeMember::LinkDefault { link_name, default, line, col } => {
                                     let dv = match default {
                                         AstDefaultVal::Block(entries) => {
                                             DefaultValue::Composite(entries.clone())
@@ -255,6 +255,24 @@ fn build_symbol_table(
                                     });
                                     let _ = (line, col);
                                 }
+                                AstCompositeMember::TypeRef { type_name, .. } => {
+                                    // placeholder — resolved in second pass
+                                    member_defs.push(MemberDef {
+                                        link_name: type_name.clone(),
+                                        required:  false,
+                                        default:   None,
+                                        link_type: LinkDef::Ref,
+                                    });
+                                }
+                                AstCompositeMember::TypeInline { type_name, .. } => {
+                                    // placeholder — resolved in second pass
+                                    member_defs.push(MemberDef {
+                                        link_name: type_name.clone(),
+                                        required:  false,
+                                        default:   None,
+                                        link_type: LinkDef::Ref,
+                                    });
+                                }
                             }
                         }
                         TypeDef::Composite(member_defs)
@@ -262,7 +280,7 @@ fn build_symbol_table(
                 };
                 symbols.add_type(td.name.clone(), def);
             }
-            AstItem::LinkDecl(ld) => {
+            AstItem::LinkDef(ld) => {
                 match parse_link_type_expr(&ld.type_expr, symbols, path, ld.line, ld.col) {
                     Ok(def) => symbols.add_link(ld.name.clone(), def),
                     Err(e) => errors.push(e),
@@ -291,12 +309,12 @@ fn resolve_composite_link_types(
     path: &str,
 ) {
     for item in items {
-        if let AstItem::TypeDecl(td) = item {
+        if let AstItem::TypeDef(td) = item {
             if let AstTypeBody::Composite(members) = &td.body {
                 let mut new_members = Vec::new();
                 for member in members {
                     match member {
-                        AstCompositeMember::Bare { link_name, line, col } => {
+                        AstCompositeMember::LinkRef { link_name, line, col } => {
                             // Look up in links table
                             let link_type = if let Some(ld) = symbols.links.get(link_name) {
                                 ld.clone()
@@ -321,7 +339,7 @@ fn resolve_composite_link_types(
                                 link_type,
                             });
                         }
-                        AstCompositeMember::Inline { link_name, type_expr, line, col } => {
+                        AstCompositeMember::LinkInline { link_name, type_expr, line, col } => {
                             let link_type = match parse_link_type_expr(type_expr, symbols, path, *line, *col) {
                                 Ok(lt) => lt,
                                 Err(e) => { errors.push(e); LinkDef::Ref }
@@ -333,7 +351,7 @@ fn resolve_composite_link_types(
                                 link_type,
                             });
                         }
-                        AstCompositeMember::Default { link_name, default, line, col } => {
+                        AstCompositeMember::LinkDefault { link_name, default, line, col } => {
                             // Look up link type from links table
                             let link_type = if let Some(ld) = symbols.links.get(link_name.as_str()) {
                                 ld.clone()
@@ -350,6 +368,30 @@ fn resolve_composite_link_types(
                                 required: false,
                                 default: Some(dv),
                                 link_type,
+                            });
+                        }
+                        AstCompositeMember::TypeRef { type_name, line, col } => {
+                            if !symbols.types.contains_key(type_name.as_str()) {
+                                errors.push(ParseError {
+                                    path: path.to_string(),
+                                    line: *line,
+                                    col:  *col,
+                                    message: format!("unknown type '{}' in type body", type_name),
+                                });
+                            }
+                            new_members.push(MemberDef {
+                                link_name: type_name.clone(),
+                                required:  false,
+                                default:   None,
+                                link_type: LinkDef::TypeRef(type_name.clone()),
+                            });
+                        }
+                        AstCompositeMember::TypeInline { line, col, .. } => {
+                            errors.push(ParseError {
+                                path: path.to_string(),
+                                line: *line,
+                                col:  *col,
+                                message: "inline type definitions inside type bodies are not supported".into(),
                             });
                         }
                     }
@@ -768,12 +810,20 @@ pub(crate) fn resolve_file(items: Vec<AstItem>) -> Result<Spec, Vec<ParseError>>
     }
 
     // 3. Resolve instances and deploys
+    let declared_stacks: std::collections::HashSet<std::string::String> = items.iter()
+        .filter_map(|item| {
+            if let AstItem::TypeDecl(inst) = item {
+                if inst.type_name == "stack" { Some(inst.name.clone()) } else { None }
+            } else { None }
+        })
+        .collect();
+
     let mut instances = Vec::new();
     let mut deploys   = Vec::new();
 
     for item in &items {
         match item {
-            AstItem::Instance(inst) => {
+            AstItem::TypeDecl(inst) => {
                 // Look up the type
                 let member_defs = if let Some(TypeDef::Composite(members)) = symbols.types.get(&inst.type_name) {
                     members.clone()
@@ -811,6 +861,15 @@ pub(crate) fn resolve_file(items: Vec<AstItem>) -> Result<Spec, Vec<ParseError>>
             }
 
             AstItem::Deploy(dep) => {
+                // dep.name is the stack reference from "deploy <stack> to <provider> as <alias>"
+                if !declared_stacks.contains(dep.name.as_str()) {
+                    errors.push(ParseError {
+                        path: "<user>".to_string(),
+                        line: dep.line,
+                        col:  dep.col,
+                        message: format!("deploy references unknown stack '{}'", dep.name),
+                    });
+                }
                 let fields = dep.fields.iter()
                     .map(|f| resolve_deploy_field(f, &symbols, "<user>", &mut errors))
                     .collect();

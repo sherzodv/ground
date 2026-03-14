@@ -12,12 +12,42 @@ const DB_TPL:           &str = include_str!("templates/type_database.json.tera")
 const LINK_SVC_DB_TPL:  &str = include_str!("templates/link_access_service_database.json.tera");
 const LINK_SVC_SVC_TPL: &str = include_str!("templates/link_access_service_service.json.tera");
 
+fn stack_members<'a>(deploy: &DeployInstance, instances: &'a [Instance]) -> Vec<&'a Instance> {
+    let stack_name = deploy.name.as_str();
+
+    let stack = match instances.iter().find(|i| i.type_name == "stack" && i.name == stack_name) {
+        Some(s) => s,
+        None    => return vec![],
+    };
+
+    let mut member_names = std::collections::HashSet::new();
+    for field in &stack.fields {
+        match &field.value {
+            ResolvedValue::Scalar(ScalarValue::InstanceRef { name, .. }) => { member_names.insert(name.clone()); }
+            ResolvedValue::List(entries) => {
+                for entry in entries {
+                    if let Some(ScalarValue::InstanceRef { name, .. }) = entry.segments.first() {
+                        member_names.insert(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    instances.iter()
+        .filter(|i| i.type_name != "stack" && member_names.contains(&i.name))
+        .collect()
+}
+
 pub fn generate(spec: &Spec) -> Result<String, GenError> {
     let mut frags: Vec<String> = Vec::new();
 
     for deploy in &spec.deploys {
         let deploy_ctx = deploy_to_ctx(deploy);
-        let instances_ctx: Vec<Value> = spec.instances.iter()
+        let members    = stack_members(deploy, &spec.instances);
+
+        let instances_ctx: Vec<Value> = members.iter()
             .map(|i| Value::Object(instance_to_ctx(i)))
             .collect();
 
@@ -26,7 +56,7 @@ pub fn generate(spec: &Spec) -> Result<String, GenError> {
         push_nonempty(&mut frags, rendered);
 
         // Type hooks
-        for inst in &spec.instances {
+        for inst in &members {
             let tpl = match inst.type_name.as_str() {
                 "service"  => SVC_TPL,
                 "database" => DB_TPL,
@@ -37,13 +67,13 @@ pub fn generate(spec: &Spec) -> Result<String, GenError> {
         }
 
         // Link hooks — access field
-        for inst in &spec.instances {
+        for inst in &members {
             for field in &inst.fields {
                 if field.link_name != "access" { continue; }
                 if let ResolvedValue::List(entries) = &field.value {
                     for entry in entries {
                         if let Some(ScalarValue::InstanceRef { name: target_name, .. }) = entry.segments.first() {
-                            if let Some(target) = spec.instances.iter().find(|i| &i.name == target_name) {
+                            if let Some(target) = members.iter().find(|i| &i.name == target_name) {
                                 let tpl = match target.type_name.as_str() {
                                     "database" => LINK_SVC_DB_TPL,
                                     "service"  => LINK_SVC_SVC_TPL,

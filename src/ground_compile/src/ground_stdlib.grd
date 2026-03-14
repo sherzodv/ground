@@ -25,6 +25,7 @@ link size    = size
 link access  = [ service:(port)?  | database ]
 
 // --- Deploy fields ---
+link stack   = type:stack
 // region: deployment zones, e.g. [ us-east:1  us-east:2 ]
 link region  = type:region:type:zone
 // prefix: resource name prefix for namespacing within an account, e.g. grdtst-

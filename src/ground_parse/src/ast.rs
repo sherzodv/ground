@@ -7,14 +7,14 @@ pub struct AstFile {
 
 #[derive(Debug)]
 pub enum AstItem {
+    TypeDef(AstTypeDef),
+    LinkDef(AstLinkDef),
     TypeDecl(AstTypeDecl),
-    LinkDecl(AstLinkDecl),
-    Instance(AstInstance),
     Deploy(AstDeploy),
 }
 
 #[derive(Debug)]
-pub struct AstTypeDecl {
+pub struct AstTypeDef {
     pub name: String,
     pub body: AstTypeBody,
     pub line: usize,
@@ -30,9 +30,11 @@ pub enum AstTypeBody {
 
 #[derive(Debug)]
 pub enum AstCompositeMember {
-    Bare    { link_name: String, line: usize, col: usize },
-    Inline  { link_name: String, type_expr: String, line: usize, col: usize },
-    Default { link_name: String, default: AstDefaultVal, line: usize, col: usize },
+    LinkRef     { link_name: String, line: usize, col: usize },
+    LinkInline  { link_name: String, type_expr: String, line: usize, col: usize },
+    LinkDefault { link_name: String, default: AstDefaultVal, line: usize, col: usize },
+    TypeRef     { type_name: String, line: usize, col: usize },
+    TypeInline  { type_name: String, body: AstTypeBody, line: usize, col: usize },
 }
 
 #[derive(Debug)]
@@ -42,7 +44,7 @@ pub enum AstDefaultVal {
 }
 
 #[derive(Debug)]
-pub struct AstLinkDecl {
+pub struct AstLinkDef {
     pub name:      String,
     pub type_expr: String,  // raw string to parse in resolve
     pub line:      usize,
@@ -50,7 +52,7 @@ pub struct AstLinkDecl {
 }
 
 #[derive(Debug)]
-pub struct AstInstance {
+pub struct AstTypeDecl {
     pub type_name: String,
     pub name:      String,
     pub fields:    Vec<AstField>,

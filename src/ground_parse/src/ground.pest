@@ -1,42 +1,42 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
-// Restricted name: no : or /
-name        = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
-// Value token: allows : and / for paths
-value_token = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
+// Identifier: alpha-start, allows - and _
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
+// Ref: a value or reference token, allows : and / for paths
+gref        = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
 // Integer literal
-integer     = @{ ASCII_DIGIT+ }
-// Enum value: integer digits OR name
-enum_value  = @{ ASCII_DIGIT+ | ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
+integer    = @{ ASCII_DIGIT+ }
+// Enum value: integer OR identifier
+enum_value = @{ ASCII_DIGIT+ | ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_")* }
 
-// ---- Type declarations ----
+// ---- Type definitions ----
 
 // Primitive kinds
-primitive_kind = { "integer" | "float" | "boolean" | "string" | "reference" }
+primitive = { "integer" | "float" | "boolean" | "string" | "reference" }
 
 // Enum body: at least two variants
-enum_variant = { enum_value }
-enum_body    = { enum_variant ~ ("|" ~ enum_variant)+ }
+enum_body = { enum_value ~ ("|" ~ enum_value)+ }
 
-// Composite body members
-// Order matters: try composite_inline first (starts with "link" keyword)
-composite_inline  = { "link" ~ name ~ "=" ~ link_type_raw }
-composite_default = { name ~ "=" ~ composite_default_val }
-composite_bare    = { name }
-composite_member  = { composite_inline | composite_default | composite_bare }
-composite_body    = { "{" ~ composite_member* ~ "}" }
+// Type body members
+link_inline   = { "link" ~ identifier ~ "=" ~ link_type_raw }
+link_default  = { identifier ~ "=" ~ link_default_val }
+link_ref      = { identifier }
+type_inline   = { "type" ~ identifier ~ "=" ~ type_body }
+type_ref      = { "type" ~ identifier }
+type_member   = { link_inline | link_default | type_inline | type_ref | link_ref }
+type_body_def = { "{" ~ type_member* ~ "}" }
 
-// Default value for composite members: block or single token
-composite_default_val = { comp_def_block | value_token }
-comp_def_block        = { "{" ~ comp_def_entry* ~ "}" }
-comp_def_entry        = { name ~ ":" ~ value_token }
+// Default value for a link inside a type body: block or single token
+link_default_val   = { link_default_block | gref }
+link_default_block = { "{" ~ link_default_entry* ~ "}" }
+link_default_entry = { identifier ~ ":" ~ gref }
 
-// Type body: try composite first (starts with {), then enum (has |), then primitive
-type_body = { composite_body | enum_body | primitive_kind }
-type_decl = { "type" ~ name ~ "=" ~ type_body }
+// Type body: try type_body_def first (starts with {), then enum (has |), then primitive
+type_body = { type_body_def | enum_body | primitive }
+type_def  = { "type" ~ identifier ~ "=" ~ type_body }
 
-// ---- Link declarations ----
+// ---- Link definitions ----
 
 // Raw link type expression captured as string
 // List form: [ anything ]
@@ -45,24 +45,24 @@ link_list_inner = @{ (!"]" ~ ANY)* }
 link_shape      = @{ (ASCII_ALPHANUMERIC | "-" | "_" | ":" | "/" | "(" | ")" | "?" | ".")+ }
 link_type_raw   = { "[" ~ link_list_inner ~ "]" | link_shape }
 
-link_decl = { "link" ~ name ~ "=" ~ link_type_raw }
+link_def = { "link" ~ identifier ~ "=" ~ link_type_raw }
 
-// ---- Instance definitions ----
+// ---- Type declarations ----
 
 // Field value
-single_value = { value_token }
+single_value = { gref }
 list_entry   = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "/" | ":")+ }
 list_value   = { "[" ~ list_entry* ~ "]" }
 block_value  = { "{" ~ field_entry* ~ "}" }
 field_value  = { block_value | list_value | single_value }
 
-field_entry  = { name ~ ":" ~ field_value }
+field_entry = { identifier ~ ":" ~ field_value }
 
-// Generic instance: type_name instance_name { fields }
-instance_def = { name ~ name ~ "{" ~ field_entry* ~ "}" }
+// Type declaration: type_name instance_name { fields }
+type_decl = { identifier ~ identifier ~ "{" ~ field_entry* ~ "}" }
 
 // Deploy: special form
-deploy_def   = { "deploy" ~ name ~ "to" ~ name ~ "as" ~ name ~ "{" ~ field_entry* ~ "}" }
+deploy_def = { "deploy" ~ identifier ~ "to" ~ identifier ~ "as" ~ identifier ~ "{" ~ field_entry* ~ "}" }
 
 // ---- File ----
-file = { SOI ~ (type_decl | link_decl | deploy_def | instance_def)* ~ EOI }
+file = { SOI ~ (type_def | link_def | deploy_def | type_decl)* ~ EOI }

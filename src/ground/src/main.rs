@@ -313,7 +313,7 @@ fn display_plan_summary(
                 return label.clone();
             }
         }
-        stack_name.to_string()
+        format!("stack:{stack_name}")
     };
 
     // Group by ground entity name
