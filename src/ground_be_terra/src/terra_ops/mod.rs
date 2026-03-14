@@ -17,10 +17,29 @@ use parser::{Mode, TfEvent, TfParser};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action { Create, Update, Replace, Delete }
 
+/// One attribute value as it appears in a plan diff.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttrVal {
+    Scalar(String),                  // concrete value (pre-formatted)
+    Unknown,                         // (known after apply)
+    Sensitive,                       // (sensitive value)
+    Null,                            // null / absent
+    Block(Vec<(String, AttrVal)>),   // nested object/block (sorted keys)
+    List(Vec<AttrVal>),              // list / set / tuple
+}
+
+/// How a single attribute changes across a plan action.
+pub struct AttrChange {
+    pub key:    String,
+    pub before: Option<AttrVal>,
+    pub after:  Option<AttrVal>,
+}
+
 pub struct ResourceChange {
     pub action:        Action,
     pub resource_type: String,
     pub resource_name: String,
+    pub attrs:         Vec<AttrChange>,
 }
 
 pub struct PlanSummary {
@@ -202,6 +221,61 @@ where
     rx
 }
 
+/// Converts a JSON value into an `AttrVal`, resolving unknowns and sensitives.
+fn parse_attr_val(val: &Value, unknown: &Value, sensitive: &Value) -> AttrVal {
+    if unknown.as_bool() == Some(true)   { return AttrVal::Unknown; }
+    if sensitive.as_bool() == Some(true) { return AttrVal::Sensitive; }
+    match val {
+        Value::Null      => AttrVal::Null,
+        Value::String(s) => AttrVal::Scalar(format!("\"{s}\"")),
+        Value::Number(n) => AttrVal::Scalar(n.to_string()),
+        Value::Bool(b)   => AttrVal::Scalar(b.to_string()),
+        Value::Object(m) => {
+            let mut pairs: Vec<(String, AttrVal)> = m.iter()
+                .map(|(k, v)| {
+                    let uk = unknown.get(k).unwrap_or(&Value::Null);
+                    let sk = sensitive.get(k).unwrap_or(&Value::Null);
+                    (k.clone(), parse_attr_val(v, uk, sk))
+                })
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            AttrVal::Block(pairs)
+        }
+        Value::Array(arr) => {
+            let items = arr.iter().enumerate().map(|(i, v)| {
+                let uk = if let Value::Array(ua) = unknown   { ua.get(i).unwrap_or(&Value::Null) } else { &Value::Null };
+                let sk = if let Value::Array(sa) = sensitive { sa.get(i).unwrap_or(&Value::Null) } else { &Value::Null };
+                parse_attr_val(v, uk, sk)
+            }).collect();
+            AttrVal::List(items)
+        }
+    }
+}
+
+/// Builds a sorted list of `AttrChange`s from a single `resource_changes[].change` object.
+fn build_attrs(change: &Value) -> Vec<AttrChange> {
+    let before   = &change["before"];
+    let after    = &change["after"];
+    let unknown  = &change["after_unknown"];
+    let before_s = &change["before_sensitive"];
+    let after_s  = &change["after_sensitive"];
+
+    let mut keys = std::collections::BTreeSet::new();
+    if let Some(m) = before.as_object() { keys.extend(m.keys().cloned()); }
+    if let Some(m) = after.as_object()  { keys.extend(m.keys().cloned()); }
+
+    keys.into_iter().map(|key| {
+        let bsk = before_s.get(&key).unwrap_or(&Value::Null);
+        let ask = after_s.get(&key).unwrap_or(&Value::Null);
+        let auk = unknown.get(&key).unwrap_or(&Value::Null);
+        AttrChange {
+            before: before.get(&key).map(|v| parse_attr_val(v, &Value::Null, bsk)),
+            after:  after.get(&key).map(|v| parse_attr_val(v, auk, ask)),
+            key,
+        }
+    }).collect()
+}
+
 /// Runs `terraform show -json .tfplan` synchronously and parses a PlanSummary.
 fn show_json(dir: &PathBuf) -> Result<PlanSummary, String> {
     let chdir = format!("-chdir={}", dir.to_str().unwrap_or("."));
@@ -237,6 +311,7 @@ fn show_json(dir: &PathBuf) -> Result<PlanSummary, String> {
             action,
             resource_type: rc["type"].as_str().unwrap_or("").to_string(),
             resource_name: rc["name"].as_str().unwrap_or("").to_string(),
+            attrs:         build_attrs(&rc["change"]),
         });
     }
 

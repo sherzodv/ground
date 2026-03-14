@@ -3,7 +3,7 @@ mod ops_display;
 use std::{env, fs, path::Path, process};
 
 use ground_run::RunEvent;
-use ground_be_terra::terra_ops::OpsEvent;
+use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
 
 const GREEN:  &str = "\x1b[32m";
@@ -227,11 +227,79 @@ fn run_events(rx: std::sync::mpsc::Receiver<RunEvent<OpsEvent>>, enricher: &mut 
     ok
 }
 
+fn fmt_attr_val(val: &AttrVal) -> String {
+    match val {
+        AttrVal::Scalar(s)   => s.clone(),
+        AttrVal::Unknown     => "(known after apply)".to_string(),
+        AttrVal::Sensitive   => "(sensitive value)".to_string(),
+        AttrVal::Null        => "null".to_string(),
+        AttrVal::Block(_)    => "{...}".to_string(),
+        AttrVal::List(items) => format!("[{} items]", items.len()),
+    }
+}
+
+fn display_attr(val: &AttrVal, key: &str, glyph: &str, color: &str, indent: usize) {
+    let pad = " ".repeat(indent);
+    match val {
+        AttrVal::Null                             => {}
+        AttrVal::Block(pairs) if pairs.is_empty() => {}
+        AttrVal::List(items)  if items.is_empty() => {}
+        AttrVal::Block(pairs) => {
+            println!("  {pad}{color}{glyph}{RESET} {DIM}{key}{RESET} = {{");
+            for (k, v) in pairs { display_attr(v, k, glyph, color, indent + 4); }
+            println!("  {pad}  }}");
+        }
+        AttrVal::List(items) => {
+            println!("  {pad}{color}{glyph}{RESET} {DIM}{key}{RESET} = [");
+            for item in items {
+                match item {
+                    AttrVal::Block(pairs) if !pairs.is_empty() => {
+                        println!("    {pad}{color}{glyph}{RESET} {{");
+                        for (k, v) in pairs { display_attr(v, k, glyph, color, indent + 8); }
+                        println!("    {pad}  }},");
+                    }
+                    _ => println!("    {pad}{color}{glyph}{RESET} {DIM}{}{RESET},", fmt_attr_val(item)),
+                }
+            }
+            println!("  {pad}  ]");
+        }
+        _ => {
+            println!("  {pad}{color}{glyph}{RESET} {DIM}{key}{RESET} = {DIM}{}{RESET}", fmt_attr_val(val));
+        }
+    }
+}
+
+fn display_resource_attrs(change: &terra_ops::ResourceChange) {
+    match change.action {
+        Action::Create | Action::Replace => {
+            for a in &change.attrs {
+                if let Some(val) = &a.after { display_attr(val, &a.key, "+", GREEN, 4); }
+            }
+        }
+        Action::Delete => {
+            for a in &change.attrs {
+                if let Some(val) = &a.before { display_attr(val, &a.key, "-", RED, 4); }
+            }
+        }
+        Action::Update => {
+            for a in &change.attrs {
+                if let (Some(bv), Some(av)) = (&a.before, &a.after) {
+                    if bv != av {
+                        println!("      {YELLOW}~{RESET} {DIM}{}{RESET} = {DIM}{}{RESET} {DIM}->{RESET} {DIM}{}{RESET}",
+                            a.key, fmt_attr_val(bv), fmt_attr_val(av));
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn display_plan_summary(
     summary:    &ground_be_terra::terra_ops::PlanSummary,
     spec:       &ground_core::Spec,
     stack_name: &str,
     provider:   &str,
+    verbose:    bool,
 ) {
     use std::collections::BTreeMap;
     use ground_be_terra::terra_ops;
@@ -267,6 +335,7 @@ fn display_plan_summary(
             for c in changes {
                 let (glyph, gcolor) = action_glyph(&c.action);
                 println!("  {gcolor}{glyph}{RESET} {DIM}{}.{}{RESET}", c.resource_type, c.resource_name);
+                if verbose { display_resource_attrs(c); }
             }
             println!();
         }
@@ -335,7 +404,7 @@ fn cmd_plan(verbose: bool) {
                 process::exit(1);
             }
             RunEvent::Line(OpsEvent::PlanReady { summary }) => {
-                display_plan_summary(&summary, &spec, &stack_name, &provider);
+                display_plan_summary(&summary, &spec, &stack_name, &provider, verbose);
             }
             other => {
                 for d in enricher.enrich(&other) { render(&d); }
