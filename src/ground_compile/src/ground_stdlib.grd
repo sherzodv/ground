@@ -6,12 +6,6 @@ type region = eu-central | eu-west | us-east | us-west | ap-southeast
 type engine = postgres | mysql
 type size   = small | medium | large | xlarge
 
-// --- Primitive links ---
-link image   = reference
-link compute = reference
-link version = integer
-link storage = integer
-
 // --- Structured type ---
 type scaling = {
   link min = integer
@@ -25,7 +19,6 @@ link size    = size
 link access  = [ service:(port)?  | database ]
 
 // --- Deploy fields ---
-link stack   = type:stack
 // region: deployment zones, e.g. [ us-east:1  us-east:2 ]
 link region  = type:region:type:zone
 // prefix: resource name prefix for namespacing within an account, e.g. grdtst-
@@ -36,7 +29,6 @@ type service = {
   image
   link access  = [ service:(port)?  | database ]
   scaling = { min: 1  max: 1 }
-  link compute = reference
 }
 
 type database = {
@@ -44,10 +36,9 @@ type database = {
   link version = integer
   link size    = size
   link storage = integer
-  link compute = reference
 }
 
 type stack = {
-  link service  = service
-  link database = database
+  type service
+  type database
 }

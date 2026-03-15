@@ -25,10 +25,11 @@ pub(crate) enum TypeDef {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MemberDef {
-    pub link_name: std::string::String,
-    pub required:  bool,
-    pub default:   Option<DefaultValue>,
-    pub link_type: LinkDef,
+    pub link_name:   std::string::String,
+    pub required:    bool,
+    pub default:     Option<DefaultValue>,
+    pub link_type:   LinkDef,
+    pub is_type_ref: bool,  // true if declared as `type T` in composite body, not a link
 }
 
 #[derive(Debug, Clone)]
@@ -220,23 +221,22 @@ fn build_symbol_table(
                         for member in members {
                             match member {
                                 AstCompositeMember::LinkRef { link_name, line, col } => {
-                                    // Bare means required, link type resolved later from links table
-                                    // For now, store as Ref and resolve in second pass
                                     member_defs.push(MemberDef {
                                         link_name: link_name.clone(),
-                                        required: true,
-                                        default: None,
-                                        link_type: LinkDef::Ref, // placeholder, resolved below
+                                        required:     true,
+                                        default:      None,
+                                        link_type:    LinkDef::Ref,
+                                        is_type_ref:  false,
                                     });
                                     let _ = (line, col);
                                 }
                                 AstCompositeMember::LinkInline { link_name, type_expr, line, col } => {
-                                    // We'll resolve the link type after all symbols are loaded
                                     member_defs.push(MemberDef {
-                                        link_name: link_name.clone(),
-                                        required: false,
-                                        default: None,
-                                        link_type: LinkDef::Ref, // placeholder
+                                        link_name:    link_name.clone(),
+                                        required:     false,
+                                        default:      None,
+                                        link_type:    LinkDef::Ref,
+                                        is_type_ref:  false,
                                     });
                                     let _ = (type_expr, line, col);
                                 }
@@ -248,29 +248,30 @@ fn build_symbol_table(
                                         AstDefaultVal::Single(s) => DefaultValue::Scalar(s.clone()),
                                     };
                                     member_defs.push(MemberDef {
-                                        link_name: link_name.clone(),
-                                        required: false,
-                                        default: Some(dv),
-                                        link_type: LinkDef::Ref, // placeholder
+                                        link_name:    link_name.clone(),
+                                        required:     false,
+                                        default:      Some(dv),
+                                        link_type:    LinkDef::Ref,
+                                        is_type_ref:  false,
                                     });
                                     let _ = (line, col);
                                 }
                                 AstCompositeMember::TypeRef { type_name, .. } => {
-                                    // placeholder — resolved in second pass
                                     member_defs.push(MemberDef {
-                                        link_name: type_name.clone(),
-                                        required:  false,
-                                        default:   None,
-                                        link_type: LinkDef::Ref,
+                                        link_name:    type_name.clone(),
+                                        required:     false,
+                                        default:      None,
+                                        link_type:    LinkDef::Ref,
+                                        is_type_ref:  true,
                                     });
                                 }
                                 AstCompositeMember::TypeInline { type_name, .. } => {
-                                    // placeholder — resolved in second pass
                                     member_defs.push(MemberDef {
-                                        link_name: type_name.clone(),
-                                        required:  false,
-                                        default:   None,
-                                        link_type: LinkDef::Ref,
+                                        link_name:    type_name.clone(),
+                                        required:     false,
+                                        default:      None,
+                                        link_type:    LinkDef::Ref,
+                                        is_type_ref:  true,
                                     });
                                 }
                             }
@@ -333,10 +334,11 @@ fn resolve_composite_link_types(
                                 }
                             };
                             new_members.push(MemberDef {
-                                link_name: link_name.clone(),
-                                required: true,
-                                default: None,
+                                link_name:   link_name.clone(),
+                                required:    true,
+                                default:     None,
                                 link_type,
+                                is_type_ref: false,
                             });
                         }
                         AstCompositeMember::LinkInline { link_name, type_expr, line, col } => {
@@ -345,14 +347,14 @@ fn resolve_composite_link_types(
                                 Err(e) => { errors.push(e); LinkDef::Ref }
                             };
                             new_members.push(MemberDef {
-                                link_name: link_name.clone(),
-                                required: false,
-                                default: None,
+                                link_name:   link_name.clone(),
+                                required:    false,
+                                default:     None,
                                 link_type,
+                                is_type_ref: false,
                             });
                         }
                         AstCompositeMember::LinkDefault { link_name, default, line, col } => {
-                            // Look up link type from links table
                             let link_type = if let Some(ld) = symbols.links.get(link_name.as_str()) {
                                 ld.clone()
                             } else {
@@ -364,10 +366,11 @@ fn resolve_composite_link_types(
                             };
                             let _ = (line, col);
                             new_members.push(MemberDef {
-                                link_name: link_name.clone(),
-                                required: false,
-                                default: Some(dv),
+                                link_name:   link_name.clone(),
+                                required:    false,
+                                default:     Some(dv),
                                 link_type,
+                                is_type_ref: false,
                             });
                         }
                         AstCompositeMember::TypeRef { type_name, line, col } => {
@@ -380,10 +383,11 @@ fn resolve_composite_link_types(
                                 });
                             }
                             new_members.push(MemberDef {
-                                link_name: type_name.clone(),
-                                required:  false,
-                                default:   None,
-                                link_type: LinkDef::TypeRef(type_name.clone()),
+                                link_name:   type_name.clone(),
+                                required:    false,
+                                default:     None,
+                                link_type:   LinkDef::TypeRef(type_name.clone()),
+                                is_type_ref: true,
                             });
                         }
                         AstCompositeMember::TypeInline { line, col, .. } => {
@@ -679,16 +683,27 @@ fn resolve_fields(
     for ast_field in ast_fields {
         provided.insert(ast_field.link_name.clone(), true);
 
-        // Look up the link definition
-        let link_def = if let Some(md) = member_defs.iter().find(|m| m.link_name == ast_field.link_name) {
-            md.link_type.clone()
-        } else {
-            // Try the global links table
-            if let Some(ld) = symbols.links.get(&ast_field.link_name) {
-                ld.clone()
-            } else {
-                // Unknown field: store as Ref (lenient)
-                LinkDef::Ref
+        // Only link-declared members are settable via field entry syntax
+        let link_def = match member_defs.iter().find(|m| m.link_name == ast_field.link_name) {
+            Some(md) if md.is_type_ref => {
+                errors.push(ParseError {
+                    path: path.to_string(),
+                    line: ast_field.line,
+                    col:  ast_field.col,
+                    message: format!("'{}' is a type member, not a link — cannot be set as a field", ast_field.link_name),
+                });
+                continue;
+            }
+            Some(md) => md.link_type.clone(),
+            None if member_defs.is_empty() => LinkDef::Ref,
+            None => {
+                errors.push(ParseError {
+                    path: path.to_string(),
+                    line: ast_field.line,
+                    col:  ast_field.col,
+                    message: format!("unknown field '{}'", ast_field.link_name),
+                });
+                continue;
             }
         };
 
@@ -882,6 +897,44 @@ pub(crate) fn resolve_file(items: Vec<AstItem>) -> Result<Spec, Vec<ParseError>>
             }
 
             _ => {}
+        }
+    }
+
+    // 4. Validate TypeRef field values against declared instances
+    // Build name → type_name map from resolved instances
+    let instance_types: std::collections::HashMap<std::string::String, std::string::String> = instances.iter()
+        .map(|i| (i.name.clone(), i.type_name.clone()))
+        .collect();
+
+    for item in &items {
+        if let AstItem::TypeDecl(inst) = item {
+            let member_defs = match symbols.types.get(&inst.type_name) {
+                Some(TypeDef::Composite(members)) => members.clone(),
+                _ => continue,
+            };
+            for field in &inst.fields {
+                if let Some(md) = member_defs.iter().find(|m| m.link_name == field.link_name) {
+                    if let LinkDef::TypeRef(ref_type) = &md.link_type {
+                        if let AstFieldValue::Single(tok) = &field.value {
+                            match instance_types.get(tok.as_str()) {
+                                None => errors.push(ParseError {
+                                    path: "<user>".to_string(),
+                                    line: field.line,
+                                    col:  field.col,
+                                    message: format!("'{}' references unknown instance '{}'", field.link_name, tok),
+                                }),
+                                Some(actual) if actual != ref_type => errors.push(ParseError {
+                                    path: "<user>".to_string(),
+                                    line: field.line,
+                                    col:  field.col,
+                                    message: format!("'{}' expects a {} but '{}' is a {}", field.link_name, ref_type, tok, actual),
+                                }),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

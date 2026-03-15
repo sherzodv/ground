@@ -5,6 +5,10 @@ service svc-api {
   image: svc-api:prod
 }
 
+stack prod {
+  service: svc-api
+}
+
 deploy prod to aws as prod {
   region: us-east:1
 }

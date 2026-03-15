@@ -12,6 +12,11 @@ service svc-api {
   access: db-main
 }
 
+stack prod {
+  service:  svc-api
+  database: db-main
+}
+
 deploy prod to aws as prod {
   region: [ us-east:1  us-east:2 ]
 }

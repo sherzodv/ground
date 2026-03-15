@@ -6,6 +6,10 @@ service svc-api {
   scaling: { min: 2  max: 10 }
 }
 
+stack prod {
+  service: svc-api
+}
+
 deploy prod to aws as prod {
   region: us-east:1
 }
