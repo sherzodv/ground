@@ -2,7 +2,7 @@
 
 **Infrastructure as Derivation.**
 
-Ground helps you define your system and generate infrustructure code from that definition. You focus on the architecture and let ground handle low level details: networking, roles & other cluster boilerplate.
+Ground helps you define your system and generate infrustructure code from that definition. You focus on the architecture and let ground **derive** low level details: networking, roles, clusterss and other boilerplate.
 
 ```ground
 database db-main {
@@ -22,7 +22,7 @@ service payments {
 service api {
   image:  api:latest
   access: [
-    service:payments:grpc
+    service:users:grpc
     service:payments:grpc
   ]
 }
@@ -39,10 +39,6 @@ deploy shop to aws as shop-eu-central {
 }
 ```
 
-Ground reads `.grd` files and generates Terraform JSON. Networking, security groups, IAM roles, log groups — all derived automatically from the system description.
-
-See [`syntax.md`](syntax.md) for the full DSL reference.
-
 ---
 ## CLI
 
@@ -55,7 +51,7 @@ ground apply                 apply changes
 ---
 ## Testing
 
-Golden fixtures live in `ground_test/fixtures/` — `.md` files with a `ground` input block and a `json` expected output block.
+Golden fixtures live in `ground_test/fixtures/` — `.md` files with a *ground* input block and a *json* expected output block.
 
 Regenerate expected output after generator changes:
 
@@ -66,49 +62,173 @@ UPDATE_FIXTURES=1 cargo test -- files
 
 ## Semantic Core
 
-Ground has minimal core language that is used to define basic architectural concepts.
-The `type` construct defines a concept and the `link` construct defines relations between concepts and their properties.
+Ground has a minimal language that is used to define basic architectural concepts. It is based on two core constructs: a *type* and a *link*. Additionally the core language has some primitives: *string*, *integer* and a special "structured" primitive a *reference*.
 
-Let's define a simplified abstraction to describe services and access patterns between them:
+A *reference* is a generalization of an URI:
+
+```
+registry/payments:latest
+https://getground.com
+service:api:http
+```
+
+The *type* construct can define enumerations:
+
 ```ground
 type port = http | grpc
-link image = reference
-link access  = [ service:(port)? ]
+type region = us-east | us-west
+```
+
+and architectural concepts:
+
+```ground
+type service = {}
+type database = {}
+```
+
+The *link* construct defines relations & internal structure of concepts. It can define a primitive field of a concept:
+
+```ground
+link image = string
 
 type service = {
   image
-  access
-}```
-
-The snipped defines a concept named `service` that may have two fields: `image` and `access`. The `image` field is a `reference` which is an extended identifier that may contain `:` and `/` symbols in it. For this example it's basically a string representing a path to the runtime image of a service in a docker registry.
-
-The `access` link defines a property that can contain a list of references of a certain shape: a name of a service and an optional port descriptor divided by a colon.
-
-Now we can describe our system using the defined `service` concept:
-```ground
-service payments {
-  image: payments:latest
 }
 
-service api {
-  image: api:latest
+service payments {
+  image: docker-registry/payments:latest
+}
+```
+
+or more advanced structural relations between types:
+
+```ground
+type port = http | grpc
+type engine = postgres | mysql
+link engine = type:engine
+
+link image = string
+link access = database | service:port
+
+type service = {
+  access
+}
+
+type database = {
+  engine
+}
+
+service main {
+  image: docker-registry/main:latest
+}
+
+database main {
+  engine: postgres
+}
+
+service payments {
+  image: docker-registry/payments:latest
+  access: database:main
+}```
+
+Note how access defines a certain structure for a reference. It enforces the values of an *access* field to refer to a service name followed by a port or a database name. Concept names can be used to disambiguate references.
+
+Links can define array fields `[]` as well as optional parts `()` of references:
+
+```ground
+link access = [database | service:(port)]
+
+...
+
+service payments {
+  image: docker-registry/payments:latest
   access: [
-    payments:grpc
+    database:main
+    service:main:grpc
   ]
 }
 ```
 
----
+Definitions can be inlined:
 
-## For Coding Agents
+```ground
+link access  = [ service:(port) | database ]
 
-Never ever do infra, git or other changes other than current project file changes.
-Do not assume, try to discuss if there is no sufficient info before taking any actions.
-For any big changes: first show what are you going to do and only do after user confirmation.
-RFC process can be requested by user:
-  - Be concise and technical, no story telling
-  - Feature is designed in a corresponding devspec/000x-rfc-feature.md: reqs, approach, architecture, tech reqs, libs etc.
-  - Discuss and iterate with user on the rfc
-  - After rfc is confirmed as finished by the user, create a corresponding devspec/000x-pln-feature.md with implementation plan
-  - Iterate with user on the implementation plan
-  - After user confirms the plan proceed with the implementation
+type database = {
+  link manage = type manage = self | provider | cloud
+  link engine = type engine = postgresql | mongodb
+  link version = string
+}
+
+type service = {
+  type port    = grpc | http
+  link image   = reference
+  link access  = [ service:(port) | database ]
+  link scaling = type scaling = {
+    link min = integer
+    link max = integer
+  }
+}
+```
+
+Links & types can be anounimous:
+
+```ground
+database users
+database main
+service users
+service payments
+service api
+
+type database = {
+  link manage = type = self | provider | cloud
+  link engine = type = postgresql | mongodb
+}
+
+type stack = {
+  link = [ type:service | type:database ]
+}
+
+stack marketing {
+  main
+  service:users
+  payments
+  api
+}
+```
+
+Ground has special *terminal* construct **deploy** that will trigger a generation of all the needed infrastructure configuration based on a core and user level templates. Without *deploy* clause there will be no configuration generated, other concepts are purely descriptive.
+
+`deploy <reference> to <reference> as <reference> { links }`
+
+```ground
+stack marketing {
+  database:main
+  service:users
+  service:payments
+  service:api
+}
+
+type region = eu-central | eu-west | us-east | us-west | ap-southeast
+type zone   = 1 | 2 | 3 | 4 | 5
+link region = type:region:type:zone
+
+deploy stack:marketing to aws as marketing-eu-central {
+  region: eu-central
+}
+```
+
+The `reference` structure:
+
+Ground treats *references* as a colon separated list of segments. Resolving references has local semantics and happens segment by segment with respect to precendence rules:
+- *type* and *link* keywords have highest priority, e.g. *type:service* references a *type* named *service*
+- local names come after keywords: *service:main* references a instance *main* of a type named *service*
+
+Fully qualified references increase readiblity but are not required if there is no ambiguity in resolving.
+
+To disambiguate references from field declarations at least one space is required after a colon: `service api { image: api:latest }`
+
+## Standard Library
+
+TBD
+
