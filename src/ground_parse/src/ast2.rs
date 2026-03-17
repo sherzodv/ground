@@ -1,4 +1,4 @@
-/// AST for RFC 0005 — every node is wrapped in `AstNode<T>` carrying byte-offset location.
+/// Ground parser level AST  — every node is wrapped in `AstNode<T>` carrying byte-offset location.
 
 // ---------------------------------------------------------------------------
 // Location & node wrapper
@@ -68,8 +68,11 @@ pub enum AstTypeDefBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstTypeDef {
-    pub name: Option<AstNode<String>>,
-    pub body: AstNode<AstTypeDefBody>,
+    pub name:  Option<AstNode<String>>,
+    pub body:  AstNode<AstTypeDefBody>,
+    /// Populated by the parse pass for named struct types: the `ScopeKind::Type`
+    /// scope that holds this struct's inline type definitions.
+    pub scope: Option<AstScopeId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +127,20 @@ pub struct AstDeploy {
     pub fields: Vec<AstNode<AstField>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AstScopeId(pub u32);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScopeKind { Pack, Type }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstScope {
+    pub kind:   ScopeKind,
+    pub name:   Option<AstNode<String>>,
+    pub parent: Option<AstScopeId>,
+    pub defs:   Vec<AstDef>,
+}
+
 // ---------------------------------------------------------------------------
 // Top-level definitions
 // ---------------------------------------------------------------------------
@@ -134,12 +151,7 @@ pub enum AstDef {
     Link(AstNode<AstLinkDef>),
     Inst(AstNode<AstInst>),
     Deploy(AstNode<AstDeploy>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AstUnit {
-    pub unit: u32,
-    pub defs: Vec<AstDef>,
+    Scope(AstNode<AstScope>),
 }
 
 // ---------------------------------------------------------------------------
@@ -152,14 +164,23 @@ pub struct AstParseError {
     pub loc:     AstNodeLoc,
 }
 
+/// One source file. `path` is the chain of parent namespace names (from folder
+/// structure); `name` is the leaf namespace for this file's contents.
 #[derive(Debug)]
-pub struct ParseReq {
-    /// One entry per source unit (file); the unit index is its position in this vec.
-    pub units: Vec<String>,
+pub struct ParseUnit {
+    pub name: String,
+    pub path: Vec<String>,
+    pub src:  String,
 }
 
 #[derive(Debug)]
+pub struct ParseReq {
+    pub units: Vec<ParseUnit>,
+}
+
+/// Flat scope arena. `scopes[0]` is the synthetic root scope (unnamed, no parent).
+#[derive(Debug)]
 pub struct ParseRes {
-    pub units:  Vec<AstUnit>,
+    pub scopes: Vec<AstScope>,
     pub errors: Vec<AstParseError>,
 }

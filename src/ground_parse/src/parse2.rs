@@ -232,7 +232,7 @@ impl<'a> Parser<'a> {
         // Primitive
         if let Some(prim) = self.parse_primitive() {
             let body = self.node(start, AstTypeDefBody::Primitive(prim.inner));
-            return Some(self.node(start, AstTypeDef { name: None, body }));
+            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
         }
 
         // Explicit type-def: "type" ident? "=" body
@@ -254,7 +254,7 @@ impl<'a> Parser<'a> {
                 self.push_error(self.pos, "expected ']' after list type");
             }
             let body = self.node(start, AstTypeDefBody::List(Box::new(inner)));
-            return Some(self.node(start, AstTypeDef { name: None, body }));
+            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
         }
 
         // Ref or sugar enum: ref ("|" ref)*
@@ -277,10 +277,10 @@ impl<'a> Parser<'a> {
         if refs.len() == 1 {
             let r = refs.remove(0);
             let body = self.node(start, AstTypeDefBody::Ref(r.inner));
-            Some(self.node(start, AstTypeDef { name: None, body }))
+            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
         } else {
             let body = self.node(start, AstTypeDefBody::Enum(refs));
-            Some(self.node(start, AstTypeDef { name: None, body }))
+            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
         }
     }
 
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
             self.node(body_start, AstTypeDefBody::Enum(items))
         };
 
-        Some(self.node(start, AstTypeDef { name, body }))
+        Some(self.node(start, AstTypeDef { name, body, scope: None }))
     }
 
     // -- instance values & fields ----------------------------------------
@@ -640,7 +640,7 @@ impl<'a> Parser<'a> {
 
     // -- top-level -------------------------------------------------------
 
-    fn parse_system(&mut self) -> AstUnit {
+    fn parse_system(&mut self) -> Vec<AstDef> {
         let mut defs = Vec::new();
         loop {
             self.skip_ws();
@@ -656,7 +656,7 @@ impl<'a> Parser<'a> {
                 if self.pos >= self.src.len() { break; }
             }
         }
-        AstUnit { unit: self.unit, defs }
+        defs
     }
 }
 
@@ -664,15 +664,106 @@ impl<'a> Parser<'a> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn parse(req: ParseReq) -> ParseRes {
-    let mut units  = Vec::new();
-    let mut errors = Vec::new();
+/// For a named struct `AstTypeDef`: create a `ScopeKind::Type` scope under `parent_scope`,
+/// store its id in `td.inner.scope`, move `TypeDef` struct items into that scope (removing
+/// them from the struct body), then recurse into hoisted TypeDefs and remaining LinkDef types.
+fn hoist_struct_scopes(
+    td:           &mut AstNode<AstTypeDef>,
+    parent_scope: AstScopeId,
+    scopes:       &mut Vec<AstScope>,
+) {
+    let name = match td.inner.name.as_ref().map(|n| n.inner.clone()) {
+        Some(n) => n,
+        None    => return,
+    };
+    // Take items out first so we can freely mutate `td` below.
+    let all_items = match &mut td.inner.body.inner {
+        AstTypeDefBody::Struct(items) => std::mem::take(items),
+        _                             => return,
+    };
 
-    for (idx, src) in req.units.iter().enumerate() {
-        let mut p = Parser::new(src, idx as u32);
-        units.push(p.parse_system());
-        errors.extend(p.errors);
+    let type_scope_id = AstScopeId(scopes.len() as u32);
+    scopes.push(AstScope {
+        kind:   ScopeKind::Type,
+        name:   Some(AstNode::new(0, 0, 0, name)),
+        parent: Some(parent_scope),
+        defs:   vec![],
+    });
+    td.inner.scope = Some(type_scope_id);
+
+    // Partition: hoist TypeDef items; keep LinkDef items.
+    let mut keep:    Vec<AstNode<AstStructItem>> = Vec::new();
+    let mut hoisted: Vec<AstNode<AstTypeDef>>    = Vec::new();
+    for item in all_items {
+        match item.inner {
+            AstStructItem::TypeDef(sub_td) => hoisted.push(sub_td),
+            AstStructItem::LinkDef(_)      => keep.push(item),
+        }
     }
 
-    ParseRes { units, errors }
+    // Recurse into hoisted TypeDefs, then collect them as defs for the new scope.
+    let mut hoist_defs = Vec::new();
+    for mut sub_td in hoisted {
+        hoist_struct_scopes(&mut sub_td, type_scope_id, scopes);
+        hoist_defs.push(AstDef::Type(sub_td));
+    }
+    scopes[type_scope_id.0 as usize].defs.extend(hoist_defs);
+
+    // Recurse into LinkDef types that are named structs.
+    for item in keep.iter_mut() {
+        if let AstStructItem::LinkDef(ref mut ld) = item.inner {
+            hoist_struct_scopes(&mut ld.inner.ty, type_scope_id, scopes);
+        }
+    }
+
+    // Put the (now TypeDef-free) link items back into the struct body.
+    if let AstTypeDefBody::Struct(items) = &mut td.inner.body.inner {
+        *items = keep;
+    }
+}
+
+fn find_or_create_scope(scopes: &mut Vec<AstScope>, name: &str, parent: AstScopeId) -> AstScopeId {
+    for (i, scope) in scopes.iter().enumerate() {
+        if scope.parent == Some(parent) {
+            if scope.name.as_ref().map(|n| n.inner.as_str()) == Some(name) {
+                return AstScopeId(i as u32);
+            }
+        }
+    }
+    let id = AstScopeId(scopes.len() as u32);
+    let name_node = AstNode::new(0, 0, 0, name.to_string());
+    scopes.push(AstScope { kind: ScopeKind::Pack, name: Some(name_node), parent: Some(parent), defs: vec![] });
+    id
+}
+
+pub fn parse(req: ParseReq) -> ParseRes {
+    let root = AstScope { kind: ScopeKind::Pack, name: None, parent: None, defs: vec![] };
+    let mut scopes = vec![root];
+    let mut errors = Vec::new();
+
+    for (unit_idx, unit) in req.units.iter().enumerate() {
+        let mut parent_id = AstScopeId(0);
+        for seg in &unit.path {
+            parent_id = find_or_create_scope(&mut scopes, seg, parent_id);
+        }
+        let leaf_id = find_or_create_scope(&mut scopes, &unit.name, parent_id);
+
+        let mut p = Parser::new(&unit.src, unit_idx as u32);
+        let raw_defs = p.parse_system();
+        errors.extend(p.errors);
+
+        let mut defs = Vec::new();
+        for def in raw_defs {
+            match def {
+                AstDef::Type(mut td) => {
+                    hoist_struct_scopes(&mut td, leaf_id, &mut scopes);
+                    defs.push(AstDef::Type(td));
+                }
+                other => defs.push(other),
+            }
+        }
+        scopes[leaf_id.0 as usize].defs.extend(defs);
+    }
+
+    ParseRes { scopes, errors }
 }

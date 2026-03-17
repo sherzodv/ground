@@ -1,6 +1,8 @@
 pub mod ast;
 pub mod ast2;
+pub mod ir2;
 pub mod parse2;
+pub mod resolve2;
 
 pub use ground_core::ParseError;
 pub use ast::*;

@@ -1,7 +1,7 @@
 use ground_parse::ast2::{
-    AstDef, AstField, AstLinkDef, AstPrimitive, AstRef,
-    AstStructItem, AstTypeDef, AstTypeDefBody, AstValue,
-    ParseReq,
+    AstDef, AstField, AstLinkDef, AstPrimitive, AstRef, AstScope, AstScopeId,
+    AstStructItem, AstTypeDef, AstTypeDefBody, AstValue, ScopeKind,
+    ParseReq, ParseUnit,
 };
 use ground_parse::parse2::parse;
 
@@ -40,7 +40,7 @@ pub fn show_type_def_body(body: &AstTypeDefBody) -> String {
 
 pub fn show_type_def(td: &AstTypeDef) -> String {
     let name = td.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    format!("TypeDef[{}, {}]", name, show_type_def_body(&td.body.inner))
+    format!("Type[{}, {}]", name, show_type_def_body(&td.body.inner))
 }
 
 pub fn show_struct_item(item: &AstStructItem) -> String {
@@ -52,7 +52,7 @@ pub fn show_struct_item(item: &AstStructItem) -> String {
 
 pub fn show_link_def(ld: &AstLinkDef) -> String {
     let name = ld.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    format!("LinkDef[{}, {}]", name, show_type_def(&ld.ty.inner))
+    format!("Link[{}, {}]", name, show_type_def(&ld.ty.inner))
 }
 
 pub fn show_value(v: &AstValue) -> String {
@@ -94,6 +94,36 @@ pub fn show_def(def: &AstDef) -> String {
             parts.extend(dep.inner.fields.iter().map(|f| show_field(&f.inner)));
             format!("Deploy[{}]", parts.join(", "))
         }
+        AstDef::Scope(s) => {
+            let name = s.inner.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
+            let parts: Vec<_> = s.inner.defs.iter().map(show_def).collect();
+            format!("Scope[{}, {}]", name, parts.join(", "))
+        }
+    }
+}
+
+pub fn show_scope(scopes: &[AstScope], id: AstScopeId) -> String {
+    let scope = &scopes[id.0 as usize];
+    let raw_name = scope.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
+    let kind_str = match scope.kind {
+        ScopeKind::Pack => "pack",
+        ScopeKind::Type => "type",
+    };
+    let name = format!("{}:{}", kind_str, raw_name);
+
+    let mut parts: Vec<String> = scope.defs.iter().map(show_def).collect();
+
+    // Append child scopes from arena (preserving insertion order)
+    for (i, s) in scopes.iter().enumerate() {
+        if s.parent == Some(id) {
+            parts.push(show_scope(scopes, AstScopeId(i as u32)));
+        }
+    }
+
+    if parts.is_empty() {
+        format!("Scope[{}]", name)
+    } else {
+        format!("Scope[{},\n{},\n]", name, parts.join(",\n"))
     }
 }
 
@@ -106,14 +136,22 @@ pub fn norm(s: &str) -> String {
         .join("\n")
 }
 
-/// Parse `input`, format result as a compact multi-line string.
+/// Parse `input` as a single unit named "test", return the scope tree rooted
+/// at the direct children of the synth root.
 pub fn show(input: &str) -> String {
-    let res = parse(ParseReq { units: vec![input.to_string()] });
-    let mut lines: Vec<String> = res.units.iter()
-        .flat_map(|u| u.defs.iter().map(show_def))
+    let req = ParseReq {
+        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string() }],
+    };
+    let res = parse(req);
+
+    let mut lines: Vec<String> = res.scopes.iter().enumerate().skip(1)
+        .filter(|(_, s)| s.parent == Some(AstScopeId(0)))
+        .map(|(i, _)| show_scope(&res.scopes, AstScopeId(i as u32)))
         .collect();
+
     for e in &res.errors {
         lines.push(format!("ERR: {}", e.message));
     }
-    lines.join("\n")
+
+    norm(&lines.join("\n"))
 }
