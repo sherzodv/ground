@@ -482,6 +482,59 @@ fn typed_path_value_segment_count_mismatch_errors() {
 }
 
 #[test]
+fn inline_named_type_with_typed_path_ref() {
+    assert_eq!(
+        show(r#"
+            type service = {
+                type port   = grpc | http
+                link sidecar = type sidecar = {
+                    link service = type:service:(port)
+                }
+            }
+            service upstream {}
+            service my-svc {
+                sidecar: {
+                    service: upstream:grpc
+                }
+            }
+        "#),
+        norm(r#"
+            Type#0[service, Struct[Link#1[sidecar, IrRef[Struct(Type#2)]]]]
+            Type#1[port, Enum[grpc|http]]
+            Type#2[sidecar, Struct[Link#0[service, IrRef[Struct(Type#0):(Enum(Type#1))]]]]
+            Inst#0[Type#0, upstream]
+            Inst#1[Type#0, my-svc, Field[Link#1, Inst(Inst#2)]]
+            Inst#2[Type#2, _, Field[Link#0, Inst(Inst#0):Variant(Type#1, "grpc")]]
+        "#),
+    );
+}
+
+#[test]
+fn inst_inline_struct_value() {
+    assert_eq!(
+        show(r#"
+            type scaling = {
+                link min = integer
+                link max = integer
+            }
+            type svc = { link scaling = scaling }
+            svc my-svc {
+                scaling: {
+                    min: 1
+                    max: 10
+                }
+            }
+        "#),
+        norm(r#"
+            Type#0[scaling, Struct[Link#0[min, Prim(integer)], Link#1[max, Prim(integer)]]]
+            Type#1[svc, Struct[Link#2[scaling, IrRef[Struct(Type#0)]]]]
+            Inst#0[Type#1, my-svc, Field[Link#2, Inst(Inst#1)]]
+            Inst#1[Type#0, _, Field[Link#0, Int(1)], Field[Link#1, Int(10)]]
+        "#),
+    );
+}
+
+#[test]
 fn inst_struct_as_field_value() {
     assert_eq!(
         show(

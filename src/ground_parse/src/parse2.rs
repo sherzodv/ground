@@ -423,12 +423,31 @@ impl<'a> Parser<'a> {
 
     // -- instance values & fields ----------------------------------------
 
-    /// `string | "[" inst-value* "]" | ref`
+    /// `string | "[" inst-value* "]" | "{" inst-item* "}" | ref`
     fn parse_inst_value(&mut self) -> Option<AstNode<AstValue>> {
         let start = self.pos;
 
         if let Some(s) = self.parse_string_lit() {
             return Some(self.node(start, AstValue::Str(s.inner)));
+        }
+
+        if self.rest().starts_with('{') {
+            self.advance(1);
+            let mut fields = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                if let Some(item) = self.parse_inst_item() {
+                    fields.push(item);
+                } else {
+                    self.push_error(self.pos, format!(
+                        "unexpected token in inline struct value: {:?}", self.peek()
+                    ));
+                    self.skip_past_line();
+                }
+            }
+            self.eat("}");
+            return Some(self.node(start, AstValue::Struct(fields)));
         }
 
         if self.eat("[") {

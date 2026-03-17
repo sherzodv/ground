@@ -57,11 +57,15 @@ pub fn show_link_def(ld: &AstLinkDef) -> String {
 
 pub fn show_value(v: &AstValue) -> String {
     match v {
-        AstValue::Str(s)      => format!("Str({:?})", s),
-        AstValue::Ref(r)      => format!("Ref({})", show_ref(r)),
-        AstValue::List(items) => {
+        AstValue::Str(s)        => format!("Str({:?})", s),
+        AstValue::Ref(r)        => format!("Ref({})", show_ref(r)),
+        AstValue::List(items)   => {
             let parts: Vec<_> = items.iter().map(|i| show_value(&i.inner)).collect();
             format!("List[{}]", parts.join(", "))
+        }
+        AstValue::Struct(fields) => {
+            let parts: Vec<_> = fields.iter().map(|f| show_field(&f.inner)).collect();
+            format!("Struct[{}]", parts.join(", "))
         }
     }
 }

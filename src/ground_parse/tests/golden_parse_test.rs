@@ -578,6 +578,65 @@ fn multi_unit_shared_path() {
 }
 
 #[test]
+fn inline_named_type_with_typed_path_ref() {
+    assert_eq!(
+        show(r#"
+            type service = {
+                type port   = grpc | http
+                link sidecar = type sidecar = {
+                    link service = type:service:(port)
+                }
+            }
+            service upstream {}
+            service my-svc {
+                sidecar: {
+                    service: upstream:grpc
+                }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                Type[service, Struct[Link[sidecar, Type[sidecar, Struct[Link[service, Type[_, Ref(type:service:port?)]]]]]]],
+                Inst[service, upstream],
+                Inst[service, my-svc, Field[sidecar, Struct[Field[service, Ref(upstream:grpc)]]]],
+                Scope[type:service,
+                    Type[port, Enum[Ref(grpc) | Ref(http)]],
+                    Scope[type:sidecar],
+                ],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn inst_inline_struct_value() {
+    assert_eq!(
+        show(r#"
+            type scaling = {
+                link min = integer
+                link max = integer
+            }
+            type svc = { link scaling = scaling }
+            svc my-svc {
+                scaling: {
+                    min: 1
+                    max: 10
+                }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                Type[scaling, Struct[Link[min, Type[_, Primitive(integer)]], Link[max, Type[_, Primitive(integer)]]]],
+                Type[svc, Struct[Link[scaling, Type[_, Ref(scaling)]]]],
+                Inst[svc, my-svc, Field[scaling, Struct[Field[min, Ref(1)], Field[max, Ref(10)]]]],
+                Scope[type:scaling],
+                Scope[type:svc],
+            ]
+        "#),
+    );
+}
+
+#[test]
 fn inst_struct_as_field_value() {
     assert_eq!(
         show(

@@ -468,28 +468,7 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             if let AstField::Anon(v) = &af.inner { Some(v) } else { None }
         }).collect();
 
-        let mut resolved: Vec<IrField> = fields.iter().filter_map(|af| {
-            let AstField::Named { name, value } = &af.inner else { return None; };
-            let field_name = &name.inner;
-            let loc        = ir_loc(&name.loc);
-
-            let lid = match link_ids.iter().find(|&&lid| {
-                ctx.links[lid.0 as usize].name.as_deref() == Some(field_name)
-            }) {
-                Some(&lid) => lid,
-                None => {
-                    ctx.errors.push(IrError {
-                        message: format!("unknown field '{}'", field_name),
-                        loc: loc.clone(),
-                    });
-                    return None;
-                }
-            };
-
-            let link_type = ctx.links[lid.0 as usize].link_type.clone();
-            let ir_val    = resolve_value(&value.inner, &link_type, ctx, scope, &ir_loc(&value.loc));
-            Some(IrField { link_id: lid, name: field_name.clone(), loc, value: ir_val })
-        }).collect();
+        let mut resolved: Vec<IrField> = resolve_named_fields(&fields, &link_ids, ctx, scope);
 
         // Resolve anonymous values against the unnamed link.
         if let (Some(lid), false) = (anon_link, anon_vals.is_empty()) {
@@ -509,6 +488,40 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 
         ctx.insts[iid.0 as usize].fields = resolved;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Named field resolution (shared by pass5 and inline struct values)
+// ---------------------------------------------------------------------------
+
+fn resolve_named_fields(
+    ast_fields: &[AstNode<AstField>],
+    link_ids:   &[LinkId],
+    ctx:        &mut Ctx,
+    scope:      ScopeId,
+) -> Vec<IrField> {
+    ast_fields.iter().filter_map(|af| {
+        let AstField::Named { name, value } = &af.inner else { return None; };
+        let field_name = &name.inner;
+        let loc        = ir_loc(&name.loc);
+
+        let lid = match link_ids.iter().find(|&&lid| {
+            ctx.links[lid.0 as usize].name.as_deref() == Some(field_name)
+        }) {
+            Some(&lid) => lid,
+            None => {
+                ctx.errors.push(IrError {
+                    message: format!("unknown field '{}'", field_name),
+                    loc: loc.clone(),
+                });
+                return None;
+            }
+        };
+
+        let link_type = ctx.links[lid.0 as usize].link_type.clone();
+        let ir_val    = resolve_value(&value.inner, &link_type, ctx, scope, &ir_loc(&value.loc));
+        Some(IrField { link_id: lid, name: field_name.clone(), loc, value: ir_val })
+    }).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +561,28 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
         }
 
         IrLinkType::Ref(pattern) => {
+            // Inline struct literal `{ field: value ... }` — allocate an anonymous instance.
+            if let AstValue::Struct(ast_fields) = v {
+                if pattern.segments.len() == 1 {
+                    if let IrRefSegValue::Type(tid) = &pattern.segments[0].value {
+                        let type_id  = *tid;
+                        let link_ids = match ctx.types.get(type_id.0 as usize).map(|t| t.body.clone()) {
+                            Some(IrTypeBody::Struct(ids)) => ids,
+                            _ => {
+                                ctx.push_error("inline struct value requires a struct-typed link".into());
+                                return IrValue::Ref(String::new());
+                            }
+                        };
+                        let iid = InstId(ctx.insts.len() as u32);
+                        ctx.insts.push(IrInstDef { type_id, name: "_".into(), scope, loc: loc.clone(), fields: vec![] });
+                        let fields = resolve_named_fields(ast_fields, &link_ids, ctx, scope);
+                        ctx.insts[iid.0 as usize].fields = fields;
+                        return IrValue::Inst(iid);
+                    }
+                }
+                ctx.push_error("inline struct value only valid for single struct-typed link".into());
+                return IrValue::Ref(String::new());
+            }
             resolve_value_against_ref(v, pattern, ctx, scope, loc)
         }
 

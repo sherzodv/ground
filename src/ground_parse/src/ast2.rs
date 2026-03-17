@@ -103,6 +103,8 @@ pub enum AstValue {
     /// Integers are left as single-segment refs; the resolve pass interprets them.
     Ref(AstRef),
     List(Vec<AstNode<AstValue>>),
+    /// Inline struct literal: `{ field: value ... }`
+    Struct(Vec<AstNode<AstField>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
