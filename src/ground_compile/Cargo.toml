@@ -2,7 +2,3 @@
 name = "ground_compile"
 version = "0.0.0"
 edition = "2021"
-
-[dependencies]
-ground_core  = { path = "../ground_core" }
-ground_parse = { path = "../ground_parse" }

@@ -8,7 +8,6 @@ name = "ground"
 path = "src/main.rs"
 
 [dependencies]
-ground_core     = { path = "../ground_core" }
-ground_compile  = { path = "../ground_compile" }
+ground_compile    = { path = "../ground_compile" }
 ground_be_terra = { path = "../ground_be_terra" }
 ground_run      = { path = "../ground_run" }

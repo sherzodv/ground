@@ -229,7 +229,6 @@ version = "0.0.0"
 dependencies = [
  "ground_be_terra",
  "ground_compile",
- "ground_core",
  "ground_run",
 ]
 
@@ -237,7 +236,7 @@ dependencies = [
 name = "ground_be_terra"
 version = "0.0.0"
 dependencies = [
- "ground_core",
+ "ground_compile",
  "ground_gen",
  "ground_run",
  "serde_json",
@@ -246,14 +245,6 @@ dependencies = [
 [[package]]
 name = "ground_compile"
 version = "0.0.0"
-dependencies = [
- "ground_core",
- "ground_parse",
-]
-
-[[package]]
-name = "ground_core"
-version = "0.0.0"
 
 [[package]]
 name = "ground_gen"
@@ -261,15 +252,6 @@ version = "0.0.0"
 dependencies = [
  "serde_json",
  "tera",
-]
-
-[[package]]
-name = "ground_parse"
-version = "0.0.0"
-dependencies = [
- "ground_core",
- "pest",
- "pest_derive",
 ]
 
 [[package]]

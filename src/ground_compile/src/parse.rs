@@ -35,7 +35,7 @@
 /// def            ::= type-def | link-def | deploy | inst
 /// system         ::= def*
 /// ```
-use crate::ast2::*;
+use crate::ast::*;
 
 // ---------------------------------------------------------------------------
 // Parser state
@@ -765,7 +765,11 @@ pub fn parse(req: ParseReq) -> ParseRes {
         for seg in &unit.path {
             parent_id = find_or_create_scope(&mut scopes, seg, parent_id);
         }
-        let leaf_id = find_or_create_scope(&mut scopes, &unit.name, parent_id);
+        let leaf_id = if unit.name.is_empty() {
+            parent_id
+        } else {
+            find_or_create_scope(&mut scopes, &unit.name, parent_id)
+        };
 
         let mut p = Parser::new(&unit.src, unit_idx as u32);
         let raw_defs = p.parse_system();

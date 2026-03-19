@@ -1,66 +1,3 @@
-#[cfg(test)]
-mod parse {
-    use ground_compile::compile;
-
-    fn ok(input: &str) {
-        compile(&[("test", input)]).unwrap_or_else(|es| panic!("{}", es[0]));
-    }
-
-    fn err(input: &str) -> Vec<ground_compile::ParseError> {
-        compile(&[("test", input)]).expect_err("expected parse errors but got Ok")
-    }
-
-    #[test]
-    fn test_empty_service_missing_image() {
-        let es = err("service svc-api {}");
-        assert!(es.iter().any(|e| e.message.contains("missing required field 'image'")));
-    }
-
-    #[test]
-    fn test_service_with_image() {
-        ok("service svc-api { image: svc-api:prod }");
-    }
-
-    #[test]
-    fn test_database_minimal() {
-        compile(&[("test", "database db-main { engine: postgres }")]).unwrap();
-    }
-
-    #[test]
-    fn test_unknown_type() {
-        let es = err("widget foo { }");
-        assert!(es.iter().any(|e| e.message.contains("unknown type")));
-    }
-
-    #[test]
-    fn test_service_with_image_and_scaling() {
-        ok("service svc-api { image: svc-api:prod  scaling: { min: 2  max: 10 } }");
-    }
-
-    #[test]
-    fn test_multiple_services() {
-        ok(r#"
-            service svc-core { image: svc-core:prod }
-            service svc-pay  { image: svc-pay:prod  }
-        "#);
-    }
-
-    #[test]
-    fn test_multiple_errors_collected() {
-        let es = err("service a {} service b {}");
-        assert_eq!(
-            es.iter().filter(|e| e.message.contains("missing required field 'image'")).count(),
-            2
-        );
-    }
-
-    #[test]
-    fn test_database_missing_engine() {
-        let es = err("database db-main {}");
-        assert!(es.iter().any(|e| e.message.contains("missing required field 'engine'")));
-    }
-}
-
 /// File-based golden tests.
 ///
 /// Each `.md` file in `fixtures/` contains a ` ```ground ` block with the
@@ -72,7 +9,7 @@ mod parse {
 mod files {
     use std::{fs, path::Path};
 
-    use ground_compile::compile;
+    use ground_compile::{compile, CompileReq, Unit};
     use ground_be_terra::generate;
     use serde_json::Value;
 
@@ -109,10 +46,19 @@ mod files {
         let input = extract_block(testable, "ground")
             .ok_or_else(|| format!("{}: missing ```ground block", path.display()))?;
 
-        let spec = compile(&[(path.to_str().unwrap(), input)])
-            .map_err(|es| format!("{}: {}", path.display(), es[0]))?;
+        let res = compile(CompileReq {
+            units: vec![Unit {
+                name: path.to_str().unwrap().to_string(),
+                path: vec![],
+                src:  input.to_string(),
+            }],
+        });
+        if !res.errors.is_empty() {
+            let msgs: Vec<_> = res.errors.iter().map(|e| e.message.as_str()).collect();
+            return Err(format!("{}: {}", path.display(), msgs.join("; ")));
+        }
 
-        let actual_str = generate(&spec)
+        let actual_str = generate(&res)
             .map_err(|e| format!("{}: gen error: {e}", path.display()))?;
 
         if std::env::var("UPDATE_FIXTURES").is_ok() {

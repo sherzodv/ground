@@ -7,11 +7,11 @@ service svc-api {
 }
 
 stack prod {
-  service: svc-api
+  service:svc-api
 }
 
 deploy prod to aws as prod {
-  region: us-east:1
+  region: [ us-east:1 ]
 }
 ```
 

@@ -1,9 +1,0 @@
-[package]
-name = "ground_parse"
-version = "0.0.0"
-edition = "2021"
-
-[dependencies]
-ground_core = { path = "../ground_core" }
-pest        = "2"
-pest_derive = "2"

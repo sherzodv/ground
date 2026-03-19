@@ -1,9 +1,9 @@
-use ground_parse::ast2::{
+use ground_compile::ast::{
     AstDef, AstField, AstLinkDef, AstPrimitive, AstRef, AstScope, AstScopeId,
     AstStructItem, AstTypeDef, AstTypeDefBody, AstValue, ScopeKind,
     ParseReq, ParseUnit,
 };
-use ground_parse::parse2::parse;
+use ground_compile::parse::parse;
 
 pub fn show_ref(r: &AstRef) -> String {
     r.segments.iter().map(|s| {

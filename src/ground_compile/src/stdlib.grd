@@ -1,0 +1,27 @@
+# ground stdlib — parse compatible
+
+type zone   = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20
+type region = eu-central | eu-west | us-east | us-west | ap-southeast
+
+type database = {
+    link engine  = postgresql | mongodb | postgres | mysql
+    link version = string
+    link size    = small | medium | large
+    link storage = integer
+}
+
+type service = {
+    type port    = grpc | http
+    link image   = reference
+    link access  = [ service:(port) | database ]
+    link scaling = type scaling = {
+        link min = integer
+        link max = integer
+    }
+}
+
+type stack = {
+    link = [ type:service | type:database ]
+}
+
+link region = [ type:region:type:zone ]

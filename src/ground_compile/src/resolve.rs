@@ -1,946 +1,786 @@
+/// Resolve pass: `ParseRes` → `IrRes`.
+///
+/// Passes:
+///   1. Mirror scope tree from parse arena.
+///   2. Register type/link names in their scopes.
+///   3. Resolve type bodies and link types.
+///   4. Register instance names (enables forward references).
+///   5. Resolve instance fields (validated against link type patterns).
+///   6. Resolve deploys.
 use std::collections::HashMap;
-use ground_parse::*;
-use ground_core::*;
 
-const STDLIB: &str = include_str!("ground_stdlib.grd");
-
-// ---------------------------------------------------------------------------
-// Symbol table types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub(crate) enum PrimitiveKind {
-    Integer,
-    Float,
-    Boolean,
-    String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum TypeDef {
-    Primitive,
-    Enum(Vec<std::string::String>),
-    Composite(Vec<MemberDef>),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MemberDef {
-    pub link_name:   std::string::String,
-    pub required:    bool,
-    pub default:     Option<DefaultValue>,
-    pub link_type:   LinkDef,
-    pub is_type_ref: bool,  // true if declared as `type T` in composite body, not a link
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum DefaultValue {
-    Composite(Vec<(std::string::String, std::string::String)>),
-    Scalar(std::string::String),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum LinkDef {
-    Primitive(PrimitiveKind),
-    Ref,
-    Enum(std::string::String),          // reference to enum type by name
-    TypeRef(std::string::String),       // reference to composite type by name
-    TypedPath(Vec<PathSegment>),        // e.g. type:region:type:zone
-    List(Vec<ShapeDef>),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PathSegment {
-    pub kind: SegmentKind,
-    pub name: std::string::String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum SegmentKind {
-    Type,
-    Link,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ShapeDef {
-    pub type_name:        std::string::String,
-    pub optional_segment: Option<std::string::String>,
-}
+use crate::ast::{self, *};
+use crate::ir::*;
+use crate::ir::ScopeKind as IrScopeKind;
 
 // ---------------------------------------------------------------------------
-// Symbol table
+// Resolver context
 // ---------------------------------------------------------------------------
 
-struct SymbolTable {
-    types: HashMap<std::string::String, TypeDef>,
-    links: HashMap<std::string::String, LinkDef>,
+struct Ctx {
+    types:  Vec<IrTypeDef>,
+    links:  Vec<IrLinkDef>,
+    insts:  Vec<IrInstDef>,
+    scopes: Vec<IrScope>,
+    errors: Vec<IrError>,
 }
 
-impl SymbolTable {
+impl Ctx {
     fn new() -> Self {
-        SymbolTable {
-            types: HashMap::new(),
-            links: HashMap::new(),
-        }
+        let root = IrScope {
+            kind:   IrScopeKind::Pack,
+            name:   None,
+            parent: None,
+            types:  HashMap::new(),
+            links:  HashMap::new(),
+            insts:  HashMap::new(),
+            packs:  HashMap::new(),
+        };
+        Ctx { types: vec![], links: vec![], insts: vec![], scopes: vec![root], errors: vec![] }
     }
 
-    fn add_type(&mut self, name: std::string::String, def: TypeDef) {
-        self.types.insert(name, def);
-    }
-
-    fn add_link(&mut self, name: std::string::String, def: LinkDef) {
-        self.links.insert(name, def);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Parse a raw link type expression string into a LinkDef
-// ---------------------------------------------------------------------------
-
-fn parse_link_type_expr(
-    expr: &str,
-    symbols: &SymbolTable,
-    path: &str,
-    line: usize,
-    col: usize,
-) -> Result<LinkDef, ParseError> {
-    let expr = expr.trim();
-
-    // List form: [ ... ]
-    if expr.starts_with('[') && expr.ends_with(']') {
-        let inner = &expr[1..expr.len() - 1];
-        let shapes = parse_list_shape(inner);
-        return Ok(LinkDef::List(shapes));
-    }
-
-    // typed path: contains "type:" or multiple colon-separated segments
-    // e.g. type:scaling, type:region:type:zone, engine, integer, reference
-    if expr.starts_with("type:") {
-        // Could be type:name or type:name:type:name
-        let parts: Vec<&str> = expr.split(':').collect();
-        if parts.len() == 2 && parts[0] == "type" {
-            // type:scaling → TypeRef
-            return Ok(LinkDef::TypeRef(parts[1].to_string()));
-        }
-        // multiple segments → TypedPath
-        let mut segments = Vec::new();
-        let mut i = 0;
-        while i < parts.len() {
-            let kind_str = parts[i];
-            let name_str = if i + 1 < parts.len() { parts[i + 1] } else { "" };
-            let kind = match kind_str {
-                "type" => SegmentKind::Type,
-                "link" => SegmentKind::Link,
-                _ => {
-                    return Err(ParseError {
-                        path: path.to_string(),
-                        line,
-                        col,
-                        message: format!("unknown path segment kind: {}", kind_str),
-                    });
-                }
-            };
-            segments.push(PathSegment { kind, name: name_str.to_string() });
-            i += 2;
-        }
-        return Ok(LinkDef::TypedPath(segments));
-    }
-
-    // primitive kinds
-    match expr {
-        "integer"   => return Ok(LinkDef::Primitive(PrimitiveKind::Integer)),
-        "float"     => return Ok(LinkDef::Primitive(PrimitiveKind::Float)),
-        "boolean"   => return Ok(LinkDef::Primitive(PrimitiveKind::Boolean)),
-        "string"    => return Ok(LinkDef::Primitive(PrimitiveKind::String)),
-        "reference" => return Ok(LinkDef::Ref),
-        _ => {}
-    }
-
-    // Check if it's a known enum type name
-    if let Some(TypeDef::Enum(_)) = symbols.types.get(expr) {
-        return Ok(LinkDef::Enum(expr.to_string()));
-    }
-
-    // Check if it's a known composite type name
-    if let Some(TypeDef::Composite(_)) = symbols.types.get(expr) {
-        return Ok(LinkDef::TypeRef(expr.to_string()));
-    }
-
-    // Fallback: treat as enum reference (will be validated at resolve time)
-    Ok(LinkDef::Enum(expr.to_string()))
-}
-
-/// Parse a list-shape inner string like " service:(port)?  | database "
-/// into a Vec<ShapeDef>
-fn parse_list_shape(inner: &str) -> Vec<ShapeDef> {
-    let mut shapes = Vec::new();
-    for part in inner.split('|') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        // part could be "service:(port)?" or "database"
-        if let Some(colon_pos) = part.find(':') {
-            let type_name = part[..colon_pos].trim().to_string();
-            let rest = part[colon_pos + 1..].trim();
-            // rest might be "(port)?"
-            let optional_segment = if rest.starts_with('(') && rest.ends_with(')') {
-                Some(rest[1..rest.len() - 1].to_string())
-            } else if rest.ends_with(")?") && rest.starts_with('(') {
-                Some(rest[1..rest.len() - 2].to_string())
-            } else if !rest.is_empty() {
-                Some(rest.to_string())
+    fn alloc_type(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, body: IrTypeBody) -> TypeId {
+        let id = TypeId(self.types.len() as u32);
+        if let Some(n) = &name {
+            if self.scopes[scope.0 as usize].types.contains_key(n) {
+                self.push_error(format!("duplicate type name '{}' in scope", n));
             } else {
-                None
-            };
-            shapes.push(ShapeDef { type_name, optional_segment });
-        } else {
-            shapes.push(ShapeDef { type_name: part.to_string(), optional_segment: None });
+                self.scopes[scope.0 as usize].types.insert(n.clone(), id);
+            }
         }
+        self.types.push(IrTypeDef { name, scope, loc, body });
+        id
     }
-    shapes
+
+    fn alloc_link(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, link_type: IrLinkType) -> LinkId {
+        let id = LinkId(self.links.len() as u32);
+        if let Some(n) = &name {
+            if self.scopes[scope.0 as usize].links.contains_key(n) {
+                self.push_error(format!("duplicate link name '{}' in scope", n));
+            } else {
+                self.scopes[scope.0 as usize].links.insert(n.clone(), id);
+            }
+        }
+        self.links.push(IrLinkDef { name, scope, loc, link_type });
+        id
+    }
+
+    fn alloc_inst(&mut self, name: String, scope: ScopeId, loc: IrLoc, type_id: TypeId) -> InstId {
+        let id = InstId(self.insts.len() as u32);
+        if self.scopes[scope.0 as usize].insts.contains_key(&name) {
+            self.push_error(format!("duplicate instance name '{}' in scope", name));
+        } else {
+            self.scopes[scope.0 as usize].insts.insert(name.clone(), id);
+        }
+        self.insts.push(IrInstDef { type_id, name, scope, loc, fields: vec![] });
+        id
+    }
+
+    fn push_error(&mut self, message: String) {
+        self.errors.push(IrError { message, loc: IrLoc { unit: 0, start: 0, end: 0 } });
+    }
+
+    fn lookup_type(&self, scope: ScopeId, name: &str) -> Option<TypeId> {
+        let s = &self.scopes[scope.0 as usize];
+        if let Some(&id) = s.types.get(name) { return Some(id); }
+        s.parent.and_then(|p| self.lookup_type(p, name))
+    }
+
+    fn lookup_link(&self, scope: ScopeId, name: &str) -> Option<LinkId> {
+        let s = &self.scopes[scope.0 as usize];
+        if let Some(&id) = s.links.get(name) { return Some(id); }
+        s.parent.and_then(|p| self.lookup_link(p, name))
+    }
+
+    fn lookup_inst(&self, scope: ScopeId, name: &str) -> Option<InstId> {
+        let s = &self.scopes[scope.0 as usize];
+        if let Some(&id) = s.insts.get(name) { return Some(id); }
+        s.parent.and_then(|p| self.lookup_inst(p, name))
+    }
+
+    fn lookup_pack(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
+        let s = &self.scopes[scope.0 as usize];
+        if let Some(&id) = s.packs.get(name) { return Some(id); }
+        s.parent.and_then(|p| self.lookup_pack(p, name))
+    }
+}
+
+fn ir_loc(loc: &AstNodeLoc) -> IrLoc {
+    IrLoc { unit: loc.unit, start: loc.start, end: loc.end }
 }
 
 // ---------------------------------------------------------------------------
-// Build symbol table from AST items
+// Ref resolution (def-side)
+//
+// Each segment is resolved independently in the lexical scope.
+// Keywords `pack` / `type` / `link` are kind-filters consumed without storing.
+// Unresolvable segments become Plain(String).
 // ---------------------------------------------------------------------------
 
-fn build_symbol_table(
-    items: &[AstItem],
-    symbols: &mut SymbolTable,
-    errors: &mut Vec<ParseError>,
-    path: &str,
-) {
-    for item in items {
-        match item {
-            AstItem::TypeDef(td) => {
-                let def = match &td.body {
-                    AstTypeBody::Primitive(_) => TypeDef::Primitive,
-                    AstTypeBody::Enum(variants) => TypeDef::Enum(variants.clone()),
-                    AstTypeBody::Composite(members) => {
-                        let mut member_defs = Vec::new();
-                        for member in members {
-                            match member {
-                                AstCompositeMember::LinkRef { link_name, line, col } => {
-                                    member_defs.push(MemberDef {
-                                        link_name: link_name.clone(),
-                                        required:     true,
-                                        default:      None,
-                                        link_type:    LinkDef::Ref,
-                                        is_type_ref:  false,
-                                    });
-                                    let _ = (line, col);
-                                }
-                                AstCompositeMember::LinkInline { link_name, type_expr, line, col } => {
-                                    member_defs.push(MemberDef {
-                                        link_name:    link_name.clone(),
-                                        required:     false,
-                                        default:      None,
-                                        link_type:    LinkDef::Ref,
-                                        is_type_ref:  false,
-                                    });
-                                    let _ = (type_expr, line, col);
-                                }
-                                AstCompositeMember::LinkDefault { link_name, default, line, col } => {
-                                    let dv = match default {
-                                        AstDefaultVal::Block(entries) => {
-                                            DefaultValue::Composite(entries.clone())
-                                        }
-                                        AstDefaultVal::Single(s) => DefaultValue::Scalar(s.clone()),
-                                    };
-                                    member_defs.push(MemberDef {
-                                        link_name:    link_name.clone(),
-                                        required:     false,
-                                        default:      Some(dv),
-                                        link_type:    LinkDef::Ref,
-                                        is_type_ref:  false,
-                                    });
-                                    let _ = (line, col);
-                                }
-                                AstCompositeMember::TypeRef { type_name, .. } => {
-                                    member_defs.push(MemberDef {
-                                        link_name:    type_name.clone(),
-                                        required:     false,
-                                        default:      None,
-                                        link_type:    LinkDef::Ref,
-                                        is_type_ref:  true,
-                                    });
-                                }
-                                AstCompositeMember::TypeInline { type_name, .. } => {
-                                    member_defs.push(MemberDef {
-                                        link_name:    type_name.clone(),
-                                        required:     false,
-                                        default:      None,
-                                        link_type:    LinkDef::Ref,
-                                        is_type_ref:  true,
-                                    });
-                                }
-                            }
-                        }
-                        TypeDef::Composite(member_defs)
-                    }
-                };
-                symbols.add_type(td.name.clone(), def);
-            }
-            AstItem::LinkDef(ld) => {
-                match parse_link_type_expr(&ld.type_expr, symbols, path, ld.line, ld.col) {
-                    Ok(def) => symbols.add_link(ld.name.clone(), def),
-                    Err(e) => errors.push(e),
-                }
+fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> IrRef {
+    let mut result    = Vec::new();
+    let mut kind_hint: Option<&str> = None;
+
+    for seg in segments {
+        let val = &seg.inner.value;
+
+        match val.as_str() {
+            "pack" | "type" | "link" => {
+                kind_hint = Some(val.as_str());
+                continue;
             }
             _ => {}
         }
+
+        let resolved = match kind_hint {
+            Some("type") => ctx.lookup_type(scope, val)
+                .map(IrRefSegValue::Type)
+                .unwrap_or_else(|| IrRefSegValue::Plain(val.clone())),
+
+            Some("link") => ctx.lookup_link(scope, val)
+                .map(IrRefSegValue::Link)
+                .unwrap_or_else(|| IrRefSegValue::Plain(val.clone())),
+
+            Some("pack") => ctx.lookup_pack(scope, val)
+                .map(IrRefSegValue::Pack)
+                .unwrap_or_else(|| IrRefSegValue::Plain(val.clone())),
+
+            _ => {
+                // No hint — try type, then inst, then link, then pack; else plain.
+                if let Some(id) = ctx.lookup_type(scope, val) {
+                    IrRefSegValue::Type(id)
+                } else if let Some(id) = ctx.lookup_inst(scope, val) {
+                    IrRefSegValue::Inst(id)
+                } else if let Some(id) = ctx.lookup_link(scope, val) {
+                    IrRefSegValue::Link(id)
+                } else if let Some(id) = ctx.lookup_pack(scope, val) {
+                    IrRefSegValue::Pack(id)
+                } else {
+                    IrRefSegValue::Plain(val.clone())
+                }
+            }
+        };
+
+        result.push(IrRefSeg { value: resolved, is_opt: seg.inner.is_opt });
+        kind_hint = None;
     }
 
-    // Second pass: resolve placeholder link types in composite type members
-    // We need to do this after all types and links are registered
-    let type_names: Vec<std::string::String> = symbols.types.keys().cloned().collect();
-    for type_name in type_names {
-        let type_def = symbols.types.get(&type_name).unwrap().clone();
-        if let TypeDef::Composite(_) = &type_def {
-            // Re-build the members with proper link types
-        }
-    }
+    IrRef { segments: result }
 }
 
-/// Second pass: fill in proper link types for composite type members
-fn resolve_composite_link_types(
-    items: &[AstItem],
-    symbols: &mut SymbolTable,
-    errors: &mut Vec<ParseError>,
-    path: &str,
-) {
-    for item in items {
-        if let AstItem::TypeDef(td) = item {
-            if let AstTypeBody::Composite(members) = &td.body {
-                let mut new_members = Vec::new();
-                for member in members {
-                    match member {
-                        AstCompositeMember::LinkRef { link_name, line, col } => {
-                            // Look up in links table
-                            let link_type = if let Some(ld) = symbols.links.get(link_name) {
-                                ld.clone()
-                            } else {
-                                // might be an enum type reference
-                                if let Some(TypeDef::Enum(_)) = symbols.types.get(link_name.as_str()) {
-                                    LinkDef::Enum(link_name.clone())
-                                } else {
-                                    errors.push(ParseError {
-                                        path: path.to_string(),
-                                        line: *line,
-                                        col: *col,
-                                        message: format!("unknown bare link: {}", link_name),
-                                    });
-                                    LinkDef::Ref
-                                }
-                            };
-                            new_members.push(MemberDef {
-                                link_name:   link_name.clone(),
-                                required:    true,
-                                default:     None,
-                                link_type,
-                                is_type_ref: false,
-                            });
-                        }
-                        AstCompositeMember::LinkInline { link_name, type_expr, line, col } => {
-                            let link_type = match parse_link_type_expr(type_expr, symbols, path, *line, *col) {
-                                Ok(lt) => lt,
-                                Err(e) => { errors.push(e); LinkDef::Ref }
-                            };
-                            new_members.push(MemberDef {
-                                link_name:   link_name.clone(),
-                                required:    false,
-                                default:     None,
-                                link_type,
-                                is_type_ref: false,
-                            });
-                        }
-                        AstCompositeMember::LinkDefault { link_name, default, line, col } => {
-                            let link_type = if let Some(ld) = symbols.links.get(link_name.as_str()) {
-                                ld.clone()
-                            } else {
-                                LinkDef::Ref
-                            };
-                            let dv = match default {
-                                AstDefaultVal::Block(entries) => DefaultValue::Composite(entries.clone()),
-                                AstDefaultVal::Single(s) => DefaultValue::Scalar(s.clone()),
-                            };
-                            let _ = (line, col);
-                            new_members.push(MemberDef {
-                                link_name:   link_name.clone(),
-                                required:    false,
-                                default:     Some(dv),
-                                link_type,
-                                is_type_ref: false,
-                            });
-                        }
-                        AstCompositeMember::TypeRef { type_name, line, col } => {
-                            if !symbols.types.contains_key(type_name.as_str()) {
-                                errors.push(ParseError {
-                                    path: path.to_string(),
-                                    line: *line,
-                                    col:  *col,
-                                    message: format!("unknown type '{}' in type body", type_name),
-                                });
-                            }
-                            new_members.push(MemberDef {
-                                link_name:   type_name.clone(),
-                                required:    false,
-                                default:     None,
-                                link_type:   LinkDef::TypeRef(type_name.clone()),
-                                is_type_ref: true,
-                            });
-                        }
-                        AstCompositeMember::TypeInline { line, col, .. } => {
-                            errors.push(ParseError {
-                                path: path.to_string(),
-                                line: *line,
-                                col:  *col,
-                                message: "inline type definitions inside type bodies are not supported".into(),
-                            });
-                        }
-                    }
-                }
-                symbols.types.insert(td.name.clone(), TypeDef::Composite(new_members));
+// ---------------------------------------------------------------------------
+// Pass 1 — mirror scope tree
+// ---------------------------------------------------------------------------
+
+fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    // scopes[0] is root — already created in Ctx::new().
+    // IR scope IDs map 1-to-1 with AST scope IDs.
+    for ast_scope in parse_scopes.iter().skip(1) {
+        let parent = ast_scope.parent.map(|id| ScopeId(id.0)).unwrap_or(ScopeId(0));
+        let kind   = match ast_scope.kind {
+            ast::ScopeKind::Pack => IrScopeKind::Pack,
+            ast::ScopeKind::Type => IrScopeKind::Type,
+        };
+        let name = ast_scope.name.as_ref().map(|n| n.inner.clone());
+
+        let new_id = ScopeId(ctx.scopes.len() as u32);
+        ctx.scopes.push(IrScope {
+            kind,
+            name: name.clone(),
+            parent: Some(parent),
+            types:  HashMap::new(),
+            links:  HashMap::new(),
+            insts:  HashMap::new(),
+            packs:  HashMap::new(),
+        });
+
+        // Only register Pack scopes by name — Type scopes are registered
+        // as type symbols by pass2.
+        if kind == IrScopeKind::Pack {
+            if let Some(n) = name {
+                ctx.scopes[parent.0 as usize].packs.insert(n, new_id);
             }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Resolve field values
+// Pass 2 — register type and link names (placeholder bodies)
 // ---------------------------------------------------------------------------
 
-fn resolve_field_value(
-    link_name: &str,
-    ast_value: &AstFieldValue,
-    link_def: &LinkDef,
-    symbols: &SymbolTable,
-    path: &str,
-    line: usize,
-    col: usize,
-    errors: &mut Vec<ParseError>,
-) -> ResolvedValue {
-    match link_def {
-        LinkDef::Ref => {
-            match ast_value {
-                AstFieldValue::Single(tok) => ResolvedValue::Scalar(ScalarValue::Ref(tok.clone())),
-                _ => {
-                    errors.push(ParseError {
-                        path: path.to_string(), line, col,
-                        message: format!("field '{}': expected a reference value", link_name),
-                    });
-                    ResolvedValue::Scalar(ScalarValue::Ref(std::string::String::new()))
-                }
-            }
-        }
-
-        LinkDef::Primitive(kind) => {
-            match kind {
-                PrimitiveKind::Integer => {
-                    match ast_value {
-                        AstFieldValue::Single(tok) => {
-                            match tok.parse::<i64>() {
-                                Ok(n)  => ResolvedValue::Scalar(ScalarValue::Int(n)),
-                                Err(_) => {
-                                    errors.push(ParseError {
-                                        path: path.to_string(), line, col,
-                                        message: format!("field '{}': expected integer, got '{}'", link_name, tok),
-                                    });
-                                    ResolvedValue::Scalar(ScalarValue::Int(0))
-                                }
-                            }
-                        }
-                        _ => {
-                            errors.push(ParseError {
-                                path: path.to_string(), line, col,
-                                message: format!("field '{}': expected integer value", link_name),
-                            });
-                            ResolvedValue::Scalar(ScalarValue::Int(0))
-                        }
-                    }
-                }
-                PrimitiveKind::Float => {
-                    match ast_value {
-                        AstFieldValue::Single(tok) => ResolvedValue::Scalar(ScalarValue::Str(tok.clone())),
-                        _ => ResolvedValue::Scalar(ScalarValue::Str(std::string::String::new())),
-                    }
-                }
-                PrimitiveKind::Boolean => {
-                    match ast_value {
-                        AstFieldValue::Single(tok) => {
-                            let b = tok == "true";
-                            ResolvedValue::Scalar(ScalarValue::Bool(b))
-                        }
-                        _ => ResolvedValue::Scalar(ScalarValue::Bool(false)),
-                    }
-                }
-                PrimitiveKind::String => {
-                    match ast_value {
-                        AstFieldValue::Single(tok) => ResolvedValue::Scalar(ScalarValue::Str(tok.clone())),
-                        _ => ResolvedValue::Scalar(ScalarValue::Str(std::string::String::new())),
-                    }
-                }
-
-            }
-        }
-
-        LinkDef::Enum(type_name) => {
-            match ast_value {
-                AstFieldValue::Single(tok) => {
-                    // Validate the token is a known variant of the enum type
-                    if let Some(TypeDef::Enum(variants)) = symbols.types.get(type_name.as_str()) {
-                        if !variants.contains(tok) {
-                            errors.push(ParseError {
-                                path: path.to_string(), line, col,
-                                message: format!(
-                                    "field '{}': '{}' is not a valid variant of '{}' (expected one of: {})",
-                                    link_name, tok, type_name,
-                                    variants.join(", ")
-                                ),
-                            });
-                        }
-                    }
-                    ResolvedValue::Scalar(ScalarValue::Enum(tok.clone()))
-                }
-                _ => {
-                    errors.push(ParseError {
-                        path: path.to_string(), line, col,
-                        message: format!("field '{}': expected enum value", link_name),
-                    });
-                    ResolvedValue::Scalar(ScalarValue::Enum(std::string::String::new()))
-                }
-            }
-        }
-
-        LinkDef::TypeRef(type_name) => {
-            match ast_value {
-                AstFieldValue::Block(sub_fields) => {
-                    // Look up the composite type definition
-                    let member_defs = if let Some(TypeDef::Composite(members)) = symbols.types.get(type_name.as_str()) {
-                        members.clone()
-                    } else {
-                        vec![]
-                    };
-                    let resolved = resolve_fields(sub_fields, &member_defs, symbols, path, errors);
-                    ResolvedValue::Composite(resolved)
-                }
-                AstFieldValue::Single(tok) => {
-                    // Could be an instance reference name
-                    ResolvedValue::Scalar(ScalarValue::InstanceRef {
-                        type_name: type_name.clone(),
-                        name:      tok.clone(),
-                    })
-                }
-                _ => {
-                    errors.push(ParseError {
-                        path: path.to_string(), line, col,
-                        message: format!("field '{}': expected block or reference for type '{}'", link_name, type_name),
-                    });
-                    ResolvedValue::Composite(vec![])
-                }
-            }
-        }
-
-        LinkDef::TypedPath(segments) => {
-            // Each list entry has N segments corresponding to the path segments
-            // e.g. type:region:type:zone → each entry has [region_enum, zone_enum]
-            // The token for each list entry is like "us-east:1" (colon-separated)
-            let entries = match ast_value {
-                AstFieldValue::List(tokens) => {
-                    tokens.iter().map(|tok| {
-                        resolve_typed_path_entry(tok, segments, symbols, path, line, col, errors)
-                    }).collect()
-                }
-                AstFieldValue::Single(tok) => {
-                    vec![resolve_typed_path_entry(tok, segments, symbols, path, line, col, errors)]
-                }
-                _ => vec![],
-            };
-            ResolvedValue::List(entries)
-        }
-
-        LinkDef::List(shapes) => {
-            // Polymorphic list of instances
-            // Each token can be "name:name" (type:instance) or just "name"
-            let entries = match ast_value {
-                AstFieldValue::List(tokens) => {
-                    tokens.iter().map(|tok| {
-                        resolve_list_entry(tok, shapes, path, line, col, errors)
-                    }).collect()
-                }
-                AstFieldValue::Single(tok) => {
-                    vec![resolve_list_entry(tok, shapes, path, line, col, errors)]
-                }
-                _ => vec![],
-            };
-            ResolvedValue::List(entries)
-        }
-    }
-}
-
-fn resolve_typed_path_entry(
-    tok: &str,
-    segments: &[PathSegment],
-    symbols: &SymbolTable,
-    path: &str,
-    line: usize,
-    col: usize,
-    errors: &mut Vec<ParseError>,
-) -> ListEntry {
-    // Split the token by ':'
-    let parts: Vec<&str> = tok.split(':').collect();
-    let mut scalar_segs = Vec::new();
-
-    for (i, seg) in segments.iter().enumerate() {
-        let raw = parts.get(i).copied().unwrap_or("");
-        match &seg.kind {
-            SegmentKind::Type => {
-                // Validate against enum type
-                if let Some(TypeDef::Enum(variants)) = symbols.types.get(&seg.name) {
-                    if !variants.contains(&raw.to_string()) {
-                        errors.push(ParseError {
-                            path: path.to_string(), line, col,
-                            message: format!(
-                                "typed path: '{}' is not a valid variant of '{}' (expected one of: {})",
-                                raw, seg.name, variants.join(", ")
-                            ),
+fn pass2_register_names(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            match def {
+                AstDef::Type(td) => {
+                    if let Some(name_node) = &td.inner.name {
+                        let id = TypeId(ctx.types.len() as u32);
+                        ctx.scopes[scope.0 as usize].types.insert(name_node.inner.clone(), id);
+                        ctx.types.push(IrTypeDef {
+                            name:  Some(name_node.inner.clone()),
+                            scope,
+                            loc:   ir_loc(&td.loc),
+                            body:  IrTypeBody::Enum(vec![]),  // placeholder
                         });
                     }
                 }
-                scalar_segs.push(ScalarValue::Enum(raw.to_string()));
-            }
-            SegmentKind::Link => {
-                scalar_segs.push(ScalarValue::Str(raw.to_string()));
-            }
-        }
-    }
-
-    ListEntry { segments: scalar_segs }
-}
-
-fn resolve_list_entry(
-    tok: &str,
-    shapes: &[ShapeDef],
-    _path: &str,
-    _line: usize,
-    _col: usize,
-    _errors: &mut Vec<ParseError>,
-) -> ListEntry {
-    // Split the token by ':' to get parts
-    let parts: Vec<&str> = tok.splitn(2, ':').collect();
-    let part_count = parts.len(); // 1 or 2
-
-    // Try each shape in order; first match wins
-    for shape in shapes {
-        let matches = if shape.optional_segment.is_some() {
-            // Shape allows 1 or 2 colon-separated segments
-            part_count == 1 || part_count == 2
-        } else {
-            // Shape requires exactly 1 segment (no colon)
-            part_count == 1
-        };
-
-        if matches {
-            let name = parts[0].to_string();
-            let mut segments = vec![ScalarValue::InstanceRef {
-                type_name: shape.type_name.clone(),
-                name,
-            }];
-            // If there's a second part and the shape allows it, add it as Str
-            if part_count == 2 && shape.optional_segment.is_some() {
-                segments.push(ScalarValue::Str(parts[1].to_string()));
-            }
-            return ListEntry { segments };
-        }
-    }
-
-    // Fallback: no shape matched; store as bare InstanceRef with empty type
-    let name = parts[0].to_string();
-    let mut segments = vec![ScalarValue::InstanceRef {
-        type_name: std::string::String::new(),
-        name,
-    }];
-    if part_count == 2 {
-        segments.push(ScalarValue::Str(parts[1].to_string()));
-    }
-    ListEntry { segments }
-}
-
-// ---------------------------------------------------------------------------
-// Resolve a set of AST fields against a member definition list
-// ---------------------------------------------------------------------------
-
-fn resolve_fields(
-    ast_fields: &[AstField],
-    member_defs: &[MemberDef],
-    symbols: &SymbolTable,
-    path: &str,
-    errors: &mut Vec<ParseError>,
-) -> Vec<ResolvedField> {
-    let mut resolved = Vec::new();
-    let mut provided: HashMap<std::string::String, bool> = HashMap::new();
-
-    for ast_field in ast_fields {
-        provided.insert(ast_field.link_name.clone(), true);
-
-        // Only link-declared members are settable via field entry syntax
-        let link_def = match member_defs.iter().find(|m| m.link_name == ast_field.link_name) {
-            Some(md) if md.is_type_ref => {
-                errors.push(ParseError {
-                    path: path.to_string(),
-                    line: ast_field.line,
-                    col:  ast_field.col,
-                    message: format!("'{}' is a type member, not a link — cannot be set as a field", ast_field.link_name),
-                });
-                continue;
-            }
-            Some(md) => md.link_type.clone(),
-            None if member_defs.is_empty() => LinkDef::Ref,
-            None => {
-                errors.push(ParseError {
-                    path: path.to_string(),
-                    line: ast_field.line,
-                    col:  ast_field.col,
-                    message: format!("unknown field '{}'", ast_field.link_name),
-                });
-                continue;
-            }
-        };
-
-        let value = resolve_field_value(
-            &ast_field.link_name,
-            &ast_field.value,
-            &link_def,
-            symbols,
-            path,
-            ast_field.line,
-            ast_field.col,
-            errors,
-        );
-        resolved.push(ResolvedField { link_name: ast_field.link_name.clone(), value });
-    }
-
-    // Apply defaults for unset optional fields
-    for md in member_defs {
-        if provided.contains_key(&md.link_name) {
-            continue;
-        }
-        if md.required {
-            // Required field missing — emit an error only at the top level (not sub-blocks)
-            // We skip this here and do it at the instance level
-            continue;
-        }
-        if let Some(default) = &md.default {
-            let value = match default {
-                DefaultValue::Scalar(s) => {
-                    resolve_field_value(
-                        &md.link_name,
-                        &AstFieldValue::Single(s.clone()),
-                        &md.link_type,
-                        symbols,
-                        path,
-                        0,
-                        0,
-                        errors,
-                    )
+                AstDef::Link(ld) => {
+                    if let Some(name_node) = &ld.inner.name {
+                        let id = LinkId(ctx.links.len() as u32);
+                        ctx.scopes[scope.0 as usize].links.insert(name_node.inner.clone(), id);
+                        ctx.links.push(IrLinkDef {
+                            name:      Some(name_node.inner.clone()),
+                            scope,
+                            loc:       ir_loc(&ld.loc),
+                            link_type: IrLinkType::Primitive(IrPrimitive::Reference),  // placeholder
+                        });
+                    }
                 }
-                DefaultValue::Composite(entries) => {
-                    let sub_fields: Vec<AstField> = entries.iter().map(|(k, v)| AstField {
-                        link_name: k.clone(),
-                        value:     AstFieldValue::Single(v.clone()),
-                        line:      0,
-                        col:       0,
-                    }).collect();
-                    // Get sub-member defs
-                    let sub_members = if let LinkDef::TypeRef(tn) = &md.link_type {
-                        if let Some(TypeDef::Composite(m)) = symbols.types.get(tn.as_str()) {
-                            m.clone()
-                        } else { vec![] }
-                    } else { vec![] };
-                    let sub_resolved = resolve_fields(&sub_fields, &sub_members, symbols, path, errors);
-                    ResolvedValue::Composite(sub_resolved)
+                _ => {}
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 3 — resolve type bodies and link types
+// ---------------------------------------------------------------------------
+
+fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    // Collect all work upfront to avoid mid-iteration borrow issues.
+    let mut type_work: Vec<(TypeId, AstNode<AstTypeDef>, ScopeId)> = vec![];
+    let mut link_work: Vec<(LinkId, AstNode<AstLinkDef>, ScopeId)> = vec![];
+
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            match def {
+                AstDef::Type(td) => {
+                    if let Some(name_node) = &td.inner.name {
+                        if let Some(&tid) = ctx.scopes[scope.0 as usize].types.get(&name_node.inner) {
+                            type_work.push((tid, td.clone(), scope));
+                        }
+                    }
+                }
+                AstDef::Link(ld) => {
+                    if let Some(name_node) = &ld.inner.name {
+                        if let Some(&lid) = ctx.scopes[scope.0 as usize].links.get(&name_node.inner) {
+                            link_work.push((lid, ld.clone(), scope));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for (tid, td, scope) in type_work {
+        // Use the type's own scope for struct body resolution so that hoisted
+        // sub-types and struct links land in the right place.
+        let type_scope = td.inner.scope.map(|s| ScopeId(s.0)).unwrap_or(scope);
+        let body       = resolve_type_body(&td.inner.body, ctx, type_scope);
+        ctx.types[tid.0 as usize].body = body;
+    }
+
+    for (lid, ld, scope) in link_work {
+        let lt = resolve_link_type(&ld.inner.ty.inner, ctx, scope, &ir_loc(&ld.loc));
+        ctx.links[lid.0 as usize].link_type = lt;
+    }
+}
+
+fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: ScopeId) -> IrTypeBody {
+    match &body.inner {
+        AstTypeDefBody::Primitive(p) => IrTypeBody::Primitive(convert_primitive(p)),
+
+        AstTypeDefBody::Enum(refs) => {
+            let variants = refs.iter()
+                .map(|r| r.inner.segments[0].inner.value.clone())
+                .collect();
+            IrTypeBody::Enum(variants)
+        }
+
+        AstTypeDefBody::Struct(items) => {
+            IrTypeBody::Struct(resolve_struct_links(items, ctx, scope))
+        }
+
+        AstTypeDefBody::Ref(_) | AstTypeDefBody::List(_) => {
+            ctx.errors.push(IrError {
+                message: "ref/list body not valid for a named type definition".into(),
+                loc: ir_loc(&body.loc),
+            });
+            IrTypeBody::Enum(vec![])
+        }
+    }
+}
+
+fn resolve_struct_links(items: &[AstNode<AstStructItem>], ctx: &mut Ctx, scope: ScopeId) -> Vec<LinkId> {
+    let mut link_ids = Vec::new();
+
+    for item in items {
+        match &item.inner {
+            AstStructItem::LinkDef(ld) => {
+                let name = ld.inner.name.as_ref().map(|n| n.inner.clone());
+                let loc  = ir_loc(&ld.loc);
+                let lt   = resolve_link_type(&ld.inner.ty.inner, ctx, scope, &loc);
+                let lid  = ctx.alloc_link(name, scope, loc, lt);
+                link_ids.push(lid);
+            }
+            AstStructItem::TypeDef(_) => {
+                // Inline type-defs are hoisted to the type scope by parse;
+                // they are processed via pass2/pass3 on that scope's defs.
+            }
+        }
+    }
+
+    link_ids
+}
+
+fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrLinkType {
+    match &td.body.inner {
+        AstTypeDefBody::Primitive(p) => IrLinkType::Primitive(convert_primitive(p)),
+
+        AstTypeDefBody::List(inner) => {
+            let elem_refs: Vec<AstRef> = match &inner.inner.body.inner {
+                AstTypeDefBody::Ref(r)     => vec![r.clone()],
+                AstTypeDefBody::Enum(refs) => refs.iter().map(|r| r.inner.clone()).collect(),
+                _ => {
+                    ctx.errors.push(IrError {
+                        message: "list element type must be a ref or enum of refs".into(),
+                        loc: loc.clone(),
+                    });
+                    return IrLinkType::Primitive(IrPrimitive::Reference);
                 }
             };
-            resolved.push(ResolvedField { link_name: md.link_name.clone(), value });
+            let ir_refs: Vec<IrRef> = elem_refs.iter().map(|r| {
+                let ir_ref = resolve_ref(&r.segments, ctx, scope);
+                for seg in &ir_ref.segments {
+                    if !seg.is_opt {
+                        if let IrRefSegValue::Plain(s) = &seg.value {
+                            ctx.errors.push(IrError {
+                                message: format!("unresolved type ref '{}'", s),
+                                loc: loc.clone(),
+                            });
+                        }
+                    }
+                }
+                ir_ref
+            }).collect();
+            IrLinkType::List(ir_refs)
+        }
+
+        AstTypeDefBody::Struct(items) => {
+            // Inline named struct — resolve it and produce a single-segment Ref.
+            let name = td.name.as_ref().map(|n| n.inner.clone());
+            let type_scope = td.scope.map(|s| ScopeId(s.0)).unwrap_or(scope);
+            let body = IrTypeBody::Struct(resolve_struct_links(items, ctx, type_scope));
+            let tid  = ctx.alloc_type(name, type_scope, loc.clone(), body);
+            IrLinkType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }] })
+        }
+
+        AstTypeDefBody::Ref(r) => {
+            let ir_ref = resolve_ref(&r.segments, ctx, scope);
+            for seg in &ir_ref.segments {
+                if let IrRefSegValue::Plain(s) = &seg.value {
+                    ctx.errors.push(IrError {
+                        message: format!("unresolved type ref '{}'", s),
+                        loc: loc.clone(),
+                    });
+                }
+            }
+            IrLinkType::Ref(ir_ref)
+        }
+
+        AstTypeDefBody::Enum(refs) => {
+            // Anonymous inline enum — allocate an anonymous type.
+            let variants = refs.iter()
+                .map(|r| r.inner.segments[0].inner.value.clone())
+                .collect();
+            let tid = ctx.alloc_type(None, scope, loc.clone(), IrTypeBody::Enum(variants));
+            IrLinkType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }] })
         }
     }
+}
 
-    resolved
+fn convert_primitive(p: &AstPrimitive) -> IrPrimitive {
+    match p {
+        AstPrimitive::String    => IrPrimitive::String,
+        AstPrimitive::Integer   => IrPrimitive::Integer,
+        AstPrimitive::Reference => IrPrimitive::Reference,
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Deploy field resolution
+// Pass 4 — register instance names
 // ---------------------------------------------------------------------------
 
-fn resolve_deploy_field(
-    ast_field: &AstField,
-    symbols: &SymbolTable,
-    path: &str,
-    errors: &mut Vec<ParseError>,
-) -> ResolvedField {
-    // For deploy fields, we look up in the global links table first
-    // Special case: "stack" field → instance reference
-    // Special case: "region" field → typed path list
-    let link_def = if let Some(ld) = symbols.links.get(&ast_field.link_name) {
-        ld.clone()
-    } else {
-        // unknown deploy field, store as ref
-        LinkDef::Ref
+fn pass4_register_insts(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            if let AstDef::Inst(inst) = def {
+                let type_name = &inst.inner.type_name.inner;
+                let type_id   = match ctx.lookup_type(scope, type_name) {
+                    Some(tid) => tid,
+                    None => {
+                        ctx.errors.push(IrError {
+                            message: format!("unknown type '{}'", type_name),
+                            loc: ir_loc(&inst.inner.type_name.loc),
+                        });
+                        continue;  // skip this instance rather than using a bad TypeId
+                    }
+                };
+                ctx.alloc_inst(inst.inner.inst_name.inner.clone(), scope, ir_loc(&inst.loc), type_id);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 5 — resolve instance fields
+// ---------------------------------------------------------------------------
+
+fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    let mut work: Vec<(InstId, Vec<AstNode<AstField>>, ScopeId)> = vec![];
+
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            if let AstDef::Inst(inst) = def {
+                let name = &inst.inner.inst_name.inner;
+                if let Some(iid) = ctx.lookup_inst(scope, name) {
+                    work.push((iid, inst.inner.fields.clone(), scope));
+                }
+            }
+        }
+    }
+
+    for (iid, fields, scope) in work {
+        let type_id  = ctx.insts[iid.0 as usize].type_id;
+        let link_ids = match ctx.types.get(type_id.0 as usize).map(|t| &t.body) {
+            Some(IrTypeBody::Struct(ids)) => ids.clone(),
+            _                             => vec![],
+        };
+
+        // Collect anonymous field values for the unnamed link (if any).
+        let anon_link = link_ids.iter().find(|&&lid| ctx.links[lid.0 as usize].name.is_none()).copied();
+        let anon_vals: Vec<&AstNode<AstValue>> = fields.iter().filter_map(|af| {
+            if let AstField::Anon(v) = &af.inner { Some(v) } else { None }
+        }).collect();
+
+        let mut resolved: Vec<IrField> = resolve_named_fields(&fields, &link_ids, ctx, scope);
+
+        // Resolve anonymous values against the unnamed link.
+        if let (Some(lid), false) = (anon_link, anon_vals.is_empty()) {
+            let link_type = ctx.links[lid.0 as usize].link_type.clone();
+            let loc       = ir_loc(&anon_vals[0].loc);
+            let ir_val    = match &link_type {
+                IrLinkType::List(patterns) => {
+                    let items = anon_vals.iter()
+                        .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
+                        .collect();
+                    IrValue::List(items)
+                }
+                _ => resolve_value(&anon_vals[0].inner, &link_type, ctx, scope, &loc),
+            };
+            resolved.push(IrField { link_id: lid, name: "_".into(), loc, value: ir_val });
+        }
+
+        ctx.insts[iid.0 as usize].fields = resolved;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Named field resolution (shared by pass5 and inline struct values)
+// ---------------------------------------------------------------------------
+
+fn resolve_named_fields(
+    ast_fields: &[AstNode<AstField>],
+    link_ids:   &[LinkId],
+    ctx:        &mut Ctx,
+    scope:      ScopeId,
+) -> Vec<IrField> {
+    ast_fields.iter().filter_map(|af| {
+        let AstField::Named { name, value } = &af.inner else { return None; };
+        let field_name = &name.inner;
+        let loc        = ir_loc(&name.loc);
+
+        let lid = match link_ids.iter().find(|&&lid| {
+            ctx.links[lid.0 as usize].name.as_deref() == Some(field_name)
+        }) {
+            Some(&lid) => lid,
+            None => {
+                ctx.errors.push(IrError {
+                    message: format!("unknown field '{}'", field_name),
+                    loc: loc.clone(),
+                });
+                return None;
+            }
+        };
+
+        let link_type = ctx.links[lid.0 as usize].link_type.clone();
+        let ir_val    = resolve_value(&value.inner, &link_type, ctx, scope, &ir_loc(&value.loc));
+        Some(IrField { link_id: lid, name: field_name.clone(), loc, value: ir_val })
+    }).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Value resolution (guided by IrLinkType pattern)
+// ---------------------------------------------------------------------------
+
+fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+    match link_type {
+        IrLinkType::Primitive(IrPrimitive::Integer) => {
+            let s = match v {
+                AstValue::Ref(r) => r.segments[0].inner.value.clone(),
+                AstValue::Str(s) => s.clone(),
+                _ => { ctx.errors.push(IrError { message: "expected integer".into(), loc: loc.clone() }); return IrValue::Int(0); }
+            };
+            match s.parse::<i64>() {
+                Ok(n)  => IrValue::Int(n),
+                Err(_) => { ctx.errors.push(IrError { message: format!("expected integer, got '{}'", s), loc: loc.clone() }); IrValue::Int(0) }
+            }
+        }
+
+        IrLinkType::Primitive(IrPrimitive::String) => {
+            match v {
+                AstValue::Str(s) => IrValue::Str(s.clone()),
+                AstValue::Ref(r) => IrValue::Str(r.segments[0].inner.value.clone()),
+                _ => { ctx.errors.push(IrError { message: "expected string".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
+            }
+        }
+
+        IrLinkType::Primitive(IrPrimitive::Reference) => {
+            match v {
+                AstValue::Str(s) => IrValue::Ref(s.clone()),
+                AstValue::Ref(r) => IrValue::Ref(
+                    r.segments.iter().map(|s| s.inner.value.as_str()).collect::<Vec<_>>().join(":")
+                ),
+                _ => { ctx.errors.push(IrError { message: "expected reference".into(), loc: loc.clone() }); IrValue::Ref(String::new()) }
+            }
+        }
+
+        IrLinkType::Ref(pattern) => {
+            // Inline struct literal `{ field: value ... }` — allocate an anonymous instance.
+            if let AstValue::Struct(ast_fields) = v {
+                if pattern.segments.len() == 1 {
+                    if let IrRefSegValue::Type(tid) = &pattern.segments[0].value {
+                        let type_id  = *tid;
+                        let link_ids = match ctx.types.get(type_id.0 as usize).map(|t| t.body.clone()) {
+                            Some(IrTypeBody::Struct(ids)) => ids,
+                            _ => {
+                                ctx.push_error("inline struct value requires a struct-typed link".into());
+                                return IrValue::Ref(String::new());
+                            }
+                        };
+                        let iid = InstId(ctx.insts.len() as u32);
+                        ctx.insts.push(IrInstDef { type_id, name: "_".into(), scope, loc: loc.clone(), fields: vec![] });
+                        let fields = resolve_named_fields(ast_fields, &link_ids, ctx, scope);
+                        ctx.insts[iid.0 as usize].fields = fields;
+                        return IrValue::Inst(iid);
+                    }
+                }
+                ctx.push_error("inline struct value only valid for single struct-typed link".into());
+                return IrValue::Ref(String::new());
+            }
+            resolve_value_against_ref(v, pattern, ctx, scope, loc)
+        }
+
+        IrLinkType::List(elem_patterns) => {
+            match v {
+                AstValue::List(items) => {
+                    let vals = items.iter()
+                        .map(|item| resolve_list_item(&item.inner, elem_patterns, ctx, scope, &ir_loc(&item.loc)))
+                        .collect();
+                    IrValue::List(vals)
+                }
+                _ => { ctx.errors.push(IrError { message: "expected list".into(), loc: loc.clone() }); IrValue::List(vec![]) }
+            }
+        }
+    }
+}
+
+fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+    let segs = match v {
+        AstValue::Ref(r) => &r.segments,
+        AstValue::Str(s) => return IrValue::Ref(s.clone()),
+        _ => { ctx.errors.push(IrError { message: "expected ref value".into(), loc: loc.clone() }); return IrValue::Ref(String::new()); }
     };
 
-    let value = resolve_field_value(
-        &ast_field.link_name,
-        &ast_field.value,
-        &link_def,
-        symbols,
-        path,
-        ast_field.line,
-        ast_field.col,
-        errors,
-    );
-    ResolvedField { link_name: ast_field.link_name.clone(), value }
+    if pattern.segments.len() == 1 {
+        return resolve_single_seg_value(&segs[0].inner.value, &pattern.segments[0], ctx, scope, loc);
+    }
+
+    // Multi-segment typed path — segment counts must match.
+    if segs.len() != pattern.segments.len() {
+        ctx.errors.push(IrError {
+            message: format!(
+                "typed path has {} segment(s), expected {}",
+                segs.len(), pattern.segments.len()
+            ),
+            loc: loc.clone(),
+        });
+    }
+
+    let vals: Vec<IrValue> = pattern.segments.iter().zip(segs.iter()).map(|(pat_seg, val_seg)| {
+        resolve_single_seg_value(&val_seg.inner.value, pat_seg, ctx, scope, loc)
+    }).collect();
+    IrValue::Path(vals)
 }
 
-// ---------------------------------------------------------------------------
-// Main resolve entry point
-// ---------------------------------------------------------------------------
-
-pub(crate) fn resolve_file(items: Vec<AstItem>) -> Result<Spec, Vec<ParseError>> {
-    let mut errors = Vec::new();
-    let mut symbols = SymbolTable::new();
-
-    // 1. Parse and load stdlib
-    let stdlib_items = ground_parse::parse_to_items("<stdlib>", STDLIB)
-        .map_err(|es| es)?;
-
-    build_symbol_table(&stdlib_items, &mut symbols, &mut errors, "<stdlib>");
-    resolve_composite_link_types(&stdlib_items, &mut symbols, &mut errors, "<stdlib>");
-
-    // 2. Add user items to symbol table
-    build_symbol_table(&items, &mut symbols, &mut errors, "<user>");
-    resolve_composite_link_types(&items, &mut symbols, &mut errors, "<user>");
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    // 3. Resolve instances and deploys
-    let declared_stacks: std::collections::HashSet<std::string::String> = items.iter()
-        .filter_map(|item| {
-            if let AstItem::TypeDecl(inst) = item {
-                if inst.type_name == "stack" { Some(inst.name.clone()) } else { None }
-            } else { None }
-        })
-        .collect();
-
-    let mut instances = Vec::new();
-    let mut deploys   = Vec::new();
-
-    for item in &items {
-        match item {
-            AstItem::TypeDecl(inst) => {
-                // Look up the type
-                let member_defs = if let Some(TypeDef::Composite(members)) = symbols.types.get(&inst.type_name) {
-                    members.clone()
-                } else {
-                    errors.push(ParseError {
-                        path: "<user>".to_string(),
-                        line: inst.line,
-                        col:  inst.col,
-                        message: format!("unknown type '{}'", inst.type_name),
-                    });
-                    continue;
-                };
-
-                // Check required fields
-                for md in &member_defs {
-                    if md.required && !inst.fields.iter().any(|f| f.link_name == md.link_name) {
-                        errors.push(ParseError {
-                            path: "<user>".to_string(),
-                            line: inst.line,
-                            col:  inst.col,
-                            message: format!(
-                                "instance '{} {}': missing required field '{}'",
-                                inst.type_name, inst.name, md.link_name
-                            ),
-                        });
-                    }
-                }
-
-                let fields = resolve_fields(&inst.fields, &member_defs, &symbols, "<user>", &mut errors);
-                instances.push(Instance {
-                    type_name: inst.type_name.clone(),
-                    name:      inst.name.clone(),
-                    fields,
-                });
-            }
-
-            AstItem::Deploy(dep) => {
-                // dep.name is the stack reference from "deploy <stack> to <provider> as <alias>"
-                if !declared_stacks.contains(dep.name.as_str()) {
-                    errors.push(ParseError {
-                        path: "<user>".to_string(),
-                        line: dep.line,
-                        col:  dep.col,
-                        message: format!("deploy references unknown stack '{}'", dep.name),
-                    });
-                }
-                let fields = dep.fields.iter()
-                    .map(|f| resolve_deploy_field(f, &symbols, "<user>", &mut errors))
-                    .collect();
-                deploys.push(DeployInstance {
-                    name:     dep.name.clone(),
-                    provider: dep.provider.clone(),
-                    alias:    dep.alias.clone(),
-                    fields,
-                });
-            }
-
-            _ => {}
-        }
-    }
-
-    // 4. Validate TypeRef field values against declared instances
-    // Build name → type_name map from resolved instances
-    let instance_types: std::collections::HashMap<std::string::String, std::string::String> = instances.iter()
-        .map(|i| (i.name.clone(), i.type_name.clone()))
-        .collect();
-
-    for item in &items {
-        if let AstItem::TypeDecl(inst) = item {
-            let member_defs = match symbols.types.get(&inst.type_name) {
-                Some(TypeDef::Composite(members)) => members.clone(),
-                _ => continue,
-            };
-            for field in &inst.fields {
-                if let Some(md) = member_defs.iter().find(|m| m.link_name == field.link_name) {
-                    if let LinkDef::TypeRef(ref_type) = &md.link_type {
-                        if let AstFieldValue::Single(tok) = &field.value {
-                            match instance_types.get(tok.as_str()) {
-                                None => errors.push(ParseError {
-                                    path: "<user>".to_string(),
-                                    line: field.line,
-                                    col:  field.col,
-                                    message: format!("'{}' references unknown instance '{}'", field.link_name, tok),
-                                }),
-                                Some(actual) if actual != ref_type => errors.push(ParseError {
-                                    path: "<user>".to_string(),
-                                    line: field.line,
-                                    col:  field.col,
-                                    message: format!("'{}' expects a {} but '{}' is a {}", field.link_name, ref_type, tok, actual),
-                                }),
-                                _ => {}
-                            }
+fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+    match &pat_seg.value {
+        IrRefSegValue::Type(tid) => {
+            match ctx.types.get(tid.0 as usize).map(|t| t.body.clone()) {
+                Some(IrTypeBody::Enum(variants)) => {
+                    match variants.iter().position(|v| v == raw) {
+                        Some(idx) => IrValue::Variant(*tid, idx as u32),
+                        None => {
+                            ctx.errors.push(IrError {
+                                message: format!("'{}' is not a variant of Type#{}", raw, tid.0),
+                                loc: loc.clone(),
+                            });
+                            IrValue::Variant(*tid, 0)
                         }
                     }
                 }
+                Some(IrTypeBody::Struct(_)) => {
+                    match ctx.lookup_inst(scope, raw) {
+                        Some(iid) => IrValue::Inst(iid),
+                        None => {
+                            ctx.errors.push(IrError {
+                                message: format!("'{}' is not a known instance of Type#{}", raw, tid.0),
+                                loc: loc.clone(),
+                            });
+                            IrValue::Ref(raw.to_string())
+                        }
+                    }
+                }
+                Some(IrTypeBody::Primitive(IrPrimitive::Integer)) => {
+                    match raw.parse::<i64>() {
+                        Ok(n)  => IrValue::Int(n),
+                        Err(_) => { ctx.errors.push(IrError { message: format!("expected integer, got '{}'", raw), loc: loc.clone() }); IrValue::Int(0) }
+                    }
+                }
+                Some(IrTypeBody::Primitive(_)) => IrValue::Str(raw.to_string()),
+                None => IrValue::Ref(raw.to_string()),
+            }
+        }
+        IrRefSegValue::Inst(iid) => IrValue::Inst(*iid),
+        _                        => IrValue::Ref(raw.to_string()),
+    }
+}
+
+fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+    let AstValue::Ref(r) = v else {
+        ctx.errors.push(IrError { message: "list item must be a reference".into(), loc: loc.clone() });
+        return IrValue::Ref(String::new());
+    };
+
+    // For typed-path values like `service:api`, the first segment is a type qualifier
+    // and the last segment is the actual instance name.
+    let is_typed_path = r.segments.len() > 1
+        && ctx.lookup_type(scope, &r.segments[0].inner.value).is_some();
+    let inst_name = if is_typed_path {
+        r.segments.last().unwrap().inner.value.as_str()
+    } else {
+        r.segments[0].inner.value.as_str()
+    };
+
+    // Find which element pattern matches this instance's type.
+    let matched_pattern = patterns.iter().find(|pattern| {
+        if let Some(base_seg) = pattern.segments.first() {
+            if let IrRefSegValue::Type(tid) = &base_seg.value {
+                if let Some(iid) = ctx.lookup_inst(scope, inst_name) {
+                    return ctx.insts[iid.0 as usize].type_id == *tid;
+                }
+            }
+        }
+        false
+    }).or_else(|| patterns.first());
+
+    // For typed-path values against a single-segment pattern, resolve using just the instance name.
+    if is_typed_path {
+        if let Some(pattern) = matched_pattern {
+            if pattern.segments.len() == 1 {
+                return resolve_single_seg_value(inst_name, &pattern.segments[0], ctx, scope, loc);
             }
         }
     }
 
-    if !errors.is_empty() {
-        Err(errors)
-    } else {
-        Ok(Spec { instances, deploys })
+    match matched_pattern {
+        Some(pattern) => resolve_value_against_ref(v, pattern, ctx, scope, loc),
+        None          => IrValue::Ref(String::new()),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 6 — resolve deploys
+// ---------------------------------------------------------------------------
+
+fn pass6_resolve_deploys(parse_scopes: &[AstScope], ctx: &mut Ctx) -> Vec<IrDeployDef> {
+    let mut deploys = Vec::new();
+
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            if let AstDef::Deploy(dep) = def {
+                let what   = resolve_ref(&dep.inner.what.inner.segments,   ctx, scope);
+                let target = resolve_ref(&dep.inner.target.inner.segments, ctx, scope);
+                let name   = resolve_ref(&dep.inner.name.inner.segments,   ctx, scope);
+                let loc    = ir_loc(&dep.loc);
+
+                let fields = dep.inner.fields.iter().filter_map(|af| {
+                    let AstField::Named { name: fname, value } = &af.inner else { return None; };
+                    let field_name = &fname.inner;
+                    let floc       = ir_loc(&fname.loc);
+
+                    let (lid, link_type) = match ctx.lookup_link(scope, field_name) {
+                        Some(lid) => {
+                            let lt = ctx.links[lid.0 as usize].link_type.clone();
+                            (lid, lt)
+                        }
+                        None => {
+                            ctx.errors.push(IrError {
+                                message: format!("unknown link '{}'", field_name),
+                                loc: floc.clone(),
+                            });
+                            return None;
+                        }
+                    };
+
+                    let ir_val = resolve_value(&value.inner, &link_type, ctx, scope, &ir_loc(&value.loc));
+                    Some(IrField { link_id: lid, name: field_name.clone(), loc: floc, value: ir_val })
+                }).collect();
+
+                deploys.push(IrDeployDef { what, target, name, loc, fields });
+            }
+        }
+    }
+
+    deploys
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+pub fn resolve(res: ParseRes) -> IrRes {
+    let mut ctx = Ctx::new();
+
+    pass1_mirror_scopes(&res.scopes, &mut ctx);
+    pass2_register_names(&res.scopes, &mut ctx);
+    pass3_resolve_types_and_links(&res.scopes, &mut ctx);
+    pass4_register_insts(&res.scopes, &mut ctx);
+    pass5_resolve_inst_fields(&res.scopes, &mut ctx);
+
+    let deploys = pass6_resolve_deploys(&res.scopes, &mut ctx);
+
+    let mut errors = ctx.errors;
+    errors.extend(res.errors.iter().map(|e| IrError {
+        message: e.message.clone(),
+        loc:     IrLoc { unit: e.loc.unit, start: e.loc.start, end: e.loc.end },
+    }));
+
+    IrRes { types: ctx.types, links: ctx.links, insts: ctx.insts, deploys, scopes: ctx.scopes, errors }
 }

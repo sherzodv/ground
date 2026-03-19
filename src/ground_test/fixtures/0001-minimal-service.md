@@ -6,11 +6,11 @@ service svc-api {
 }
 
 stack prod {
-  service: svc-api
+  service:svc-api
 }
 
 deploy prod to aws as prod {
-  region: us-east:1
+  region: [ us-east:1 ]
 }
 ```
 
@@ -22,30 +22,6 @@ deploy prod to aws as prod {
     }
   },
   "resource": {
-    "aws_appautoscaling_policy": {
-      "prod_svc_api_scl": {
-        "name": "prod-svc-api-scl",
-        "policy_type": "TargetTrackingScaling",
-        "resource_id": "${aws_appautoscaling_target.prod_svc_api_svc.resource_id}",
-        "scalable_dimension": "${aws_appautoscaling_target.prod_svc_api_svc.scalable_dimension}",
-        "service_namespace": "${aws_appautoscaling_target.prod_svc_api_svc.service_namespace}",
-        "target_tracking_scaling_policy_configuration": {
-          "predefined_metric_specification": {
-            "predefined_metric_type": "ECSServiceAverageCPUUtilization"
-          },
-          "target_value": 70.0
-        }
-      }
-    },
-    "aws_appautoscaling_target": {
-      "prod_svc_api_svc": {
-        "max_capacity": 1,
-        "min_capacity": 1,
-        "resource_id": "service/${aws_ecs_cluster.prod_ecs.name}/prod-svc-api-svc",
-        "scalable_dimension": "ecs:service:DesiredCount",
-        "service_namespace": "ecs"
-      }
-    },
     "aws_cloudwatch_log_group": {
       "prod_svc_api_log": {
         "name": "/prod/svc-api-log",

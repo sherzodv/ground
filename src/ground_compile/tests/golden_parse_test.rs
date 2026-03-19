@@ -1,10 +1,10 @@
-/// Golden tests for the RFC-0005 parser (`ground_parse::parse2`).
+/// Golden tests for the RFC-0005 parser (`ground_compile::parse`).
 ///
 /// Each test calls `show(input)` which parses the source as a single unit
 /// named "test" and returns a compact, position-free string of the scope tree.
 /// Scopes are visible: output is always wrapped in `Scope[pack:test, ...]`.
 /// Errors are surfaced as `ERR: <message>` lines at the end.
-mod golden_parse_helpers;
+#[path = "helpers/golden_parse_helpers.rs"] mod golden_parse_helpers;
 use golden_parse_helpers::{norm, show};
 
 #[test]
@@ -541,8 +541,8 @@ fn ref_multi_segment_value() {
 #[test]
 fn multi_unit_shared_path() {
     use golden_parse_helpers::show_scope;
-    use ground_parse::ast2::{AstScopeId, ParseReq, ParseUnit};
-    use ground_parse::parse2::parse;
+    use ground_compile::ast::{AstScopeId, ParseReq, ParseUnit};
+    use ground_compile::parse::parse;
 
     let req = ParseReq {
         units: vec![
@@ -662,5 +662,61 @@ fn inst_struct_as_field_value() {
             ]
         "#
         ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Anonymous list link instantiation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inst_anon_list_space_separated() {
+    // Space-separated items → two separate Anon fields, each a plain Ref.
+    assert_eq!(
+        show("stack my-stack { svc-a  svc-b }"),
+        norm(r#"
+            Scope[pack:test,
+              Inst[stack, my-stack, Anon[Ref(svc-a)], Anon[Ref(svc-b)]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn inst_anon_list_bracket_wrapped() {
+    // Bracket-wrapped items → single Anon field containing a List value.
+    assert_eq!(
+        show("stack my-stack { [ svc-a  svc-b ] }"),
+        norm(r#"
+            Scope[pack:test,
+              Inst[stack, my-stack, Anon[List[Ref(svc-a), Ref(svc-b)]]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn inst_duplicate_named_field_allowed_by_parser() {
+    // Parser does not deduplicate — both Field entries are preserved as-is.
+    assert_eq!(
+        show(r#"db my-db { engine: "pg"  engine: "mysql" }"#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[db, my-db, Field[engine, Str("pg")], Field[engine, Str("mysql")]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn inst_duplicate_anon_field_allowed_by_parser() {
+    // Space-separated bare refs each become a separate Anon — no deduplication.
+    assert_eq!(
+        show(r#"stack my-stack { svc-a  svc-a }"#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[stack, my-stack, Anon[Ref(svc-a)], Anon[Ref(svc-a)]],
+            ]
+        "#),
     );
 }

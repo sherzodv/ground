@@ -1,7 +1,7 @@
-use ground_parse::ast2::{ParseReq, ParseUnit};
-use ground_parse::ir2::*;
-use ground_parse::parse2::parse;
-use ground_parse::resolve2::resolve;
+use ground_compile::ast::{ParseReq, ParseUnit};
+use ground_compile::ir::*;
+use ground_compile::parse::parse;
+use ground_compile::resolve::resolve;
 
 // ---------------------------------------------------------------------------
 // Primitives

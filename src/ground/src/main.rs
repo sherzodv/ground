@@ -2,6 +2,7 @@ mod ops_display;
 
 use std::{env, fs, path::Path, process};
 
+use ground_compile::{compile, CompileReq, CompileRes, AsmValue, Unit};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
@@ -88,55 +89,52 @@ fn cmd_init(git_ignore: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Parse .grd files and run code generation
+// Compile .grd files and run code generation
 // ---------------------------------------------------------------------------
 
-fn parse_and_gen() -> (ground_core::Spec, String, String) {
+fn compile_and_gen() -> (CompileRes, String, String) {
     let entries = match fs::read_dir(".") {
         Ok(e)  => e,
         Err(e) => { eprintln!("error reading current directory: {e}"); process::exit(1); }
     };
 
-    let mut sources_data: Vec<(String, String)> = Vec::new();
+    let mut units: Vec<Unit> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().map_or(false, |e| e == "grd") {
             let path_str = path.to_string_lossy().into_owned();
             match fs::read_to_string(&path) {
-                Ok(content) => sources_data.push((path_str, content)),
+                Ok(content) => units.push(Unit { name: path_str, path: vec![], src: content }),
                 Err(e)      => { eprintln!("error: {path_str}: {e}"); process::exit(1); }
             }
         }
     }
 
-    if sources_data.is_empty() {
+    if units.is_empty() {
         eprintln!("no .grd files found in current directory");
         process::exit(1);
     }
 
-    let sources: Vec<(&str, &str)> = sources_data.iter()
-        .map(|(p, c)| (p.as_str(), c.as_str()))
-        .collect();
+    let res = compile(CompileReq { units });
 
-    let spec = match ground_compile::compile(&sources) {
-        Ok(s)   => s,
-        Err(es) => { for e in es { eprintln!("{e}"); } process::exit(1); }
-    };
+    if !res.errors.is_empty() {
+        for e in &res.errors { eprintln!("error: {}", e.message); }
+        process::exit(1);
+    }
 
-    if spec.deploys.is_empty() {
+    if res.deploys.is_empty() {
         eprintln!("no deploy declarations found — nothing to generate");
         process::exit(1);
     }
 
-    let json = match ground_be_terra::generate(&spec) {
+    let json = match ground_be_terra::generate(&res) {
         Ok(j)  => j,
         Err(e) => { eprintln!("error: {e}"); process::exit(1); }
     };
 
-    // Use the first deploy's alias as the stack name
-    let stack_name = spec.deploys[0].alias.clone();
+    let stack_name = res.deploys[0].name.clone();
 
-    (spec, json, stack_name)
+    (res, json, stack_name)
 }
 
 fn write_stack(stack_name: &str, json: &str) {
@@ -153,7 +151,7 @@ fn write_stack(stack_name: &str, json: &str) {
 }
 
 fn cmd_gen_terra() {
-    let (_spec, json, stack_name) = parse_and_gen();
+    let (_res, json, stack_name) = compile_and_gen();
     write_stack(&stack_name, &json);
     println!("wrote .ground/terra/{stack_name}/main.tf.json");
 }
@@ -162,19 +160,21 @@ fn cmd_gen_terra() {
 // Ground entity lookup
 // ---------------------------------------------------------------------------
 
-fn build_lookup(spec: &ground_core::Spec) -> Vec<(String, String)> {
-    use ground_core::ScalarValue;
+fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
     let mut lookup = Vec::new();
-    for deploy in &spec.deploys {
-        let alias_u = deploy.alias.replace('-', "_");
+    for deploy in &res.deploys {
+        let alias_u = deploy.name.replace('-', "_");
         let pfx_u = deploy.fields.iter()
-            .find(|f| f.link_name == "prefix")
-            .and_then(|f| if let ground_core::ResolvedValue::Scalar(ScalarValue::Ref(s) | ScalarValue::Str(s)) = &f.value { Some(s.replace('-', "_")) } else { None })
+            .find(|f| f.name == "prefix")
+            .and_then(|f| match &f.value {
+                AsmValue::Str(s) | AsmValue::Ref(s) => Some(s.replace('-', "_")),
+                _ => None,
+            })
             .unwrap_or_default();
-        for inst in &spec.instances {
-            let inst_u = inst.name.replace('-', "_");
-            let key   = format!("{pfx_u}{alias_u}_{inst_u}");
-            let label = format!("{}:{}", inst.type_name, inst.name);
+        for inst_ref in &deploy.members {
+            let inst_u = inst_ref.name.replace('-', "_");
+            let key    = format!("{pfx_u}{alias_u}_{inst_u}");
+            let label  = format!("{}:{}", inst_ref.type_name, inst_ref.name);
             lookup.push((key, label));
         }
     }
@@ -296,7 +296,7 @@ fn display_resource_attrs(change: &terra_ops::ResourceChange) {
 
 fn display_plan_summary(
     summary:    &ground_be_terra::terra_ops::PlanSummary,
-    spec:       &ground_core::Spec,
+    res:        &CompileRes,
     stack_name: &str,
     provider:   &str,
     verbose:    bool,
@@ -304,7 +304,7 @@ fn display_plan_summary(
     use std::collections::BTreeMap;
     use ground_be_terra::terra_ops;
 
-    let lookup = build_lookup(spec);
+    let lookup = build_lookup(res);
     let ground_entity = |resource_name: &str| -> String {
         for (underscored, label) in &lookup {
             if resource_name == underscored.as_str()
@@ -349,9 +349,9 @@ fn display_plan_summary(
 fn cmd_apply(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (spec, json, stack_name) = parse_and_gen();
+    let (res, json, stack_name) = compile_and_gen();
     let provider = "aws".to_string();
-    let lookup = build_lookup(&spec);
+    let lookup = build_lookup(&res);
 
     write_stack(&stack_name, &json);
 
@@ -377,9 +377,9 @@ fn cmd_apply(verbose: bool) {
 fn cmd_plan(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (spec, json, stack_name) = parse_and_gen();
+    let (res, json, stack_name) = compile_and_gen();
     let provider = "aws".to_string();
-    let lookup = build_lookup(&spec);
+    let lookup = build_lookup(&res);
 
     write_stack(&stack_name, &json);
 
@@ -404,7 +404,7 @@ fn cmd_plan(verbose: bool) {
                 process::exit(1);
             }
             RunEvent::Line(OpsEvent::PlanReady { summary }) => {
-                display_plan_summary(&summary, &spec, &stack_name, &provider, verbose);
+                display_plan_summary(&summary, &res, &stack_name, &provider, verbose);
             }
             other => {
                 for d in enricher.enrich(&other) { render(&d); }

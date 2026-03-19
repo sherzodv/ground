@@ -1,6 +1,6 @@
 pub mod terra_ops;
 
-use ground_core::{Spec, Instance, DeployInstance, ResolvedValue, ScalarValue, ListEntry};
+use ground_compile::{CompileRes, Deploy, AsmInst, AsmValue};
 use ground_gen::{render, merge_json};
 use serde_json::{json, Map, Value};
 
@@ -12,43 +12,15 @@ const DB_TPL:           &str = include_str!("templates/type_database.json.tera")
 const LINK_SVC_DB_TPL:  &str = include_str!("templates/link_access_service_database.json.tera");
 const LINK_SVC_SVC_TPL: &str = include_str!("templates/link_access_service_service.json.tera");
 
-fn stack_members<'a>(deploy: &DeployInstance, instances: &'a [Instance]) -> Vec<&'a Instance> {
-    let stack_name = deploy.name.as_str();
-
-    let stack = match instances.iter().find(|i| i.type_name == "stack" && i.name == stack_name) {
-        Some(s) => s,
-        None    => return vec![],
-    };
-
-    let mut member_names = std::collections::HashSet::new();
-    for field in &stack.fields {
-        match &field.value {
-            ResolvedValue::Scalar(ScalarValue::InstanceRef { name, .. }) => { member_names.insert(name.clone()); }
-            ResolvedValue::List(entries) => {
-                for entry in entries {
-                    if let Some(ScalarValue::InstanceRef { name, .. }) = entry.segments.first() {
-                        member_names.insert(name.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    instances.iter()
-        .filter(|i| i.type_name != "stack" && member_names.contains(&i.name))
-        .collect()
-}
-
-pub fn generate(spec: &Spec) -> Result<String, GenError> {
+pub fn generate(res: &CompileRes) -> Result<String, GenError> {
     let mut frags: Vec<String> = Vec::new();
 
-    for deploy in &spec.deploys {
+    for deploy in &res.deploys {
         let deploy_ctx = deploy_to_ctx(deploy);
-        let members    = stack_members(deploy, &spec.instances);
 
-        let instances_ctx: Vec<Value> = members.iter()
-            .map(|i| Value::Object(instance_to_ctx(i)))
+        let instances_ctx: Vec<Value> = deploy.members.iter()
+            .filter_map(|r| res.symbol.get(&r.name))
+            .map(|i| Value::Object(inst_to_ctx(i)))
             .collect();
 
         // Root
@@ -56,38 +28,46 @@ pub fn generate(spec: &Spec) -> Result<String, GenError> {
         push_nonempty(&mut frags, rendered);
 
         // Type hooks
-        for inst in &members {
-            let tpl = match inst.type_name.as_str() {
+        for inst_ref in &deploy.members {
+            let tpl = match inst_ref.type_name.as_str() {
                 "service"  => SVC_TPL,
                 "database" => DB_TPL,
                 _          => continue,
             };
-            let rendered = render(tpl, &json!({ "deploy": deploy_ctx, "instance": instance_to_ctx(inst) }))?;
-            push_nonempty(&mut frags, rendered);
+            if let Some(inst) = res.symbol.get(&inst_ref.name) {
+                let rendered = render(tpl, &json!({ "deploy": deploy_ctx, "instance": inst_to_ctx(inst) }))?;
+                push_nonempty(&mut frags, rendered);
+            }
         }
 
         // Link hooks — access field
-        for inst in &members {
+        for inst_ref in &deploy.members {
+            let Some(inst) = res.symbol.get(&inst_ref.name) else { continue };
             for field in &inst.fields {
-                if field.link_name != "access" { continue; }
-                if let ResolvedValue::List(entries) = &field.value {
-                    for entry in entries {
-                        if let Some(ScalarValue::InstanceRef { name: target_name, .. }) = entry.segments.first() {
-                            if let Some(target) = members.iter().find(|i| &i.name == target_name) {
-                                let tpl = match target.type_name.as_str() {
-                                    "database" => LINK_SVC_DB_TPL,
-                                    "service"  => LINK_SVC_SVC_TPL,
-                                    _          => continue,
-                                };
-                                let segs = segments_ctx(&entry.segments[1..]);
-                                let rendered = render(tpl, &json!({
-                                    "deploy":    deploy_ctx,
-                                    "source":    instance_to_ctx(inst),
-                                    "target":    instance_to_ctx(target),
-                                    "segments":  segs,
-                                }))?;
-                                push_nonempty(&mut frags, rendered);
-                            }
+                if field.name != "access" { continue; }
+                if let AsmValue::List(items) = &field.value {
+                    for item in items {
+                        let (target_name, extra): (&str, &[AsmValue]) = match item {
+                            AsmValue::InstRef(ir)  => (&ir.name, &[]),
+                            AsmValue::Path(segs)   => match segs.first() {
+                                Some(AsmValue::InstRef(ir)) => (&ir.name, &segs[1..]),
+                                _                           => continue,
+                            },
+                            _ => continue,
+                        };
+                        if let Some(target) = res.symbol.get(target_name) {
+                            let tpl = match target.type_name.as_str() {
+                                "database" => LINK_SVC_DB_TPL,
+                                "service"  => LINK_SVC_SVC_TPL,
+                                _          => continue,
+                            };
+                            let rendered = render(tpl, &json!({
+                                "deploy":   deploy_ctx,
+                                "source":   inst_to_ctx(inst),
+                                "target":   inst_to_ctx(target),
+                                "segments": segments_ctx(extra),
+                            }))?;
+                            push_nonempty(&mut frags, rendered);
                         }
                     }
                 }
@@ -104,47 +84,38 @@ fn push_nonempty(frags: &mut Vec<String>, s: String) {
 
 // --- context helpers ---
 
-fn deploy_to_ctx(d: &DeployInstance) -> Map<String, Value> {
+fn deploy_to_ctx(d: &Deploy) -> Map<String, Value> {
     let mut m = Map::new();
-    m.insert("name".into(),     json!(d.name));
-    m.insert("provider".into(), json!(d.provider));
-    m.insert("alias".into(),    json!(d.alias));
-    for f in &d.fields { m.insert(f.link_name.clone(), resolved_to_json(&f.value)); }
+    m.insert("alias".into(),    json!(d.name));
+    m.insert("provider".into(), json!(d.target.join(":")));
+    m.insert("name".into(),     json!(d.inst.name));
+    for f in &d.fields { m.insert(f.name.clone(), asm_value_to_json(&f.value)); }
     m
 }
 
-fn instance_to_ctx(i: &Instance) -> Map<String, Value> {
+fn inst_to_ctx(i: &AsmInst) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("type_name".into(), json!(i.type_name));
     m.insert("name".into(),      json!(i.name));
-    for f in &i.fields { m.insert(f.link_name.clone(), resolved_to_json(&f.value)); }
+    for f in &i.fields { m.insert(f.name.clone(), asm_value_to_json(&f.value)); }
     m
 }
 
-fn resolved_to_json(v: &ResolvedValue) -> Value {
+fn asm_value_to_json(v: &AsmValue) -> Value {
     match v {
-        ResolvedValue::Scalar(s)       => scalar_to_json(s),
-        ResolvedValue::Composite(fs)   => Value::Object(fs.iter().map(|f| (f.link_name.clone(), resolved_to_json(&f.value))).collect()),
-        ResolvedValue::List(entries)   => Value::Array(entries.iter().map(entry_to_json).collect()),
+        AsmValue::Str(s)      => json!(s),
+        AsmValue::Int(n)      => json!(n),
+        AsmValue::Ref(s)      => json!(s),
+        AsmValue::Variant(gv) => json!(gv.value),
+        AsmValue::InstRef(ir) => json!({ "type_name": ir.type_name, "name": ir.name }),
+        AsmValue::Inst(gi)    => Value::Object(gi.fields.iter().map(|f| (f.name.clone(), asm_value_to_json(&f.value))).collect()),
+        AsmValue::Path(segs)  => Value::Array(segs.iter().map(asm_value_to_json).collect()),
+        AsmValue::List(items) => Value::Array(items.iter().map(asm_value_to_json).collect()),
     }
 }
 
-fn entry_to_json(e: &ListEntry) -> Value {
-    if e.segments.len() == 1 { scalar_to_json(&e.segments[0]) }
-    else { Value::Array(e.segments.iter().map(scalar_to_json).collect()) }
-}
-
-fn scalar_to_json(s: &ScalarValue) -> Value {
-    match s {
-        ScalarValue::Int(n)                              => json!(n),
-        ScalarValue::Bool(b)                             => json!(b),
-        ScalarValue::Str(s) | ScalarValue::Ref(s) | ScalarValue::Enum(s) => json!(s),
-        ScalarValue::InstanceRef { type_name, name }     => json!({ "type_name": type_name, "name": name }),
-    }
-}
-
-fn segments_ctx(segs: &[ScalarValue]) -> Map<String, Value> {
+fn segments_ctx(segs: &[AsmValue]) -> Map<String, Value> {
     segs.iter().enumerate()
-        .map(|(i, s)| (format!("seg{i}"), scalar_to_json(s)))
+        .map(|(i, v)| (format!("seg{i}"), asm_value_to_json(v)))
         .collect()
 }

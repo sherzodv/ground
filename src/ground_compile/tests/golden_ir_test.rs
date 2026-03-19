@@ -1,4 +1,4 @@
-/// Golden tests for the resolve pass (`ground_parse::resolve2`).
+/// Golden tests for the resolve pass (`ground_compile::resolve`).
 ///
 /// Each test calls `show(input)` which parses + resolves the source and returns
 /// a compact, position-free string of the resulting IR.
@@ -15,7 +15,7 @@
 ///   Variant(Type#N, "name")  — instance field value: resolved enum variant
 ///   Inst(Inst#N)             — instance field value: resolved instance ref
 ///   Field[Link#N, value]     — instance field resolved to a specific link
-mod golden_ir_helpers;
+#[path = "helpers/golden_ir_helpers.rs"] mod golden_ir_helpers;
 use golden_ir_helpers::{norm, show};
 
 // ---------------------------------------------------------------------------
