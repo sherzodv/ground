@@ -28,6 +28,13 @@ pub struct Unit {
 
 pub struct CompileError {
     pub message: String,
+    pub loc:     Option<ErrorLoc>,
+}
+
+pub struct ErrorLoc {
+    pub unit: u32,
+    pub line: u32,
+    pub col:  u32,
 }
 
 /// Lookup table for all named instances in the program.
@@ -62,17 +69,26 @@ pub struct CompileRes {
 
 pub fn compile(req: CompileReq) -> CompileRes {
     let mut units = vec![
-        ast::ParseUnit { name: "".into(), path: vec![], src: STDLIB.to_string() },
+        ast::ParseUnit { name: "std".into(), path: vec![], src: STDLIB.to_string() },
     ];
     units.extend(req.units.into_iter().map(|u| ast::ParseUnit {
         name: u.name, path: u.path, src: u.src,
     }));
 
+    // Keep sources for error location resolution before moving units into parse.
+    let srcs: Vec<String> = units.iter().map(|u| u.src.clone()).collect();
+
     let parse_res = parse::parse(ast::ParseReq { units });
     let ir        = resolve::resolve(parse_res);
 
     let errors: Vec<CompileError> = ir.errors.iter()
-        .map(|e| CompileError { message: e.message.clone() })
+        .map(|e| {
+            let loc = srcs.get(e.loc.unit as usize).map(|src| {
+                let (line, col) = offset_to_line_col(src, e.loc.start);
+                ErrorLoc { unit: e.loc.unit, line, col }
+            });
+            CompileError { message: e.message.clone(), loc }
+        })
         .collect();
 
     let ctx = asm::lower(&ir);
@@ -96,6 +112,14 @@ pub fn compile(req: CompileReq) -> CompileRes {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn offset_to_line_col(src: &str, offset: u32) -> (u32, u32) {
+    let offset = (offset as usize).min(src.len());
+    let before = &src[..offset];
+    let line   = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
+    let col    = before.rfind('\n').map_or(offset, |p| offset - p - 1) as u32 + 1;
+    (line, col)
+}
 
 /// Collect unique `AsmInstRef`s referenced from an instance's fields (shallow — top-level fields only).
 fn collect_inst_refs(inst: &AsmInst) -> Vec<AsmInstRef> {

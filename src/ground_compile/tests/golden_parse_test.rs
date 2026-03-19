@@ -720,3 +720,97 @@ fn inst_duplicate_anon_field_allowed_by_parser() {
         "#),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Use statements
+// ---------------------------------------------------------------------------
+
+#[test]
+fn use_bare_name() {
+    assert_eq!(
+        show("use std"),
+        norm(r#"
+            Scope[pack:test,
+                Use[std],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn use_pack_qualified() {
+    assert_eq!(
+        show("use pack:std"),
+        norm(r#"
+            Scope[pack:test,
+                Use[pack:std],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn use_type_specific() {
+    assert_eq!(
+        show("use pack:std:type:service"),
+        norm(r#"
+            Scope[pack:test,
+                Use[pack:std:type:service],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn use_wildcard() {
+    assert_eq!(
+        show("use pack:std:*"),
+        norm(r#"
+            Scope[pack:test,
+                Use[pack:std:*],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn use_type_wildcard() {
+    assert_eq!(
+        show("use pack:std:type:*"),
+        norm(r#"
+            Scope[pack:test,
+                Use[pack:std:type:*],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn use_alongside_defs() {
+    assert_eq!(
+        show(r#"
+            use pack:std:type:service
+            type stack = { link name = string }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                Use[pack:std:type:service],
+                Type[stack, Struct[Link[name, Type[_, Primitive(string)]]]],
+                Scope[type:stack],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn use_then_qualified_inst() {
+    assert_eq!(
+        show("use std\nstd:service api {}"),
+        norm(r#"
+            Scope[pack:test,
+                Use[std],
+                Inst[std:service, api],
+            ]
+        "#),
+    );
+}

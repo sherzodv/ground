@@ -1,6 +1,8 @@
 # database
 
 ```ground
+use std:*
+
 database db-main {
   engine:  postgres
   size:    medium

@@ -7,7 +7,7 @@
 ///   4. Register instance names (enables forward references).
 ///   5. Resolve instance fields (validated against link type patterns).
 ///   6. Resolve deploys.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{self, *};
 use crate::ir::*;
@@ -28,13 +28,14 @@ struct Ctx {
 impl Ctx {
     fn new() -> Self {
         let root = IrScope {
-            kind:   IrScopeKind::Pack,
-            name:   None,
-            parent: None,
-            types:  HashMap::new(),
-            links:  HashMap::new(),
-            insts:  HashMap::new(),
-            packs:  HashMap::new(),
+            kind:      IrScopeKind::Pack,
+            name:      None,
+            parent:    None,
+            types:     HashMap::new(),
+            links:     HashMap::new(),
+            insts:     HashMap::new(),
+            packs:     HashMap::new(),
+            ambiguous: HashSet::new(),
         };
         Ctx { types: vec![], links: vec![], insts: vec![], scopes: vec![root], errors: vec![] }
     }
@@ -80,26 +81,41 @@ impl Ctx {
         self.errors.push(IrError { message, loc: IrLoc { unit: 0, start: 0, end: 0 } });
     }
 
+    /// Mark `name` as ambiguous in `scope`: removes it from all namespace maps and
+    /// records it so lookups stop the parent-chain walk with None.
+    fn mark_ambiguous(&mut self, scope: ScopeId, name: &str) {
+        let s = &mut self.scopes[scope.0 as usize];
+        s.types.remove(name);
+        s.links.remove(name);
+        s.insts.remove(name);
+        s.packs.remove(name);
+        s.ambiguous.insert(name.to_string());
+    }
+
     fn lookup_type(&self, scope: ScopeId, name: &str) -> Option<TypeId> {
         let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) { return None; }
         if let Some(&id) = s.types.get(name) { return Some(id); }
         s.parent.and_then(|p| self.lookup_type(p, name))
     }
 
     fn lookup_link(&self, scope: ScopeId, name: &str) -> Option<LinkId> {
         let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) { return None; }
         if let Some(&id) = s.links.get(name) { return Some(id); }
         s.parent.and_then(|p| self.lookup_link(p, name))
     }
 
     fn lookup_inst(&self, scope: ScopeId, name: &str) -> Option<InstId> {
         let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) { return None; }
         if let Some(&id) = s.insts.get(name) { return Some(id); }
         s.parent.and_then(|p| self.lookup_inst(p, name))
     }
 
     fn lookup_pack(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
         let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) { return None; }
         if let Some(&id) = s.packs.get(name) { return Some(id); }
         s.parent.and_then(|p| self.lookup_pack(p, name))
     }
@@ -186,12 +202,13 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let new_id = ScopeId(ctx.scopes.len() as u32);
         ctx.scopes.push(IrScope {
             kind,
-            name: name.clone(),
-            parent: Some(parent),
-            types:  HashMap::new(),
-            links:  HashMap::new(),
-            insts:  HashMap::new(),
-            packs:  HashMap::new(),
+            name:      name.clone(),
+            parent:    Some(parent),
+            types:     HashMap::new(),
+            links:     HashMap::new(),
+            insts:     HashMap::new(),
+            packs:     HashMap::new(),
+            ambiguous: HashSet::new(),
         });
 
         // Only register Pack scopes by name — Type scopes are registered
@@ -201,6 +218,263 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                 ctx.scopes[parent.0 as usize].packs.insert(n, new_id);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import pass — process `use` statements
+// ---------------------------------------------------------------------------
+//
+// Run twice:
+//   ImportKind::TypesLinksAndPacks  — after pass2 (local types/links registered),
+//                                     before pass4 (so imported types are visible
+//                                     when instances look up their type name).
+//   ImportKind::Insts               — after pass4 (local instances registered),
+//                                     before pass5 (so imported instances are
+//                                     visible in field value resolution).
+
+#[derive(Clone, Copy, PartialEq)]
+enum ImportKind { TypesLinksAndPacks, Insts }
+
+fn pass_imports(parse_scopes: &[AstScope], ctx: &mut Ctx, kind: ImportKind) {
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            if let AstDef::Use(u) = def {
+                let loc = ir_loc(&u.loc);
+                resolve_use(&u.inner.path, scope, ctx, &loc, kind);
+            }
+        }
+    }
+}
+
+fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: ImportKind) {
+    let segs = &path.segments;
+    let mut i = 0;
+
+    // Consume optional `pack` keyword.
+    if segs.get(i).map(|s| s.inner.value.as_str()) == Some("pack") {
+        i += 1;
+    }
+
+    let pack_name = match segs.get(i) {
+        Some(s) => s.inner.value.clone(),
+        None => {
+            if kind == ImportKind::TypesLinksAndPacks {
+                ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
+            }
+            return;
+        }
+    };
+    i += 1;
+
+    let src = match ctx.lookup_pack(into, &pack_name) {
+        Some(s) => s,
+        None => {
+            if kind == ImportKind::TypesLinksAndPacks {
+                ctx.errors.push(IrError {
+                    message: format!("use: pack '{}' not found", pack_name),
+                    loc: loc.clone(),
+                });
+            }
+            return;
+        }
+    };
+
+    // `use pack:std` — register the pack name itself, then done.
+    if i >= segs.len() {
+        if kind == ImportKind::TypesLinksAndPacks {
+            try_import_pack(&pack_name, src, into, ctx, loc);
+        }
+        return;
+    }
+
+    // Parse optional kind hint.
+    let kind_hint = match segs.get(i).map(|s| s.inner.value.as_str()) {
+        Some("type") => { i += 1; Some("type") }
+        Some("link") => { i += 1; Some("link") }
+        Some("inst") => { i += 1; Some("inst") }
+        _ => None,
+    };
+
+    let name = match segs.get(i) {
+        Some(s) => s.inner.value.clone(),
+        None => {
+            if kind == ImportKind::TypesLinksAndPacks {
+                ctx.errors.push(IrError {
+                    message: "use: expected name or '*' after kind specifier".into(),
+                    loc: loc.clone(),
+                });
+            }
+            return;
+        }
+    };
+
+    if name == "*" {
+        do_wildcard_import(src, into, kind_hint, ctx, loc, kind);
+    } else {
+        do_specific_import(&name, src, into, kind_hint, ctx, loc, kind);
+    }
+}
+
+fn do_wildcard_import(
+    src:       ScopeId,
+    into:      ScopeId,
+    kind_hint: Option<&str>,
+    ctx:       &mut Ctx,
+    loc:       &IrLoc,
+    kind:      ImportKind,
+) {
+    let src_scope = ctx.scopes[src.0 as usize].clone();
+
+    if kind == ImportKind::TypesLinksAndPacks {
+        if kind_hint.is_none() || kind_hint == Some("type") {
+            for (name, &tid) in &src_scope.types {
+                try_import_type(name, tid, into, ctx, loc);
+            }
+        }
+        if kind_hint.is_none() || kind_hint == Some("link") {
+            for (name, &lid) in &src_scope.links {
+                try_import_link(name, lid, into, ctx, loc);
+            }
+        }
+        if kind_hint.is_none() {
+            for (name, &sid) in &src_scope.packs {
+                try_import_pack(name, sid, into, ctx, loc);
+            }
+        }
+    }
+    if kind == ImportKind::Insts {
+        if kind_hint.is_none() || kind_hint == Some("inst") {
+            for (name, &iid) in &src_scope.insts {
+                try_import_inst(name, iid, into, ctx, loc);
+            }
+        }
+    }
+}
+
+fn do_specific_import(
+    name:      &str,
+    src:       ScopeId,
+    into:      ScopeId,
+    kind_hint: Option<&str>,
+    ctx:       &mut Ctx,
+    loc:       &IrLoc,
+    kind:      ImportKind,
+) {
+    let src_scope = ctx.scopes[src.0 as usize].clone();
+    let mut found = false;
+
+    if kind == ImportKind::TypesLinksAndPacks {
+        if kind_hint.is_none() || kind_hint == Some("type") {
+            if let Some(&tid) = src_scope.types.get(name) {
+                try_import_type(name, tid, into, ctx, loc);
+                found = true;
+            }
+        }
+        if kind_hint.is_none() || kind_hint == Some("link") {
+            if let Some(&lid) = src_scope.links.get(name) {
+                try_import_link(name, lid, into, ctx, loc);
+                found = true;
+            }
+        }
+        if kind_hint.is_none() {
+            if let Some(&sid) = src_scope.packs.get(name) {
+                try_import_pack(name, sid, into, ctx, loc);
+                found = true;
+            }
+        }
+        // Only emit "not found" when this is not an inst-only kind hint,
+        // AND we're not expecting to find it in the inst pass.
+        if !found && kind_hint.is_some() && kind_hint != Some("inst") {
+            ctx.errors.push(IrError {
+                message: format!("use: '{}' not found in pack", name),
+                loc: loc.clone(),
+            });
+        }
+    }
+    if kind == ImportKind::Insts {
+        if kind_hint.is_none() || kind_hint == Some("inst") {
+            if let Some(&iid) = src_scope.insts.get(name) {
+                try_import_inst(name, iid, into, ctx, loc);
+                found = true;
+            }
+        }
+        // If kind_hint is inst-specific and nothing found, report error.
+        if !found && kind_hint == Some("inst") {
+            ctx.errors.push(IrError {
+                message: format!("use: '{}' not found in pack", name),
+                loc: loc.clone(),
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import helpers — insert a single name into the destination scope,
+// detecting and marking ambiguity if a conflict exists.
+// ---------------------------------------------------------------------------
+
+fn try_import_type(name: &str, tid: TypeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    // Types and links are resolved through separate lookup functions, so they
+    // can share a name without ambiguity — only a type/type or type/pack clash counts.
+    let conflict = ctx.scopes[into.0 as usize].types.contains_key(name)
+        || ctx.scopes[into.0 as usize].packs.contains_key(name);
+    if conflict {
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+    } else {
+        ctx.scopes[into.0 as usize].types.insert(name.to_string(), tid);
+    }
+}
+
+fn try_import_link(name: &str, lid: LinkId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    // Types and links are resolved through separate lookup functions, so they
+    // can share a name without ambiguity — only a link/link or link/pack clash counts.
+    let conflict = ctx.scopes[into.0 as usize].links.contains_key(name)
+        || ctx.scopes[into.0 as usize].packs.contains_key(name);
+    if conflict {
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+    } else {
+        ctx.scopes[into.0 as usize].links.insert(name.to_string(), lid);
+    }
+}
+
+fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    let conflict = ctx.scopes[into.0 as usize].types.contains_key(name)
+        || ctx.scopes[into.0 as usize].links.contains_key(name)
+        || ctx.scopes[into.0 as usize].packs.contains_key(name);
+    if conflict {
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+    } else {
+        ctx.scopes[into.0 as usize].packs.insert(name.to_string(), sid);
+    }
+}
+
+fn try_import_inst(name: &str, iid: InstId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    if ctx.scopes[into.0 as usize].insts.contains_key(name) {
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+    } else {
+        ctx.scopes[into.0 as usize].insts.insert(name.to_string(), iid);
     }
 }
 
@@ -414,20 +688,38 @@ fn convert_primitive(p: &AstPrimitive) -> IrPrimitive {
 // Pass 4 — register instance names
 // ---------------------------------------------------------------------------
 
+fn lookup_type_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<TypeId> {
+    let segs = &ref_.segments;
+    match segs.len() {
+        0 => None,
+        1 => ctx.lookup_type(scope, &segs[0].inner.value),
+        _ => {
+            let mut cur = scope;
+            for seg in &segs[..segs.len() - 1] {
+                cur = ctx.lookup_pack(cur, &seg.inner.value)?;
+            }
+            ctx.lookup_type(cur, &segs.last().unwrap().inner.value)
+        }
+    }
+}
+
 fn pass4_register_insts(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
             if let AstDef::Inst(inst) = def {
-                let type_name = &inst.inner.type_name.inner;
-                let type_id   = match ctx.lookup_type(scope, type_name) {
+                let type_ref = &inst.inner.type_name.inner;
+                let type_id  = match lookup_type_by_ref(type_ref, ctx, scope) {
                     Some(tid) => tid,
                     None => {
+                        let ref_name = type_ref.segments.iter()
+                            .map(|s| s.inner.value.as_str())
+                            .collect::<Vec<_>>().join(":");
                         ctx.errors.push(IrError {
-                            message: format!("unknown type '{}'", type_name),
+                            message: format!("unknown type '{}'", ref_name),
                             loc: ir_loc(&inst.inner.type_name.loc),
                         });
-                        continue;  // skip this instance rather than using a bad TypeId
+                        continue;
                     }
                 };
                 ctx.alloc_inst(inst.inner.inst_name.inner.clone(), scope, ir_loc(&inst.loc), type_id);
@@ -809,8 +1101,10 @@ pub fn resolve(res: ParseRes) -> IrRes {
 
     pass1_mirror_scopes(&res.scopes, &mut ctx);
     pass2_register_names(&res.scopes, &mut ctx);
-    pass3_resolve_types_and_links(&res.scopes, &mut ctx);
+    pass_imports(&res.scopes, &mut ctx, ImportKind::TypesLinksAndPacks);
     pass4_register_insts(&res.scopes, &mut ctx);
+    pass3_resolve_types_and_links(&res.scopes, &mut ctx);
+    pass_imports(&res.scopes, &mut ctx, ImportKind::Insts);
     pass5_resolve_inst_fields(&res.scopes, &mut ctx);
 
     let deploys = pass6_resolve_deploys(&res.scopes, &mut ctx);

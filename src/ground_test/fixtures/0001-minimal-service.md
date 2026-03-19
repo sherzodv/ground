@@ -1,6 +1,8 @@
 # minimal service
 
 ```ground
+use std:*
+
 service svc-api {
   image: svc-api:prod
 }

@@ -2,6 +2,7 @@ use ground_compile::ast::{
     AstDef, AstField, AstLinkDef, AstPrimitive, AstRef, AstScope, AstScopeId,
     AstStructItem, AstTypeDef, AstTypeDefBody, AstValue, ScopeKind,
     ParseReq, ParseUnit,
+    AstUse,
 };
 use ground_compile::parse::parse;
 
@@ -77,13 +78,18 @@ pub fn show_field(f: &AstField) -> String {
     }
 }
 
+pub fn show_use(u: &AstUse) -> String {
+    format!("Use[{}]", show_ref(&u.path))
+}
+
 pub fn show_def(def: &AstDef) -> String {
     match def {
+        AstDef::Use(u)   => show_use(&u.inner),
         AstDef::Type(td) => show_type_def(&td.inner),
         AstDef::Link(ld) => show_link_def(&ld.inner),
         AstDef::Inst(inst) => {
             let mut parts = vec![
-                inst.inner.type_name.inner.clone(),
+                show_ref(&inst.inner.type_name.inner),
                 inst.inner.inst_name.inner.clone(),
             ];
             parts.extend(inst.inner.fields.iter().map(|f| show_field(&f.inner)));

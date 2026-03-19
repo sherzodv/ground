@@ -1,6 +1,8 @@
 # service with autoscaling
 
 ```ground
+use std:*
+
 service svc-api {
   image: svc-api:prod
   scaling: { min: 2  max: 10 }

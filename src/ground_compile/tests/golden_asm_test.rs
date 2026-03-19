@@ -20,7 +20,7 @@
 ///   val1:val2                     — typed path
 ///   List[val1, val2]              — list
 #[path = "helpers/golden_asm_helpers.rs"] mod golden_asm_helpers;
-use golden_asm_helpers::{norm, show};
+use golden_asm_helpers::{norm, show, show_multi};
 
 // ---------------------------------------------------------------------------
 // Basic deploys
@@ -42,8 +42,9 @@ fn deploy_simple_inst() {
             deploy my-stack to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[stack, my-stack, name=Str("prod")]
+            Scope[pack:test,
+              Inst[stack, my-stack, name=Str("prod")],
+            ]
             Deploy[aws, prod]
               inst: Inst[stack, my-stack, name=Str("prod")]
         "#),
@@ -63,8 +64,9 @@ fn deploy_integer_field() {
             deploy c to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[counter, c, count=Int(42)]
+            Scope[pack:test,
+              Inst[counter, c, count=Int(42)],
+            ]
             Deploy[aws, prod]
               inst: Inst[counter, c, count=Int(42)]
         "#),
@@ -80,8 +82,9 @@ fn deploy_reference_field() {
             deploy s to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[svc, s, image=Ref("nginx:latest")]
+            Scope[pack:test,
+              Inst[svc, s, image=Ref("nginx:latest")],
+            ]
             Deploy[aws, prod]
               inst: Inst[svc, s, image=Ref("nginx:latest")]
         "#),
@@ -98,8 +101,9 @@ fn deploy_enum_variant_field() {
             deploy h to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[host, h, zone=Variant(zone, "eu-west")]
+            Scope[pack:test,
+              Inst[host, h, zone=Variant(zone, "eu-west")],
+            ]
             Deploy[aws, prod]
               inst: Inst[host, h, zone=Variant(zone, "eu-west")]
         "#),
@@ -117,8 +121,9 @@ fn deploy_typed_path_field() {
             deploy s to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[svc, s, location=Variant(region, "eu-central"):Variant(zone, "2")]
+            Scope[pack:test,
+              Inst[svc, s, location=Variant(region, "eu-central"):Variant(zone, "2")],
+            ]
             Deploy[aws, prod]
               inst: Inst[svc, s, location=Variant(region, "eu-central"):Variant(zone, "2")]
         "#),
@@ -140,9 +145,10 @@ fn deploy_collects_named_inst_as_member() {
             deploy my-svc to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[db, my-db, engine=Str("pg")]
-              Inst[svc, my-svc, db=InstRef(db, my-db)]
+            Scope[pack:test,
+              Inst[db, my-db, engine=Str("pg")],
+              Inst[svc, my-svc, db=InstRef(db, my-db)],
+            ]
             Deploy[aws, prod]
               inst: Inst[svc, my-svc, db=InstRef(db, my-db)]
         "#),
@@ -161,9 +167,10 @@ fn deploy_deduplicates_members() {
             deploy my-stack to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[db, my-db, engine=Str("pg")]
-              Inst[stack, my-stack, _=List[InstRef(db, my-db), InstRef(db, my-db)]]
+            Scope[pack:test,
+              Inst[db, my-db, engine=Str("pg")],
+              Inst[stack, my-stack, _=List[InstRef(db, my-db), InstRef(db, my-db)]],
+            ]
             Deploy[aws, prod]
               inst: Inst[stack, my-stack, _=List[InstRef(db, my-db), InstRef(db, my-db)]]
         "#),
@@ -184,10 +191,11 @@ fn deploy_list_of_members() {
             deploy my-stack to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[service, svc-a, image=Ref("nginx")]
-              Inst[database, db-a, engine=Str("pg")]
-              Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(database, db-a)]]
+            Scope[pack:test,
+              Inst[service, svc-a, image=Ref("nginx")],
+              Inst[database, db-a, engine=Str("pg")],
+              Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(database, db-a)]],
+            ]
             Deploy[aws, prod]
               inst: Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(database, db-a)]]
         "#),
@@ -216,8 +224,9 @@ fn deploy_anonymous_inst_inlined() {
             deploy my-svc to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]]
+            Scope[pack:test,
+              Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]],
+            ]
             Deploy[aws, prod]
               inst: Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]]
         "#),
@@ -239,9 +248,10 @@ fn deploy_named_inst_not_inlined() {
             deploy my-svc to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[scaling, my-scaling, min=Int(1), max=Int(10)]
-              Inst[svc, my-svc, scaling=InstRef(scaling, my-scaling)]
+            Scope[pack:test,
+              Inst[scaling, my-scaling, min=Int(1), max=Int(10)],
+              Inst[svc, my-svc, scaling=InstRef(scaling, my-scaling)],
+            ]
             Deploy[aws, prod]
               inst: Inst[svc, my-svc, scaling=InstRef(scaling, my-scaling)]
         "#),
@@ -263,8 +273,9 @@ fn deploy_fields_are_separate_from_inst() {
             deploy my-svc to aws as prod { prefix: "acme" }
         "#),
         norm(r#"
-            Symbol
-              Inst[svc, my-svc, image=Ref("nginx")]
+            Scope[pack:test,
+              Inst[svc, my-svc, image=Ref("nginx")],
+            ]
             Deploy[aws, prod]
               inst: Inst[svc, my-svc, image=Ref("nginx")]
               fields: prefix=Str("acme")
@@ -285,8 +296,9 @@ fn deploy_multi_segment_target() {
             deploy s to aws:eu-central as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[stack, s, name=Str("x")]
+            Scope[pack:test,
+              Inst[stack, s, name=Str("x")],
+            ]
             Deploy[aws:eu-central, prod]
               inst: Inst[stack, s, name=Str("x")]
         "#),
@@ -313,12 +325,40 @@ fn deploy_services_access_each_other() {
             deploy my-stack to aws as prod {}
         "#),
         norm(r#"
-            Symbol
-              Inst[service, svc-a, image=Ref("nginx"), access=List[InstRef(service, svc-b)]]
-              Inst[service, svc-b, image=Ref("redis"), access=List[InstRef(service, svc-a)]]
-              Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(service, svc-b)]]
+            Scope[pack:test,
+              Inst[service, svc-a, image=Ref("nginx"), access=List[InstRef(service, svc-b)]],
+              Inst[service, svc-b, image=Ref("redis"), access=List[InstRef(service, svc-a)]],
+              Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(service, svc-b)]],
+            ]
             Deploy[aws, prod]
               inst: Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(service, svc-b)]]
+        "#),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Use / pack imports — ASM layer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn use_imported_type_deploy() {
+    // Instance of a type imported from another pack resolves correctly through lowering.
+    assert_eq!(
+        show_multi(vec![
+            ("std",  vec![],  "type service = { link image = reference }"),
+            ("app",  vec![],  r#"
+                use pack:std:type:service
+                service my-svc { image: "nginx" }
+                deploy my-svc to aws as prod {}
+            "#),
+        ]),
+        norm(r#"
+            Scope[pack:std]
+            Scope[pack:app,
+              Inst[service, my-svc, image=Ref("nginx")],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[service, my-svc, image=Ref("nginx")]
         "#),
     );
 }

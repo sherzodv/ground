@@ -115,10 +115,22 @@ fn compile_and_gen() -> (CompileRes, String, String) {
         process::exit(1);
     }
 
+    // unit 0 is stdlib; user units start at index 1
+    let unit_names: Vec<String> = std::iter::once("std".to_string())
+        .chain(units.iter().map(|u| u.name.clone()))
+        .collect();
+
     let res = compile(CompileReq { units });
 
     if !res.errors.is_empty() {
-        for e in &res.errors { eprintln!("error: {}", e.message); }
+        for e in &res.errors {
+            if let Some(loc) = &e.loc {
+                let name = unit_names.get(loc.unit as usize).map(|s| s.as_str()).unwrap_or("?");
+                eprintln!("error: {}:{}:{}: {}", name, loc.line, loc.col, e.message);
+            } else {
+                eprintln!("error: {}", e.message);
+            }
+        }
         process::exit(1);
     }
 

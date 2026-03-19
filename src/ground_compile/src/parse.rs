@@ -1,4 +1,4 @@
-/// Hand-written recursive-descent parser for RFC 0005.
+/// Hand-written recursive-descent parser for RFC 0005 + RFC 0008 (use/packs).
 /// Full grammar is documented in `grammar.md`.
 ///
 /// ```bnf
@@ -7,7 +7,8 @@
 /// string         ::= '"' [^"]* '"'
 /// ref-atom       ::= [a-zA-Z0-9\-_./]+
 /// ref-opt-atom   ::= "(" ident ")"
-/// ref-seg        ::= ref-opt-atom | ref-atom
+/// ref-wild       ::= "*"
+/// ref-seg        ::= ref-opt-atom | ref-atom | ref-wild
 /// ref            ::= ref-seg (":" ref-seg)*
 ///
 /// primitive      ::= "string" | "integer" | "reference"
@@ -31,8 +32,9 @@
 /// inst-item      ::= inst-field | inst-value
 /// inst           ::= ident ident ("{" inst-item* "}")?
 /// deploy         ::= "deploy" ref "to" ref "as" ref ("{" inst-field* "}")?
+/// use-stmt       ::= "use" ref
 ///
-/// def            ::= type-def | link-def | deploy | inst
+/// def            ::= use-stmt | type-def | link-def | deploy | inst
 /// system         ::= def*
 /// ```
 use crate::ast::*;
@@ -183,6 +185,11 @@ impl<'a> Parser<'a> {
         }
         if let Some(v) = self.parse_ref_atom() {
             return Some(self.node(start, AstRefSeg { value: v, is_opt: false }));
+        }
+        // Wildcard segment — only semantically valid as final segment of a `use` path.
+        if self.rest().starts_with('*') {
+            self.advance(1);
+            return Some(self.node(start, AstRefSeg { value: "*".to_string(), is_opt: false }));
         }
         None
     }
@@ -525,14 +532,14 @@ impl<'a> Parser<'a> {
         let start = self.pos;
 
         // Inst must not start with reserved keywords
-        if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") {
+        if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") || self.at_keyword("use") {
             return None;
         }
 
-        let type_name = self.parse_ident()?;
+        let type_name = self.parse_ref()?;
         self.skip_ws();
 
-        if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") {
+        if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") || self.at_keyword("use") {
             self.pos = start;
             return None;
         }
@@ -610,7 +617,17 @@ impl<'a> Parser<'a> {
         Some(self.node(start, AstDeploy { what, target, name, fields }))
     }
 
+    fn parse_use(&mut self) -> Option<AstNode<AstUse>> {
+        let start = self.pos;
+        if !self.at_keyword("use") { return None; }
+        self.advance("use".len());
+        self.skip_ws();
+        let path = self.parse_ref()?;
+        Some(self.node(start, AstUse { path: path.inner }))
+    }
+
     fn parse_def(&mut self) -> Option<AstDef> {
+        if self.at_keyword("use")    { return self.parse_use().map(AstDef::Use);         }
         if self.at_keyword("type")   { return self.parse_type_def().map(AstDef::Type);   }
         if self.at_keyword("link")   { return self.parse_link_def().map(AstDef::Link);   }
         if self.at_keyword("deploy") { return self.parse_deploy().map(AstDef::Deploy);   }
@@ -649,7 +666,7 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_ws();
             if self.pos >= self.src.len() { break; }
-            if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") {
+            if self.at_keyword("use") || self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") {
                 break;
             }
             if self.peek().map_or(false, |c| c.is_ascii_alphabetic()) { break; }

@@ -168,6 +168,58 @@ pub fn show_deploy_entry(dep: &IrDeployDef, ir: &IrRes) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Scope tree
+// ---------------------------------------------------------------------------
+
+fn show_scope_ir(scope_id: ScopeId, ir: &IrRes) -> String {
+    let scope = &ir.scopes[scope_id.0 as usize];
+    let raw_name = scope.name.as_deref().unwrap_or("_");
+    let kind_str = match scope.kind {
+        ScopeKind::Pack => "pack",
+        ScopeKind::Type => "type",
+    };
+    let name = format!("{}:{}", kind_str, raw_name);
+
+    let mut parts: Vec<String> = Vec::new();
+
+    // Types belonging to this scope (arena order)
+    for (i, t) in ir.types.iter().enumerate() {
+        if t.scope == scope_id {
+            parts.push(show_type_entry(i, ir));
+        }
+    }
+
+    // Pack-level links belonging to this scope (struct links are shown inline in type bodies)
+    if scope.kind == ScopeKind::Pack {
+        for (i, l) in ir.links.iter().enumerate() {
+            if l.scope == scope_id {
+                parts.push(show_link_entry(i, ir));
+            }
+        }
+    }
+
+    // Instances belonging to this scope (arena order)
+    for (i, inst) in ir.insts.iter().enumerate() {
+        if inst.scope == scope_id {
+            parts.push(show_inst_entry(i, ir));
+        }
+    }
+
+    // Child scopes (arena insertion order)
+    for (i, s) in ir.scopes.iter().enumerate() {
+        if s.parent == Some(scope_id) {
+            parts.push(show_scope_ir(ScopeId(i as u32), ir));
+        }
+    }
+
+    if parts.is_empty() {
+        format!("Scope[{}]", name)
+    } else {
+        format!("Scope[{},\n{},\n]", name, parts.join(",\n"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point used by tests
 // ---------------------------------------------------------------------------
 
@@ -180,31 +232,43 @@ pub fn norm(s: &str) -> String {
         .join("\n")
 }
 
+/// Parse + resolve multiple units, format as compact multi-line string.
+/// Each unit is `(name, path, src)`.
+pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
+    let req = ParseReq {
+        units: units.into_iter().map(|(name, path, src)| ParseUnit {
+            name: name.into(),
+            path: path.into_iter().map(|s| s.to_string()).collect(),
+            src:  src.to_string(),
+        }).collect(),
+    };
+    let res = parse(req);
+    show_ir(resolve(res))
+}
+
 /// Parse + resolve `input`, format as compact multi-line string.
-/// Output order: types (anonymous first, then named), top-level links, instances, deploys, errors.
 pub fn show(input: &str) -> String {
     let res = parse(ParseReq {
         units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string() }],
     });
-    let ir = resolve(res);
+    show_ir(resolve(res))
+}
 
+fn show_ir(ir: IrRes) -> String {
     let mut lines: Vec<String> = Vec::new();
 
-    for i in 0..ir.types.len() {
-        lines.push(show_type_entry(i, &ir));
-    }
-    for i in 0..ir.links.len() {
-        // Only show links defined directly in a pack scope (not struct links).
-        if ir.scopes[ir.links[i].scope.0 as usize].kind == ScopeKind::Pack {
-            lines.push(show_link_entry(i, &ir));
+    // Scope tree: direct children of root (ScopeId(0))
+    for (i, s) in ir.scopes.iter().enumerate().skip(1) {
+        if s.parent == Some(ScopeId(0)) {
+            lines.push(show_scope_ir(ScopeId(i as u32), &ir));
         }
     }
-    for i in 0..ir.insts.len() {
-        lines.push(show_inst_entry(i, &ir));
-    }
+
+    // Deploys are flat for now (IrDeployDef has no scope field yet)
     for dep in &ir.deploys {
         lines.push(show_deploy_entry(dep, &ir));
     }
+
     for e in &ir.errors {
         lines.push(format!("ERR: {}", e.message));
     }

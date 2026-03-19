@@ -116,7 +116,7 @@ pub enum AstField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstInst {
-    pub type_name: AstNode<String>,
+    pub type_name: AstNode<AstRef>,
     pub inst_name: AstNode<String>,
     pub fields:    Vec<AstNode<AstField>>,
 }
@@ -144,6 +144,18 @@ pub struct AstScope {
 }
 
 // ---------------------------------------------------------------------------
+// Use statements
+// ---------------------------------------------------------------------------
+
+/// `use <ref>` — imports names from another pack into the current scope.
+/// The `path` ref is parsed using the standard ref grammar; `*` is allowed
+/// as a wildcard terminal segment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstUse {
+    pub path: AstRef,
+}
+
+// ---------------------------------------------------------------------------
 // Top-level definitions
 // ---------------------------------------------------------------------------
 
@@ -154,6 +166,7 @@ pub enum AstDef {
     Inst(AstNode<AstInst>),
     Deploy(AstNode<AstDeploy>),
     Scope(AstNode<AstScope>),
+    Use(AstNode<AstUse>),
 }
 
 // ---------------------------------------------------------------------------

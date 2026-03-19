@@ -73,15 +73,19 @@ pub enum ScopeKind { Pack, Type }
 
 /// `ScopeId(0)` is always the root scope.
 /// Separate maps per kind so types and links can share names in the same scope.
+/// `ambiguous` tracks names that have been marked as conflicting (same-kind duplicates
+/// from imports or local-vs-import collisions). Lookups for ambiguous names return None
+/// and stop parent-chain traversal; callers must use a qualified prefix to disambiguate.
 #[derive(Debug, Clone)]
 pub struct IrScope {
-    pub kind:   ScopeKind,
-    pub name:   Option<String>,
-    pub parent: Option<ScopeId>,
-    pub types:  HashMap<String, TypeId>,
-    pub links:  HashMap<String, LinkId>,
-    pub insts:  HashMap<String, InstId>,
-    pub packs:  HashMap<String, ScopeId>,
+    pub kind:      ScopeKind,
+    pub name:      Option<String>,
+    pub parent:    Option<ScopeId>,
+    pub types:     HashMap<String, TypeId>,
+    pub links:     HashMap<String, LinkId>,
+    pub insts:     HashMap<String, InstId>,
+    pub packs:     HashMap<String, ScopeId>,
+    pub ambiguous: std::collections::HashSet<String>,
 }
 
 // ---------------------------------------------------------------------------
