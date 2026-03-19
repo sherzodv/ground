@@ -474,16 +474,25 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         if let (Some(lid), false) = (anon_link, anon_vals.is_empty()) {
             let link_type = ctx.links[lid.0 as usize].link_type.clone();
             let loc       = ir_loc(&anon_vals[0].loc);
-            let ir_val    = match &link_type {
+            match &link_type {
                 IrLinkType::List(patterns) => {
                     let items = anon_vals.iter()
                         .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
                         .collect();
-                    IrValue::List(items)
+                    resolved.push(IrField { link_id: lid, name: "_".into(), loc, value: IrValue::List(items) });
                 }
-                _ => resolve_value(&anon_vals[0].inner, &link_type, ctx, scope, &loc),
-            };
-            resolved.push(IrField { link_id: lid, name: "_".into(), loc, value: ir_val });
+                _ => {
+                    if anon_vals.len() > 1 {
+                        ctx.errors.push(IrError {
+                            message: "multiple values defined for a non-List field '_'".into(),
+                            loc: loc.clone(),
+                        });
+                    } else {
+                        let ir_val = resolve_value(&anon_vals[0].inner, &link_type, ctx, scope, &loc);
+                        resolved.push(IrField { link_id: lid, name: "_".into(), loc, value: ir_val });
+                    }
+                }
+            }
         }
 
         ctx.insts[iid.0 as usize].fields = resolved;
@@ -500,8 +509,11 @@ fn resolve_named_fields(
     ctx:        &mut Ctx,
     scope:      ScopeId,
 ) -> Vec<IrField> {
-    ast_fields.iter().filter_map(|af| {
-        let AstField::Named { name, value } = &af.inner else { return None; };
+    // Group named fields by link, preserving first-occurrence order.
+    let mut groups: Vec<(String, IrLoc, LinkId, Vec<&AstNode<AstValue>>)> = Vec::new();
+
+    for af in ast_fields {
+        let AstField::Named { name, value } = &af.inner else { continue; };
         let field_name = &name.inner;
         let loc        = ir_loc(&name.loc);
 
@@ -514,13 +526,40 @@ fn resolve_named_fields(
                     message: format!("unknown field '{}'", field_name),
                     loc: loc.clone(),
                 });
-                return None;
+                continue;
             }
         };
 
+        if let Some(group) = groups.iter_mut().find(|g| g.2 == lid) {
+            group.3.push(value);
+        } else {
+            groups.push((field_name.clone(), loc, lid, vec![value]));
+        }
+    }
+
+    groups.into_iter().filter_map(|(field_name, loc, lid, values)| {
         let link_type = ctx.links[lid.0 as usize].link_type.clone();
-        let ir_val    = resolve_value(&value.inner, &link_type, ctx, scope, &ir_loc(&value.loc));
-        Some(IrField { link_id: lid, name: field_name.clone(), loc, value: ir_val })
+
+        if values.len() > 1 {
+            match &link_type {
+                IrLinkType::List(patterns) => {
+                    let items = values.iter()
+                        .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
+                        .collect();
+                    Some(IrField { link_id: lid, name: field_name, loc, value: IrValue::List(items) })
+                }
+                _ => {
+                    ctx.errors.push(IrError {
+                        message: format!("multiple values defined for a non-List field '{}'", field_name),
+                        loc: loc.clone(),
+                    });
+                    None
+                }
+            }
+        } else {
+            let ir_val = resolve_value(&values[0].inner, &link_type, ctx, scope, &ir_loc(&values[0].loc));
+            Some(IrField { link_id: lid, name: field_name, loc, value: ir_val })
+        }
     }).collect()
 }
 

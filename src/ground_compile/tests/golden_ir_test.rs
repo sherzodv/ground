@@ -211,6 +211,58 @@ fn struct_anonymous_link_list_unresolved_type() {
 }
 
 // ---------------------------------------------------------------------------
+// Anon / named list fields — multiple occurrences gathered
+// ---------------------------------------------------------------------------
+
+#[test]
+fn anon_list_field_multiple_values_gathered() {
+    assert_eq!(
+        show(
+            r#"
+            type service = { link image = reference }
+            type stack   = { link = [ type:service ] }
+            service svc-a { image: "nginx"  }
+            service svc-b { image: "apache" }
+            stack my-stack { svc-a svc-b }
+        "#
+        ),
+        norm(
+            r#"
+            Type#0[service, Struct[Link#0[image, Prim(reference)]]]
+            Type#1[stack, Struct[Link#1[_, List[IrRef[Struct(Type#0)]]]]]
+            Inst#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]]
+            Inst#1[Type#0, svc-b, Field[Link#0, Ref("apache")]]
+            Inst#2[Type#1, my-stack, Field[Link#1, List[Inst(Inst#0), Inst(Inst#1)]]]
+        "#
+        ),
+    );
+}
+
+#[test]
+fn named_list_field_multiple_values_gathered() {
+    assert_eq!(
+        show(
+            r#"
+            type service = { link image = reference }
+            type stack   = { link services = [ type:service ] }
+            service svc-a { image: "nginx"  }
+            service svc-b { image: "apache" }
+            stack my-stack { services: svc-a services: svc-b }
+        "#
+        ),
+        norm(
+            r#"
+            Type#0[service, Struct[Link#0[image, Prim(reference)]]]
+            Type#1[stack, Struct[Link#1[services, List[IrRef[Struct(Type#0)]]]]]
+            Inst#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]]
+            Inst#1[Type#0, svc-b, Field[Link#0, Ref("apache")]]
+            Inst#2[Type#1, my-stack, Field[Link#1, List[Inst(Inst#0), Inst(Inst#1)]]]
+        "#
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Top-level links
 // ---------------------------------------------------------------------------
 
@@ -630,6 +682,44 @@ fn error_unknown_inst_type() {
     assert!(
         out.contains("ghost"),
         "error should name the unknown type: {}",
+        out
+    );
+}
+
+#[test]
+fn error_named_non_list_field_multiple_values() {
+    let out = show(
+        r#"
+        type service = { link image = reference }
+        type stack   = { link service = type:service }
+        service svc-a { image: "nginx"  }
+        service svc-b { image: "apache" }
+        stack my-stack { service: svc-a service: svc-b }
+    "#,
+    );
+    assert!(out.contains("ERR:"), "expected error, got: {}", out);
+    assert!(
+        out.contains("multiple values defined for a non-List field 'service'"),
+        "error should mention the field name: {}",
+        out
+    );
+}
+
+#[test]
+fn error_anon_non_list_field_multiple_values() {
+    let out = show(
+        r#"
+        type service = { link image = reference }
+        type stack   = { link = type:service }
+        service svc-a { image: "nginx"  }
+        service svc-b { image: "apache" }
+        stack my-stack { svc-a svc-b }
+    "#,
+    );
+    assert!(out.contains("ERR:"), "expected error, got: {}", out);
+    assert!(
+        out.contains("multiple values defined for a non-List field '_'"),
+        "error should mention the anonymous field: {}",
         out
     );
 }
