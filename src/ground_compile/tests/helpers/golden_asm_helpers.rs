@@ -30,6 +30,9 @@ fn show_field(f: &AsmField) -> String {
 
 fn show_inst_inline(i: &AsmInst) -> String {
     let mut parts = vec![i.type_name.clone(), i.name.clone()];
+    if let Some(hint) = &i.type_hint {
+        parts.push(format!("hint={}", hint));
+    }
     parts.extend(i.fields.iter().map(show_field));
     parts.join(", ")
 }

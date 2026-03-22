@@ -38,6 +38,7 @@ pub struct AsmDeploy {
 pub struct AsmInst {
     pub type_name: String,
     pub name:      String,
+    pub type_hint: Option<String>, // explicit type annotation from source, if present
     pub fields:    Vec<AsmField>,
 }
 
@@ -105,7 +106,7 @@ fn lower_deploy(dep: &IrDeployDef, ir: &IrRes) -> AsmDeploy {
         Some(id) => id,
         None     => {
             // Deploy `what` did not resolve to a known instance.
-            let placeholder = AsmInst { type_name: String::new(), name: String::new(), fields: vec![] };
+            let placeholder = AsmInst { type_name: String::new(), name: String::new(), type_hint: None, fields: vec![] };
             return AsmDeploy { target, name, inst: placeholder, fields: vec![] };
         }
     };
@@ -124,8 +125,9 @@ fn lower_inst(id: InstId, ir: &IrRes) -> AsmInst {
     let inst      = &ir.insts[id.0 as usize];
     let type_name = ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
     let name      = inst.name.clone();
+    let type_hint = inst.type_hint.clone();
     let fields    = inst.fields.iter().map(|f| lower_field(f, ir)).collect();
-    AsmInst { type_name, name, fields }
+    AsmInst { type_name, name, type_hint, fields }
 }
 
 fn lower_field(f: &IrField, ir: &IrRes) -> AsmField {

@@ -64,8 +64,12 @@ pub fn show_value(v: &AstValue) -> String {
             let parts: Vec<_> = items.iter().map(|i| show_value(&i.inner)).collect();
             format!("List[{}]", parts.join(", "))
         }
-        AstValue::Struct(fields) => {
-            let parts: Vec<_> = fields.iter().map(|f| show_field(&f.inner)).collect();
+        AstValue::Struct { type_hint, fields } => {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(hint) = type_hint {
+                parts.push(format!("Hint({})", show_ref(&hint.inner)));
+            }
+            parts.extend(fields.iter().map(|f| show_field(&f.inner)));
             format!("Struct[{}]", parts.join(", "))
         }
     }

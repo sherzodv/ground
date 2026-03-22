@@ -1031,3 +1031,60 @@ fn use_qualified_import_bypasses_shadowed_name() {
         "#),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Type hints on struct values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inst_inline_struct_with_type_hint() {
+    assert_eq!(
+        show(r#"
+            type scaling = {
+                link min = integer
+                link max = integer
+            }
+            type svc = { link scaling = scaling }
+            svc my-svc {
+                scaling: type:scaling { min: 2  max: 10 }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                Type#0[scaling, Struct[Link#0[min, Prim(integer)], Link#1[max, Prim(integer)]]],
+                Type#1[svc, Struct[Link#2[scaling, IrRef[Struct(Type#0)]]]],
+                Inst#0[Type#1, my-svc, Field[Link#2, Inst(Inst#1)]],
+                Inst#1[Type#0, _, hint=scaling, Field[Link#0, Int(2)], Field[Link#1, Int(10)]],
+                Scope[type:scaling],
+                Scope[type:svc],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn inst_inline_struct_type_hint_mismatch() {
+    let out = show(r#"
+        type scaling = { link min = integer  link max = integer }
+        type other   = { link x = integer }
+        type svc     = { link scaling = scaling }
+        svc my-svc {
+            scaling: type:other { min: 2  max: 10 }
+        }
+    "#);
+    assert!(out.contains("ERR:"), "expected error, got: {}", out);
+    assert!(out.contains("does not match"), "expected mismatch error, got: {}", out);
+}
+
+#[test]
+fn inst_inline_struct_type_hint_unknown() {
+    let out = show(r#"
+        type scaling = { link min = integer  link max = integer }
+        type svc     = { link scaling = scaling }
+        svc my-svc {
+            scaling: type:nonexistent { min: 2  max: 10 }
+        }
+    "#);
+    assert!(out.contains("ERR:"), "expected error, got: {}", out);
+    assert!(out.contains("nonexistent"), "error should name the unknown type: {}", out);
+}

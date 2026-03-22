@@ -814,3 +814,58 @@ fn use_then_qualified_inst() {
         "#),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Type hints on struct values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inst_struct_value_with_type_hint() {
+    assert_eq!(
+        show(r#"
+            type scaling = {
+                link min = integer
+                link max = integer
+            }
+            type svc = { link scaling = scaling }
+            svc my-svc {
+                scaling: type:scaling { min: 2  max: 10 }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                Type[scaling, Struct[Link[min, Type[_, Primitive(integer)]], Link[max, Type[_, Primitive(integer)]]]],
+                Type[svc, Struct[Link[scaling, Type[_, Ref(scaling)]]]],
+                Inst[svc, my-svc, Field[scaling, Struct[Hint(type:scaling), Field[min, Ref(2)], Field[max, Ref(10)]]]],
+                Scope[type:scaling],
+                Scope[type:svc],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn inst_struct_value_bare_hint() {
+    // Hint without type: prefix is also valid
+    assert_eq!(
+        show(r#"
+            type scaling = {
+                link min = integer
+                link max = integer
+            }
+            type svc = { link scaling = scaling }
+            svc my-svc {
+                scaling: scaling { min: 2  max: 10 }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                Type[scaling, Struct[Link[min, Type[_, Primitive(integer)]], Link[max, Type[_, Primitive(integer)]]]],
+                Type[svc, Struct[Link[scaling, Type[_, Ref(scaling)]]]],
+                Inst[svc, my-svc, Field[scaling, Struct[Hint(scaling), Field[min, Ref(2)], Field[max, Ref(10)]]]],
+                Scope[type:scaling],
+                Scope[type:svc],
+            ]
+        "#),
+    );
+}

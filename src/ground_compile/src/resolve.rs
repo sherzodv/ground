@@ -73,7 +73,7 @@ impl Ctx {
         } else {
             self.scopes[scope.0 as usize].insts.insert(name.clone(), id);
         }
-        self.insts.push(IrInstDef { type_id, name, scope, loc, fields: vec![] });
+        self.insts.push(IrInstDef { type_id, name, type_hint: None, scope, loc, fields: vec![] });
         id
     }
 
@@ -893,7 +893,7 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
 
         IrLinkType::Ref(pattern) => {
             // Inline struct literal `{ field: value ... }` — allocate an anonymous instance.
-            if let AstValue::Struct(ast_fields) = v {
+            if let AstValue::Struct { type_hint, fields: ast_fields } = v {
                 if pattern.segments.len() == 1 {
                     if let IrRefSegValue::Type(tid) = &pattern.segments[0].value {
                         let type_id  = *tid;
@@ -904,8 +904,36 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
                                 return IrValue::Ref(String::new());
                             }
                         };
+                        // Validate and extract type hint if present.
+                        let resolved_hint = if let Some(hint) = type_hint {
+                            let hint_name = hint.inner.segments.last()
+                                .map(|s| s.inner.value.as_str())
+                                .unwrap_or("");
+                            if let Some(hint_tid) = ctx.lookup_type(scope, hint_name) {
+                                if hint_tid != type_id {
+                                    let expected = ctx.types[type_id.0 as usize].name.clone()
+                                        .unwrap_or_else(|| "?".into());
+                                    ctx.push_error(format!(
+                                        "type hint '{}' does not match expected type '{}'",
+                                        hint_name, expected
+                                    ));
+                                }
+                            } else {
+                                ctx.push_error(format!("unknown type '{}' in type hint", hint_name));
+                            }
+                            Some(hint_name.to_string())
+                        } else {
+                            None
+                        };
                         let iid = InstId(ctx.insts.len() as u32);
-                        ctx.insts.push(IrInstDef { type_id, name: "_".into(), scope, loc: loc.clone(), fields: vec![] });
+                        ctx.insts.push(IrInstDef {
+                            type_id,
+                            name: "_".into(),
+                            type_hint: resolved_hint,
+                            scope,
+                            loc: loc.clone(),
+                            fields: vec![],
+                        });
                         let fields = resolve_named_fields(ast_fields, &link_ids, ctx, scope);
                         ctx.insts[iid.0 as usize].fields = fields;
                         return IrValue::Inst(iid);

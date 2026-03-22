@@ -160,11 +160,12 @@ pub struct IrField {
 
 #[derive(Debug, Clone)]
 pub struct IrInstDef {
-    pub type_id: TypeId,
-    pub name:    String,
-    pub scope:   ScopeId,
-    pub loc:     IrLoc,
-    pub fields:  Vec<IrField>,
+    pub type_id:   TypeId,
+    pub name:      String,
+    pub type_hint: Option<String>, // explicit type annotation from source, if present
+    pub scope:     ScopeId,
+    pub loc:       IrLoc,
+    pub fields:    Vec<IrField>,
 }
 
 #[derive(Debug, Clone)]

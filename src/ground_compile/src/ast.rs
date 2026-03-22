@@ -104,7 +104,8 @@ pub enum AstValue {
     Ref(AstRef),
     List(Vec<AstNode<AstValue>>),
     /// Inline struct literal: `{ field: value ... }`
-    Struct(Vec<AstNode<AstField>>),
+    /// `type_hint` is present when written as `type:scaling { ... }`.
+    Struct { type_hint: Option<AstNode<AstRef>>, fields: Vec<AstNode<AstField>> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -454,7 +454,7 @@ impl<'a> Parser<'a> {
                 }
             }
             self.eat("}");
-            return Some(self.node(start, AstValue::Struct(fields)));
+            return Some(self.node(start, AstValue::Struct { type_hint: None, fields }));
         }
 
         if self.eat("[") {
@@ -475,6 +475,25 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(r) = self.parse_ref() {
+            self.skip_ws();
+            if self.rest().starts_with('{') {
+                self.advance(1);
+                let mut fields = Vec::new();
+                loop {
+                    self.skip_ws();
+                    if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                    if let Some(item) = self.parse_inst_item() {
+                        fields.push(item);
+                    } else {
+                        self.push_error(self.pos, format!(
+                            "unexpected token in inline struct value: {:?}", self.peek()
+                        ));
+                        self.skip_past_line();
+                    }
+                }
+                self.eat("}");
+                return Some(self.node(start, AstValue::Struct { type_hint: Some(r), fields }));
+            }
             return Some(self.node(start, AstValue::Ref(r.inner)));
         }
 

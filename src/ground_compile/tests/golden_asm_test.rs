@@ -362,3 +362,46 @@ fn use_imported_type_deploy() {
         "#),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Type hints on struct values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deploy_inline_struct_with_type_hint() {
+    assert_eq!(
+        show(r#"
+            type scaling = { link min = integer  link max = integer }
+            type svc = { link scaling = scaling }
+            svc my-svc { scaling: type:scaling { min: 2  max: 10 } }
+            deploy my-svc to aws as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[svc, my-svc, scaling=Inst[scaling, _, hint=scaling, min=Int(2), max=Int(10)]],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[svc, my-svc, scaling=Inst[scaling, _, hint=scaling, min=Int(2), max=Int(10)]]
+        "#),
+    );
+}
+
+#[test]
+fn deploy_inline_struct_no_hint_unchanged() {
+    // Struct values without type hint should show no hint in output.
+    assert_eq!(
+        show(r#"
+            type scaling = { link min = integer  link max = integer }
+            type svc = { link scaling = scaling }
+            svc my-svc { scaling: { min: 1  max: 10 } }
+            deploy my-svc to aws as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]]
+        "#),
+    );
+}

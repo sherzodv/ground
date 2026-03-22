@@ -157,6 +157,9 @@ pub fn show_link_entry(idx: usize, ir: &IrRes) -> String {
 pub fn show_inst_entry(idx: usize, ir: &IrRes) -> String {
     let inst = &ir.insts[idx];
     let mut parts = vec![format!("Type#{}", inst.type_id.0), inst.name.clone()];
+    if let Some(hint) = &inst.type_hint {
+        parts.push(format!("hint={}", hint));
+    }
     parts.extend(inst.fields.iter().map(|f| show_field(f, ir)));
     format!("Inst#{}[{}]", idx, parts.join(", "))
 }
