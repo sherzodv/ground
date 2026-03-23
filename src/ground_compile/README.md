@@ -10,6 +10,7 @@ Principles:
 - Ordered from simple to advanced
 - Minimal and focused
 - Comprehensive but not redundant
+- Error tests are in separate file
 
 When changing or adding new conform to the principles above:
 

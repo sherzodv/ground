@@ -59,6 +59,59 @@ fn single_enum_type() {
 }
 
 #[test]
+fn enum_typed_struct_ref_variants() {
+    assert_eq!(
+        show(r##"
+            type num  = { link val = integer }
+            type add  = { link lhs = string }
+            type expr = type:num | type:add
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[num, Struct[Link#0[val, Prim(integer)]]],
+                Type#1[add, Struct[Link#1[lhs, Prim(string)]]],
+                Type#2[expr, Enum[Struct(Type#0)|Struct(Type#1)]],
+                Scope[type:num],
+                Scope[type:add],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn enum_mixed_plain_and_typed_ref() {
+    assert_eq!(
+        show(r##"
+            type leaf = { link val = integer }
+            type tree = leaf-val | type:leaf
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[leaf, Struct[Link#0[val, Prim(integer)]]],
+                Type#1[tree, Enum[leaf-val|Struct(Type#0)]],
+                Scope[type:leaf],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn enum_typed_enum_ref_variant() {
+    assert_eq!(
+        show(r##"
+            type zone = 1 | 2 | 3
+            type loc  = type:zone
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[zone, Enum[1|2|3]],
+                Type#1[loc, Enum[1|2|3]],
+            ]
+        "##),
+    );
+}
+
+#[test]
 fn struct_type_primitive_link() {
     assert_eq!(
         show("type counter = { link count = integer }"),
@@ -399,6 +452,110 @@ fn inst_list_field() {
                 Scope[type:service],
                 Scope[type:database],
                 Scope[type:stack],
+            ]
+        "##),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Typed enum variant values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inst_typed_enum_variant_named_ref() {
+    // Named instance ref against a typed variant — hint not needed, inferred from inst type.
+    assert_eq!(
+        show(r##"
+            type num  = { link val = integer }
+            type expr = type:num
+            type host = { link e = type:expr }
+            num  my-num { val: 5 }
+            host h      { e: my-num }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[num, Struct[Link#0[val, Prim(integer)]]],
+                Type#1[expr, Enum[Struct(Type#0)]],
+                Type#2[host, Struct[Link#1[e, IrRef[Enum(Type#1)]]]],
+                Inst#0[Type#0, my-num, Field[Link#0, Int(5)]],
+                Inst#1[Type#2, h, Field[Link#1, Variant(Type#1, Inst(Inst#0))]],
+                Scope[type:num],
+                Scope[type:host],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn inst_typed_enum_variant_struct_with_hint() {
+    // Struct literal with type hint against a typed enum variant.
+    assert_eq!(
+        show(r##"
+            type num  = { link val = integer }
+            type expr = type:num
+            type host = { link e = type:expr }
+            host h { e: num { val: 5 } }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[num, Struct[Link#0[val, Prim(integer)]]],
+                Type#1[expr, Enum[Struct(Type#0)]],
+                Type#2[host, Struct[Link#1[e, IrRef[Enum(Type#1)]]]],
+                Inst#0[Type#2, h, Field[Link#1, Variant(Type#1, Inst(Inst#1))]],
+                Inst#1[Type#0, _, hint=num, Field[Link#0, Int(5)]],
+                Scope[type:num],
+                Scope[type:host],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn inst_typed_enum_variant_disambiguates_by_inst_type() {
+    // Two typed variants — named ref selects the correct one by instance type.
+    assert_eq!(
+        show(r##"
+            type num  = { link val = integer }
+            type add  = { link lhs = string  link rhs = string }
+            type expr = type:num | type:add
+            type host = { link e = type:expr }
+            num  my-num { val: 5 }
+            host h      { e: my-num }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[num, Struct[Link#0[val, Prim(integer)]]],
+                Type#1[add, Struct[Link#1[lhs, Prim(string)], Link#2[rhs, Prim(string)]]],
+                Type#2[expr, Enum[Struct(Type#0)|Struct(Type#1)]],
+                Type#3[host, Struct[Link#3[e, IrRef[Enum(Type#2)]]]],
+                Inst#0[Type#0, my-num, Field[Link#0, Int(5)]],
+                Inst#1[Type#3, h, Field[Link#3, Variant(Type#2, Inst(Inst#0))]],
+                Scope[type:num],
+                Scope[type:add],
+                Scope[type:host],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn inst_plain_variant_in_mixed_enum_unchanged() {
+    // Plain string value in an enum that also has typed variants — unchanged behaviour.
+    assert_eq!(
+        show(r##"
+            type num    = { link val = integer }
+            type status = active | type:num
+            type host   = { link s = type:status }
+            host h { s: active }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[num, Struct[Link#0[val, Prim(integer)]]],
+                Type#1[status, Enum[active|Struct(Type#0)]],
+                Type#2[host, Struct[Link#1[s, IrRef[Enum(Type#1)]]]],
+                Inst#0[Type#2, h, Field[Link#1, Variant(Type#1, "active")]],
+                Scope[type:num],
+                Scope[type:host],
             ]
         "##),
     );

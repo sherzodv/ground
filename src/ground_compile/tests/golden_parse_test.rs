@@ -61,6 +61,30 @@ fn ident_enum() {
 }
 
 #[test]
+fn type_enum_typed_ref_variants() {
+    assert_eq!(
+        show("type boo = type:foo | type:goo"),
+        norm(r##"
+            Scope[pack:test,
+                Type[boo, Enum[Ref(type:foo) | Ref(type:goo)]],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn type_enum_mixed_plain_and_typed_ref() {
+    assert_eq!(
+        show("type boo = plain | type:foo"),
+        norm(r##"
+            Scope[pack:test,
+                Type[boo, Enum[Ref(plain) | Ref(type:foo)]],
+            ]
+        "##),
+    );
+}
+
+#[test]
 fn struct_type_primitive_link() {
     assert_eq!(
         show("type database = { link engine = string }"),

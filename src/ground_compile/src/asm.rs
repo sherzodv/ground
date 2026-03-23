@@ -62,8 +62,9 @@ pub enum AsmValue {
 
 #[derive(Debug, Clone)]
 pub struct AsmVariant {
-    pub type_name: String,       // enum type name, e.g. "zone"
-    pub value:     String,       // variant string, e.g. "eu-west"
+    pub type_name: String,              // enum type name, e.g. "zone"
+    pub value:     String,              // plain variant string or typed variant type name
+    pub payload:   Option<Box<AsmValue>>, // typed variant payload (inst ref or inline inst)
 }
 
 #[derive(Debug, Clone)]
@@ -140,14 +141,22 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
         IrValue::Int(n) => AsmValue::Int(*n),
         IrValue::Ref(s) => AsmValue::Ref(s.clone()),
 
-        IrValue::Variant(tid, idx) => {
+        IrValue::Variant(tid, idx, payload) => {
             let td        = &ir.types[tid.0 as usize];
             let type_name = td.name.clone().unwrap_or_else(|| "_".into());
-            let value     = match &td.body {
-                IrTypeBody::Enum(vs) => vs[*idx as usize].clone(),
-                _                    => "?".into(),
+            let (value, asm_payload) = match &td.body {
+                IrTypeBody::Enum(vs) => match vs[*idx as usize].segments.first().map(|s| &s.value) {
+                    Some(IrRefSegValue::Plain(p)) => (p.clone(), None),
+                    Some(IrRefSegValue::Type(vtid)) => {
+                        let variant_type_name = ir.types[vtid.0 as usize].name.clone().unwrap_or_else(|| "_".into());
+                        let asm_p = payload.as_deref().map(|p| Box::new(lower_value(p, ir)));
+                        (variant_type_name, asm_p)
+                    }
+                    _ => ("?".into(), None),
+                },
+                _ => ("?".into(), None),
             };
-            AsmValue::Variant(AsmVariant { type_name, value })
+            AsmValue::Variant(AsmVariant { type_name, value, payload: asm_payload })
         }
 
         IrValue::Inst(iid) => {

@@ -99,7 +99,7 @@ pub enum IrPrimitive { String, Integer, Reference }
 #[derive(Debug, Clone)]
 pub enum IrTypeBody {
     Primitive(IrPrimitive),
-    Enum(Vec<String>),         // variant names, order preserved
+    Enum(Vec<IrRef>),          // variant refs, order preserved; plain atom → Plain seg, typed → Type seg
     Struct(Vec<LinkId>),       // ordered named links; inline types are hoisted
 }
 
@@ -140,7 +140,7 @@ pub enum IrValue {
     Str(String),
     Int(i64),
     Ref(String),               // reference primitive (opaque)
-    Variant(TypeId, u32),      // enum type + variant index
+    Variant(TypeId, u32, Option<Box<IrValue>>), // enum type + variant index + optional typed payload
     Inst(InstId),
     Path(Vec<IrValue>),        // multi-segment typed path
     List(Vec<IrValue>),        // list of validated values

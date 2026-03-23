@@ -29,8 +29,14 @@ use golden_asm_helpers::{norm, show, show_multi};
 #[test]
 fn deploy_no_inst() {
     // `what` doesn't resolve to a known instance — deploy emitted with empty inst.
-    let out = show("deploy ghost to aws as prod {}");
-    assert!(out.contains("Deploy[aws, prod]"), "got: {}", out);
+    assert_eq!(
+        show("deploy ghost to aws as prod {}"),
+        norm(r#"
+            Scope[pack:test]
+            Deploy[aws, prod]
+              inst: Inst[, ]
+        "#),
+    );
 }
 
 #[test]
@@ -47,6 +53,29 @@ fn deploy_simple_inst() {
             ]
             Deploy[aws, prod]
               inst: Inst[stack, my-stack, name=Str("prod")]
+        "#),
+    );
+}
+
+#[test]
+fn deploy_multiple_deploys() {
+    assert_eq!(
+        show(r#"
+            type svc = { link image = reference }
+            svc a { image: "nginx" }
+            svc b { image: "redis" }
+            deploy a to aws as prod {}
+            deploy b to aws as staging {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[svc, a, image=Ref("nginx")],
+              Inst[svc, b, image=Ref("redis")],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[svc, a, image=Ref("nginx")]
+            Deploy[aws, staging]
+              inst: Inst[svc, b, image=Ref("redis")]
         "#),
     );
 }
@@ -126,6 +155,52 @@ fn deploy_typed_path_field() {
             ]
             Deploy[aws, prod]
               inst: Inst[svc, s, location=Variant(region, "eu-central"):Variant(zone, "2")]
+        "#),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Typed enum variants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deploy_typed_enum_variant_named_ref() {
+    assert_eq!(
+        show(r#"
+            type num  = { link val = integer }
+            type expr = type:num
+            type host = { link e = type:expr }
+            num  my-num { val: 5 }
+            host h      { e: my-num }
+            deploy h to aws as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[num, my-num, val=Int(5)],
+              Inst[host, h, e=Variant(expr, "num", InstRef(num, my-num))],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[host, h, e=Variant(expr, "num", InstRef(num, my-num))]
+        "#),
+    );
+}
+
+#[test]
+fn deploy_typed_enum_variant_inline_struct() {
+    assert_eq!(
+        show(r#"
+            type num  = { link val = integer }
+            type expr = type:num
+            type host = { link e = type:expr }
+            host h { e: type:num { val: 42 } }
+            deploy h to aws as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[host, h, e=Variant(expr, "num", Inst[num, _, hint=num, val=Int(42)])],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[host, h, e=Variant(expr, "num", Inst[num, _, hint=num, val=Int(42)])]
         "#),
     );
 }
@@ -310,28 +385,22 @@ fn deploy_multi_segment_target() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn deploy_services_access_each_other() {
-    // Two services each referencing the other via access — InstRef in both directions.
+fn deploy_access_list_of_inst_refs() {
+    // InstRef values inside a List field — services reference each other.
     assert_eq!(
         show(r#"
-            type service = {
-                link image  = reference
-                link access = [ type:service ]
-            }
-            type stack = { link = [ type:service ] }
-            service svc-a { image: "nginx"  access: [ svc-b ] }
-            service svc-b { image: "redis"  access: [ svc-a ] }
-            stack my-stack { svc-a  svc-b }
-            deploy my-stack to aws as prod {}
+            type service = { link access = [ type:service ] }
+            service a { access: [ b ] }
+            service b { access: [ a ] }
+            deploy a to aws as prod {}
         "#),
         norm(r#"
             Scope[pack:test,
-              Inst[service, svc-a, image=Ref("nginx"), access=List[InstRef(service, svc-b)]],
-              Inst[service, svc-b, image=Ref("redis"), access=List[InstRef(service, svc-a)]],
-              Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(service, svc-b)]],
+              Inst[service, a, access=List[InstRef(service, b)]],
+              Inst[service, b, access=List[InstRef(service, a)]],
             ]
             Deploy[aws, prod]
-              inst: Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(service, svc-b)]]
+              inst: Inst[service, a, access=List[InstRef(service, b)]]
         "#),
     );
 }
@@ -386,22 +455,3 @@ fn deploy_inline_struct_with_type_hint() {
     );
 }
 
-#[test]
-fn deploy_inline_struct_no_hint_unchanged() {
-    // Struct values without type hint should show no hint in output.
-    assert_eq!(
-        show(r#"
-            type scaling = { link min = integer  link max = integer }
-            type svc = { link scaling = scaling }
-            svc my-svc { scaling: { min: 1  max: 10 } }
-            deploy my-svc to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]]
-        "#),
-    );
-}

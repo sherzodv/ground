@@ -13,7 +13,10 @@ pub fn show_value(v: &AsmValue) -> String {
         AsmValue::Str(s)              => format!("Str({:?})", s),
         AsmValue::Int(n)              => format!("Int({})", n),
         AsmValue::Ref(s)              => format!("Ref({:?})", s),
-        AsmValue::Variant(gv)         => format!("Variant({}, {:?})", gv.type_name, gv.value),
+        AsmValue::Variant(gv)         => match &gv.payload {
+            None    => format!("Variant({}, {:?})", gv.type_name, gv.value),
+            Some(p) => format!("Variant({}, {:?}, {})", gv.type_name, gv.value, show_value(p)),
+        },
         AsmValue::InstRef(ir)         => format!("InstRef({}, {})", ir.type_name, ir.name),
         AsmValue::Inst(gi)            => format!("Inst[{}]", show_inst_inline(gi)),
         AsmValue::Path(segs)          => segs.iter().map(show_value).collect::<Vec<_>>().join(":"),

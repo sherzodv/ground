@@ -74,6 +74,21 @@ fn error_unknown_instance_ref() {
 }
 
 #[test]
+fn error_typed_enum_instance_wrong_type() {
+    // Named instance whose type does not match any typed variant.
+    let out = show(r##"
+        type num   = { link val = integer }
+        type other = { link x = string }
+        type expr  = type:num
+        type host  = { link e = type:expr }
+        other my-other { x: "foo" }
+        host  h        { e: my-other }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("not a variant"), "expected not-a-variant error, got: {out}");
+}
+
+#[test]
 fn error_named_non_list_field_multiple_values() {
     let out = show(r##"
         type service = { link image = reference }
@@ -124,6 +139,33 @@ fn typed_path_value_segment_count_mismatch_errors() {
 // ---------------------------------------------------------------------------
 // Type hint errors
 // ---------------------------------------------------------------------------
+
+#[test]
+fn error_typed_enum_struct_without_hint() {
+    // Struct literal against a typed enum variant requires a hint.
+    let out = show(r##"
+        type num  = { link val = integer }
+        type expr = type:num
+        type host = { link e = type:expr }
+        host h { e: { val: 5 } }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("type hint required"), "expected hint-required error, got: {out}");
+}
+
+#[test]
+fn error_typed_enum_wrong_hint() {
+    // Hint type exists but is not one of the enum's typed variants.
+    let out = show(r##"
+        type num   = { link val = integer }
+        type other = { link x = string }
+        type expr  = type:num
+        type host  = { link e = type:expr }
+        host h { e: other { x: "foo" } }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("not a variant"), "expected not-a-variant error, got: {out}");
+}
 
 #[test]
 fn inst_inline_struct_type_hint_mismatch() {

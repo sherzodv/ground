@@ -316,16 +316,16 @@ impl<'a> Parser<'a> {
 
     // -- type body -------------------------------------------------------
 
-    /// `ref-atom ("|" ref-atom)*` — items are plain single-segment refs.
+    /// `ref ("|" ref)*` — items are full refs, supporting multi-segment paths such as `type:foo`.
     fn parse_enum_body(&mut self) -> Option<Vec<AstNode<AstRef>>> {
-        let first = self.parse_atom_as_ref()?;
+        let first = self.parse_ref()?;
         let mut items = vec![first];
         loop {
             let saved = self.pos;
             self.skip_ws();
             if self.eat("|") {
                 self.skip_ws();
-                if let Some(r) = self.parse_atom_as_ref() {
+                if let Some(r) = self.parse_ref() {
                     items.push(r);
                     continue;
                 }

@@ -90,7 +90,10 @@ pub fn show_type_body(body: &IrTypeBody, ir: &IrRes) -> String {
     match body {
         IrTypeBody::Primitive(p) => format!("Prim({})", show_primitive(p)),
 
-        IrTypeBody::Enum(variants) => format!("Enum[{}]", variants.join("|")),
+        IrTypeBody::Enum(variants) => {
+            let parts: Vec<_> = variants.iter().map(|r| show_link_type_ref(r, ir)).collect();
+            format!("Enum[{}]", parts.join("|"))
+        }
 
         IrTypeBody::Struct(link_ids) => {
             let parts: Vec<_> = link_ids.iter().map(|lid| {
@@ -113,12 +116,19 @@ pub fn show_value(v: &IrValue, ir: &IrRes) -> String {
         IrValue::Int(n)  => format!("Int({})", n),
         IrValue::Ref(s)  => format!("Ref({:?})", s),
 
-        IrValue::Variant(tid, idx) => {
-            let variant = match &ir.types[tid.0 as usize].body {
-                IrTypeBody::Enum(vs) => vs[*idx as usize].as_str(),
-                _                    => "?",
-            };
-            format!("Variant(Type#{}, {:?})", tid.0, variant)
+        IrValue::Variant(tid, idx, payload) => {
+            match payload {
+                None => {
+                    let variant = match &ir.types[tid.0 as usize].body {
+                        IrTypeBody::Enum(vs) => vs[*idx as usize].segments.first()
+                            .and_then(|s| if let IrRefSegValue::Plain(p) = &s.value { Some(p.as_str()) } else { None })
+                            .unwrap_or("?"),
+                        _ => "?",
+                    };
+                    format!("Variant(Type#{}, {:?})", tid.0, variant)
+                }
+                Some(inner) => format!("Variant(Type#{}, {})", tid.0, show_value(inner, ir)),
+            }
         }
 
         IrValue::Inst(iid) => format!("Inst(Inst#{})", iid.0),

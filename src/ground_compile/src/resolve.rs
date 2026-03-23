@@ -193,6 +193,15 @@ fn reduce_ast_ref(r: &AstRef, this_fields: &std::collections::HashMap<String, St
     AstRef { segments }
 }
 
+/// Extract the variant name from a plain single-segment IrRef (`Plain("foo")`).
+/// Returns None for typed or multi-segment variants.
+fn plain_variant_name(r: &IrRef) -> Option<&str> {
+    if let [seg] = r.segments.as_slice() {
+        if let IrRefSegValue::Plain(s) = &seg.value { return Some(s); }
+    }
+    None
+}
+
 /// Convert a resolved `IrValue` to a plain string for use as a `{this:xxx}`
 /// substitution target.  Only scalar values can be plainified.
 fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
@@ -200,9 +209,9 @@ fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
         IrValue::Str(s)           => Some(s.clone()),
         IrValue::Ref(s)           => Some(s.clone()),
         IrValue::Int(n)           => Some(n.to_string()),
-        IrValue::Variant(tid, idx) => {
+        IrValue::Variant(tid, idx, _) => {
             if let IrTypeBody::Enum(variants) = &ctx.types[tid.0 as usize].body {
-                variants.get(*idx as usize).cloned()
+                variants.get(*idx as usize).and_then(plain_variant_name).map(|s| s.to_string())
             } else {
                 None
             }
@@ -663,13 +672,60 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pass 3b — flatten single-variant enum type aliases
+// ---------------------------------------------------------------------------
+//
+// `type loc = type:zone` parses as a 1-element enum whose sole variant is a
+// ref to `zone`.  This pass rewrites such types to carry the same body as the
+// referenced type, making the definition behave as a true type alias.
+//
+// Only non-struct targets are flattened: an alias pointing at a struct is
+// left as-is so that typed-enum field matching continues to work correctly.
+// Cycles (e.g. `type a = type:b`, `type b = type:a`) are detected via an
+// in-stack flag and left unchanged.
+
+fn flatten_alias(idx: usize, types: &mut Vec<IrTypeDef>, in_stack: &mut Vec<bool>) {
+    if in_stack[idx] { return; }
+
+    let body = types[idx].body.clone();
+    if let IrTypeBody::Enum(ref variants) = body {
+        if variants.len() == 1 {
+            let segs = &variants[0].segments;
+            if segs.len() == 1 && !segs[0].is_opt {
+                if let IrRefSegValue::Type(tid) = segs[0].value {
+                    let target_idx = tid.0 as usize;
+                    if target_idx != idx {
+                        in_stack[idx] = true;
+                        flatten_alias(target_idx, types, in_stack);
+                        in_stack[idx] = false;
+
+                        let target_body = types[target_idx].body.clone();
+                        if !matches!(target_body, IrTypeBody::Struct(_)) {
+                            types[idx].body = target_body;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn pass3b_flatten_alias_types(ctx: &mut Ctx) {
+    let n = ctx.types.len();
+    let mut in_stack = vec![false; n];
+    for i in 0..n {
+        flatten_alias(i, &mut ctx.types, &mut in_stack);
+    }
+}
+
 fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: ScopeId) -> IrTypeBody {
     match &body.inner {
         AstTypeDefBody::Primitive(p) => IrTypeBody::Primitive(convert_primitive(p)),
 
         AstTypeDefBody::Enum(refs) => {
             let variants = refs.iter()
-                .map(|r| r.inner.segments[0].inner.as_plain().unwrap_or("").to_string())
+                .map(|r| resolve_ref(&r.inner.segments, ctx, scope))
                 .collect();
             IrTypeBody::Enum(variants)
         }
@@ -768,7 +824,7 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
         AstTypeDefBody::Enum(refs) => {
             // Anonymous inline enum — allocate an anonymous type.
             let variants = refs.iter()
-                .map(|r| r.inner.segments[0].inner.as_plain().unwrap_or("").to_string())
+                .map(|r| resolve_ref(&r.inner.segments, ctx, scope))
                 .collect();
             let tid = ctx.alloc_type(None, scope, loc.clone(), IrTypeBody::Enum(variants));
             IrLinkType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }] })
@@ -1053,46 +1109,113 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
                 if pattern.segments.len() == 1 {
                     if let IrRefSegValue::Type(tid) = &pattern.segments[0].value {
                         let type_id  = *tid;
-                        let link_ids = match ctx.types.get(type_id.0 as usize).map(|t| t.body.clone()) {
-                            Some(IrTypeBody::Struct(ids)) => ids,
+                        match ctx.types.get(type_id.0 as usize).map(|t| t.body.clone()) {
+                            Some(IrTypeBody::Struct(link_ids)) => {
+                                // Validate and extract type hint if present.
+                                let resolved_hint = if let Some(hint) = type_hint {
+                                    let hint_name = hint.inner.segments.last()
+                                        .and_then(|s| s.inner.as_plain())
+                                        .unwrap_or("");
+                                    if let Some(hint_tid) = ctx.lookup_type(scope, hint_name) {
+                                        if hint_tid != type_id {
+                                            let expected = ctx.types[type_id.0 as usize].name.clone()
+                                                .unwrap_or_else(|| "?".into());
+                                            ctx.push_error(format!(
+                                                "type hint '{}' does not match expected type '{}'",
+                                                hint_name, expected
+                                            ));
+                                        }
+                                    } else {
+                                        ctx.push_error(format!("unknown type '{}' in type hint", hint_name));
+                                    }
+                                    Some(hint_name.to_string())
+                                } else {
+                                    None
+                                };
+                                let iid = InstId(ctx.insts.len() as u32);
+                                ctx.insts.push(IrInstDef {
+                                    type_id,
+                                    name: "_".into(),
+                                    type_hint: resolved_hint,
+                                    scope,
+                                    loc: loc.clone(),
+                                    fields: vec![],
+                                });
+                                let fields = resolve_named_fields(ast_fields, &link_ids, ctx, scope);
+                                ctx.insts[iid.0 as usize].fields = fields;
+                                return IrValue::Inst(iid);
+                            }
+                            Some(IrTypeBody::Enum(variants)) => {
+                                // Struct literal against an enum type — hint identifies the variant.
+                                let hint = match type_hint {
+                                    None => {
+                                        let enum_name = ctx.types[type_id.0 as usize].name.as_deref()
+                                            .unwrap_or("?");
+                                        ctx.push_error(format!(
+                                            "type hint required for enum '{}'", enum_name
+                                        ));
+                                        return IrValue::Ref(String::new());
+                                    }
+                                    Some(h) => h,
+                                };
+                                let hint_name = hint.inner.segments.last()
+                                    .and_then(|s| s.inner.as_plain())
+                                    .unwrap_or("");
+                                let hint_tid = match ctx.lookup_type(scope, hint_name) {
+                                    None => {
+                                        ctx.push_error(format!("unknown type '{}' in type hint", hint_name));
+                                        return IrValue::Ref(String::new());
+                                    }
+                                    Some(t) => t,
+                                };
+                                let variant_idx = variants.iter().enumerate().find_map(|(i, r)| {
+                                    if let [seg] = r.segments.as_slice() {
+                                        if let IrRefSegValue::Type(vt) = &seg.value {
+                                            if *vt == hint_tid { return Some(i); }
+                                        }
+                                    }
+                                    None
+                                });
+                                let idx = match variant_idx {
+                                    None => {
+                                        let enum_name = ctx.types[type_id.0 as usize].name.as_deref()
+                                            .unwrap_or("?");
+                                        ctx.push_error(format!(
+                                            "'{}' is not a variant of '{}'", hint_name, enum_name
+                                        ));
+                                        return IrValue::Ref(String::new());
+                                    }
+                                    Some(i) => i,
+                                };
+                                let inner_link_ids = match ctx.types.get(hint_tid.0 as usize)
+                                    .map(|t| t.body.clone())
+                                {
+                                    Some(IrTypeBody::Struct(ids)) => ids,
+                                    _ => {
+                                        ctx.push_error(format!(
+                                            "variant '{}' is not a struct type", hint_name
+                                        ));
+                                        return IrValue::Ref(String::new());
+                                    }
+                                };
+                                let iid = InstId(ctx.insts.len() as u32);
+                                ctx.insts.push(IrInstDef {
+                                    type_id: hint_tid,
+                                    name: "_".into(),
+                                    type_hint: Some(hint_name.to_string()),
+                                    scope,
+                                    loc: loc.clone(),
+                                    fields: vec![],
+                                });
+                                let fields = resolve_named_fields(ast_fields, &inner_link_ids, ctx, scope);
+                                ctx.insts[iid.0 as usize].fields = fields;
+                                return IrValue::Variant(type_id, idx as u32, Some(Box::new(IrValue::Inst(iid))));
+                            }
                             _ => {
                                 ctx.push_error("inline struct value requires a struct-typed link".into());
                                 return IrValue::Ref(String::new());
                             }
                         };
-                        // Validate and extract type hint if present.
-                        let resolved_hint = if let Some(hint) = type_hint {
-                            let hint_name = hint.inner.segments.last()
-                                .and_then(|s| s.inner.as_plain())
-                                .unwrap_or("");
-                            if let Some(hint_tid) = ctx.lookup_type(scope, hint_name) {
-                                if hint_tid != type_id {
-                                    let expected = ctx.types[type_id.0 as usize].name.clone()
-                                        .unwrap_or_else(|| "?".into());
-                                    ctx.push_error(format!(
-                                        "type hint '{}' does not match expected type '{}'",
-                                        hint_name, expected
-                                    ));
-                                }
-                            } else {
-                                ctx.push_error(format!("unknown type '{}' in type hint", hint_name));
-                            }
-                            Some(hint_name.to_string())
-                        } else {
-                            None
-                        };
-                        let iid = InstId(ctx.insts.len() as u32);
-                        ctx.insts.push(IrInstDef {
-                            type_id,
-                            name: "_".into(),
-                            type_hint: resolved_hint,
-                            scope,
-                            loc: loc.clone(),
-                            fields: vec![],
-                        });
-                        let fields = resolve_named_fields(ast_fields, &link_ids, ctx, scope);
-                        ctx.insts[iid.0 as usize].fields = fields;
-                        return IrValue::Inst(iid);
                     }
                 }
                 ctx.push_error("inline struct value only valid for single struct-typed link".into());
@@ -1151,16 +1274,30 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
         IrRefSegValue::Type(tid) => {
             match ctx.types.get(tid.0 as usize).map(|t| t.body.clone()) {
                 Some(IrTypeBody::Enum(variants)) => {
-                    match variants.iter().position(|v| v == raw) {
-                        Some(idx) => IrValue::Variant(*tid, idx as u32),
-                        None => {
-                            ctx.errors.push(IrError {
-                                message: format!("'{}' is not a variant of Type#{}", raw, tid.0),
-                                loc: loc.clone(),
-                            });
-                            IrValue::Variant(*tid, 0)
+                    // Try each variant in order: plain string match, then typed (instance lookup).
+                    for (idx, variant_ref) in variants.iter().enumerate() {
+                        if let [seg] = variant_ref.segments.as_slice() {
+                            match &seg.value {
+                                IrRefSegValue::Plain(name) if name == raw => {
+                                    return IrValue::Variant(*tid, idx as u32, None);
+                                }
+                                IrRefSegValue::Type(inner_tid) => {
+                                    if let Some(iid) = ctx.lookup_inst(scope, raw) {
+                                        if ctx.insts[iid.0 as usize].type_id == *inner_tid {
+                                            return IrValue::Variant(*tid, idx as u32, Some(Box::new(IrValue::Inst(iid))));
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
+                    let type_name = ctx.types[tid.0 as usize].name.as_deref().unwrap_or("?");
+                    ctx.errors.push(IrError {
+                        message: format!("'{}' is not a variant of '{}'", raw, type_name),
+                        loc: loc.clone(),
+                    });
+                    IrValue::Variant(*tid, 0, None)
                 }
                 Some(IrTypeBody::Struct(_)) => {
                     match ctx.lookup_inst(scope, raw) {
@@ -1292,6 +1429,7 @@ pub fn resolve(res: ParseRes) -> IrRes {
     pass_imports(&res.scopes, &mut ctx, ImportKind::TypesLinksAndPacks);
     pass4_register_insts(&res.scopes, &mut ctx);
     pass3_resolve_types_and_links(&res.scopes, &mut ctx);
+    pass3b_flatten_alias_types(&mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::Insts);
     pass5_resolve_inst_fields(&res.scopes, &mut ctx);
 
