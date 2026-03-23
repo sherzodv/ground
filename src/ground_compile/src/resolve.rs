@@ -126,6 +126,92 @@ fn ir_loc(loc: &AstNodeLoc) -> IrLoc {
 }
 
 // ---------------------------------------------------------------------------
+// Group ref helpers
+// ---------------------------------------------------------------------------
+
+/// Build the source repr of a Group segment: `{inner:repr}trailing`.
+fn group_repr(inner: &AstRef, trailing: Option<&str>) -> String {
+    let inner_repr = inner.segments.iter()
+        .filter_map(|s| s.inner.as_plain())
+        .collect::<Vec<_>>().join(":");
+    format!("{{{}}}{}", inner_repr, trailing.unwrap_or(""))
+}
+
+/// True if any segment in `r` is a Group that has not been reduced to plain.
+fn has_group(r: &AstRef) -> bool {
+    r.segments.iter().any(|s| matches!(&s.inner.value, AstRefSegVal::Group(..)))
+}
+
+/// Convert an `AstRef` to its string repr, rendering remaining Group segments
+/// as `{inner}trailing` and joining plain segments with `:`.
+fn ref_to_repr(r: &AstRef) -> String {
+    r.segments.iter().map(|s| match &s.inner.value {
+        AstRefSegVal::Plain(v)        => v.clone(),
+        AstRefSegVal::Group(g, trail) => group_repr(g, trail.as_deref()),
+    }).collect::<Vec<_>>().join(":")
+}
+
+/// Attempt to reduce `{this:field_name}` to the plain value already resolved
+/// for `field_name` on the current instance.  Returns `None` if the inner ref
+/// does not match the `this:xxx` pattern or the field is not yet in the map.
+fn reduce_this_group(
+    inner:       &AstRef,
+    trailing:    Option<&str>,
+    this_fields: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let segs = &inner.segments;
+    if segs.len() == 2
+        && segs[0].inner.as_plain() == Some("this")
+    {
+        if let Some(field_name) = segs[1].inner.as_plain() {
+            if let Some(value) = this_fields.get(field_name) {
+                return Some(match trailing {
+                    Some(t) => format!("{}{}", value, t),
+                    None    => value.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Reduce all `{this:xxx}` Group segments in `r` using already-resolved
+/// instance field values.  Non-`this` groups are left as-is.
+fn reduce_ast_ref(r: &AstRef, this_fields: &std::collections::HashMap<String, String>) -> AstRef {
+    let segments = r.segments.iter().map(|seg| {
+        let new_val = match &seg.inner.value {
+            AstRefSegVal::Group(inner, trailing) => {
+                match reduce_this_group(inner, trailing.as_deref(), this_fields) {
+                    Some(plain) => AstRefSegVal::Plain(plain),
+                    None        => seg.inner.value.clone(),
+                }
+            }
+            AstRefSegVal::Plain(_) => seg.inner.value.clone(),
+        };
+        AstNode { loc: seg.loc.clone(), inner: AstRefSeg { value: new_val, is_opt: seg.inner.is_opt } }
+    }).collect();
+    AstRef { segments }
+}
+
+/// Convert a resolved `IrValue` to a plain string for use as a `{this:xxx}`
+/// substitution target.  Only scalar values can be plainified.
+fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
+    match v {
+        IrValue::Str(s)           => Some(s.clone()),
+        IrValue::Ref(s)           => Some(s.clone()),
+        IrValue::Int(n)           => Some(n.to_string()),
+        IrValue::Variant(tid, idx) => {
+            if let IrTypeBody::Enum(variants) = &ctx.types[tid.0 as usize].body {
+                variants.get(*idx as usize).cloned()
+            } else {
+                None
+            }
+        }
+        _                         => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Ref resolution (def-side)
 //
 // Each segment is resolved independently in the lexical scope.
@@ -138,17 +224,14 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
     let mut kind_hint: Option<&str> = None;
 
     for seg in segments {
-        // Group segments ({inner:ref}) are gen-time refs — not resolvable in
-        // static scope; pass through as Plain for now.
+        // Group segments ({inner:ref}) are not statically resolvable —
+        // pass through as Plain preserving the source repr.
         let val = match seg.inner.as_plain() {
             Some(v) => v,
             None => {
-                if let AstRefSegVal::Group(inner) = &seg.inner.value {
-                    let repr = inner.segments.iter()
-                        .filter_map(|s| s.inner.as_plain())
-                        .collect::<Vec<_>>().join(":");
+                if let AstRefSegVal::Group(inner, trailing) = &seg.inner.value {
                     result.push(IrRefSeg {
-                        value: IrRefSegValue::Plain(format!("{{{}}}", repr)),
+                        value: IrRefSegValue::Plain(group_repr(inner, trailing.as_deref())),
                         is_opt: seg.inner.is_opt,
                     });
                 }
@@ -846,16 +929,22 @@ fn resolve_named_fields(
         }
     }
 
-    groups.into_iter().filter_map(|(field_name, loc, lid, values)| {
-        let link_type = ctx.links[lid.0 as usize].link_type.clone();
+    // Pass 1: resolve plain (non-group) fields to build the full this_fields map.
+    // Field order in instances does not affect {this:xxx} reduction.
+    let mut this_fields: HashMap<String, String> = HashMap::new();
+    let mut pre_resolved: Vec<Option<IrField>> = (0..groups.len()).map(|_| None).collect();
 
-        if values.len() > 1 {
+    for (i, (field_name, loc, lid, values)) in groups.iter().enumerate() {
+        if values.iter().any(|v| matches!(&v.inner, AstValue::Ref(r) if has_group(r))) { continue; }
+
+        let link_type = ctx.links[lid.0 as usize].link_type.clone();
+        let opt_val: Option<IrValue> = if values.len() > 1 {
             match &link_type {
                 IrLinkType::List(patterns) => {
                     let items = values.iter()
                         .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
                         .collect();
-                    Some(IrField { link_id: lid, name: field_name, loc, value: IrValue::List(items) })
+                    Some(IrValue::List(items))
                 }
                 _ => {
                     ctx.errors.push(IrError {
@@ -866,9 +955,54 @@ fn resolve_named_fields(
                 }
             }
         } else {
-            let ir_val = resolve_value(&values[0].inner, &link_type, ctx, scope, &ir_loc(&values[0].loc));
-            Some(IrField { link_id: lid, name: field_name, loc, value: ir_val })
+            Some(resolve_value(&values[0].inner, &link_type, ctx, scope, &ir_loc(&values[0].loc)))
+        };
+
+        if let Some(ir_val) = opt_val {
+            if let Some(plain) = ir_value_to_plain_str(&ir_val, ctx) {
+                this_fields.insert(field_name.clone(), plain);
+            }
+            pre_resolved[i] = Some(IrField { link_id: *lid, name: field_name.clone(), loc: loc.clone(), value: ir_val });
         }
+    }
+
+    // Pass 2: reduce group fields using the full this_fields, resolve in source order.
+    groups.into_iter().enumerate().filter_map(|(i, (field_name, loc, lid, values))| {
+        if let Some(cached) = pre_resolved[i].take() {
+            return Some(cached);
+        }
+
+        let link_type = ctx.links[lid.0 as usize].link_type.clone();
+        let reduced: Vec<AstNode<AstValue>> = values.iter().map(|v| {
+            if let AstValue::Ref(r) = &v.inner {
+                if has_group(r) {
+                    return AstNode { loc: v.loc.clone(), inner: AstValue::Ref(reduce_ast_ref(r, &this_fields)) };
+                }
+            }
+            (*v).clone()
+        }).collect();
+
+        let ir_val = if reduced.len() > 1 {
+            match &link_type {
+                IrLinkType::List(patterns) => {
+                    let items = reduced.iter()
+                        .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
+                        .collect();
+                    IrValue::List(items)
+                }
+                _ => {
+                    ctx.errors.push(IrError {
+                        message: format!("multiple values defined for a non-List field '{}'", field_name),
+                        loc: loc.clone(),
+                    });
+                    return None;
+                }
+            }
+        } else {
+            resolve_value(&reduced[0].inner, &link_type, ctx, scope, &ir_loc(&reduced[0].loc))
+        };
+
+        Some(IrField { link_id: lid, name: field_name, loc, value: ir_val })
     }).collect()
 }
 
@@ -877,6 +1011,11 @@ fn resolve_named_fields(
 // ---------------------------------------------------------------------------
 
 fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+    // Unresolved Group segments cannot be statically resolved — pass through as Ref.
+    if let AstValue::Ref(r) = v {
+        if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+    }
+
     match link_type {
         IrLinkType::Primitive(IrPrimitive::Integer) => {
             let s = match v {
@@ -978,7 +1117,10 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
 
 fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
     let segs = match v {
-        AstValue::Ref(r) => &r.segments,
+        AstValue::Ref(r) => {
+            if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+            &r.segments
+        }
         AstValue::Str(s) => return IrValue::Ref(s.clone()),
         _ => { ctx.errors.push(IrError { message: "expected ref value".into(), loc: loc.clone() }); return IrValue::Ref(String::new()); }
     };
@@ -1052,6 +1194,7 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
         ctx.errors.push(IrError { message: "list item must be a reference".into(), loc: loc.clone() });
         return IrValue::Ref(String::new());
     };
+    if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
 
     // For typed-path values like `service:api`, the first segment is a type qualifier
     // and the last segment is the actual instance name.

@@ -9,8 +9,12 @@ use ground_compile::parse::parse;
 pub fn show_ref(r: &AstRef) -> String {
     r.segments.iter().map(|s| {
         let inner = match &s.inner.value {
-            AstRefSegVal::Plain(v) => v.clone(),
-            AstRefSegVal::Group(g) => format!("{{{}}}", show_ref(g)),
+            AstRefSegVal::Plain(v)         => v.clone(),
+            AstRefSegVal::Group(g, trail)  => format!(
+                "{{{}}}{}",
+                show_ref(g),
+                trail.as_deref().unwrap_or(""),
+            ),
         };
         if s.inner.is_opt { format!("{}?", inner) } else { inner }
     }).collect::<Vec<_>>().join(":")

@@ -28,10 +28,14 @@ impl<T> AstNode<T> {
 // ---------------------------------------------------------------------------
 
 /// The value of one ref segment: either a plain atom or a brace-group `{inner:ref}`.
+///
+/// `Group(inner, trailing)` — `{inner}` followed immediately (no `:`) by an optional
+/// plain atom, e.g. `{this:id}-sg` → `Group(this:id, Some("-sg"))`.
+/// This is distinct from `{this:id}:seg` which produces `[Group(this:id, None), Plain("seg")]`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstRefSegVal {
     Plain(String),
-    Group(AstRef),
+    Group(AstRef, Option<String>),
 }
 
 /// One segment of a colon-separated reference.
@@ -46,8 +50,8 @@ impl AstRefSeg {
     /// Returns the plain string for Plain segments; None for Group segments.
     pub fn as_plain(&self) -> Option<&str> {
         match &self.value {
-            AstRefSegVal::Plain(s) => Some(s.as_str()),
-            AstRefSegVal::Group(_) => None,
+            AstRefSegVal::Plain(s)    => Some(s.as_str()),
+            AstRefSegVal::Group(..)   => None,
         }
     }
 }

@@ -190,17 +190,11 @@ impl<'a> Parser<'a> {
             if let Some(inner) = self.parse_ref() {
                 if self.eat("}") {
                     let seg_start = saved;
+                    let trailing  = self.parse_ref_atom();
                     out.push(self.node(seg_start, AstRefSeg {
-                        value: AstRefSegVal::Group(inner.inner),
+                        value: AstRefSegVal::Group(inner.inner, trailing),
                         is_opt: false,
                     }));
-                    let trail_start = self.pos;
-                    if let Some(v) = self.parse_ref_atom() {
-                        out.push(self.node(trail_start, AstRefSeg {
-                            value: AstRefSegVal::Plain(v),
-                            is_opt: false,
-                        }));
-                    }
                     return true;
                 }
             }

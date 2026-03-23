@@ -300,7 +300,7 @@ fn brace_group_ref_with_trailing() {
         show("svc my-svc { name: {this:name}-sg }"),
         norm(r##"
             Scope[pack:test,
-                Inst[svc, my-svc, Field[name, Ref({this:name}:-sg)]],
+                Inst[svc, my-svc, Field[name, Ref({this:name}-sg)]],
             ]
         "##),
     );
@@ -601,7 +601,7 @@ fn inst_list_field_brace_group_with_trailing() {
         show("svc my-svc { names: [{this:name}-sg] }"),
         norm(r##"
             Scope[pack:test,
-                Inst[svc, my-svc, Field[names, List[Ref({this:name}:-sg)]]],
+                Inst[svc, my-svc, Field[names, List[Ref({this:name}-sg)]]],
             ]
         "##),
     );

@@ -648,7 +648,179 @@ fn brace_group_ref_passthrough() {
         show("deploy {this:name}-sg to aws as prod {}"),
         norm(r##"
             Scope[pack:test]
-            Deploy[{this:name}:-sg, aws, prod]
+            Deploy[{this:name}-sg, aws, prod]
+        "##),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Group ref reduction ({this:xxx})
+// ---------------------------------------------------------------------------
+
+#[test]
+fn this_ref_reduces_string_field() {
+    // {this:id} in a reference-typed field reduces to the value of 'id' on the same instance.
+    assert_eq!(
+        show(r##"
+            type svc = { link id = string  link image = reference }
+            svc my-svc { id: "api"  image: {this:id}:latest }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[svc, Struct[Link#0[id, Prim(string)], Link#1[image, Prim(reference)]]],
+                Inst#0[Type#0, my-svc, Field[Link#0, Str("api")], Field[Link#1, Ref("api:latest")]],
+                Scope[type:svc],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn this_ref_reduces_reference_field() {
+    // {this:name} reduces to the full reference value of 'name', then :latest is appended as a segment.
+    assert_eq!(
+        show(r##"
+            type service = { link name = reference  link image = reference }
+            service api { name: boo:foo  image: {this:name}:latest }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[service, Struct[Link#0[name, Prim(reference)], Link#1[image, Prim(reference)]]],
+                Inst#0[Type#0, api, Field[Link#0, Ref("boo:foo")], Field[Link#1, Ref("boo:foo:latest")]],
+                Scope[type:service],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn this_ref_trailing_atom_concatenated() {
+    // {this:id}-sg: trailing atom is concatenated with the reduced value.
+    assert_eq!(
+        show(r##"
+            type svc = { link id = string  link sg = reference }
+            svc my-svc { id: "api"  sg: {this:id}-sg }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[svc, Struct[Link#0[id, Prim(string)], Link#1[sg, Prim(reference)]]],
+                Inst#0[Type#0, my-svc, Field[Link#0, Str("api")], Field[Link#1, Ref("api-sg")]],
+                Scope[type:svc],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn this_ref_reduces_enum_field() {
+    // {this:zone} reduces to the enum variant string, then the resulting ref resolves normally.
+    assert_eq!(
+        show(r##"
+            type zone = 1 | 2 | 3
+            type svc  = { link zone = zone  link image = reference }
+            svc my-svc { zone: 2  image: {this:zone}:latest }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[zone, Enum[1|2|3]],
+                Type#1[svc, Struct[Link#0[zone, IrRef[Enum(Type#0)]], Link#1[image, Prim(reference)]]],
+                Inst#0[Type#1, my-svc, Field[Link#0, Variant(Type#0, "2")], Field[Link#1, Ref("2:latest")]],
+                Scope[type:svc],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn this_ref_reduction_then_symbol_resolve() {
+    // {this:region} reduces to "eu-central", then symbol resolution resolves it to Variant.
+    assert_eq!(
+        show(r##"
+            type region = eu-central | eu-west
+            type service = { link region = region  link location = region }
+            service api { region: eu-central  location: {this:region} }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[region, Enum[eu-central|eu-west]],
+                Type#1[service, Struct[Link#0[region, IrRef[Enum(Type#0)]], Link#1[location, IrRef[Enum(Type#0)]]]],
+                Inst#0[Type#1, api, Field[Link#0, Variant(Type#0, "eu-central")], Field[Link#1, Variant(Type#0, "eu-central")]],
+                Scope[type:service],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn this_ref_reduces_integer_field() {
+    // {this:count} reduces to the integer string representation.
+    assert_eq!(
+        show(r##"
+            type svc = { link count = integer  link image = reference }
+            svc my-svc { count: 42  image: {this:count}:latest }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[svc, Struct[Link#0[count, Prim(integer)], Link#1[image, Prim(reference)]]],
+                Inst#0[Type#0, my-svc, Field[Link#0, Int(42)], Field[Link#1, Ref("42:latest")]],
+                Scope[type:svc],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn this_ref_forward_ref_resolves() {
+    // {this:id} resolves even when 'id' is defined after 'image' in source order.
+    assert_eq!(
+        show(r##"
+            type svc = { link image = reference  link id = string }
+            svc my-svc { image: {this:id}:latest  id: "api" }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[svc, Struct[Link#0[image, Prim(reference)], Link#1[id, Prim(string)]]],
+                Inst#0[Type#0, my-svc, Field[Link#0, Ref("api:latest")], Field[Link#1, Str("api")]],
+                Scope[type:svc],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn group_passthrough_unresolvable() {
+    // {role:arn} — not a {this:xxx} pattern — passes through as Ref("{role:arn}"), no error.
+    assert_eq!(
+        show(r##"
+            type svc = { link arn = reference }
+            svc my-svc { arn: {role:arn} }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[svc, Struct[Link#0[arn, Prim(reference)]]],
+                Inst#0[Type#0, my-svc, Field[Link#0, Ref("{role:arn}")]],
+                Scope[type:svc],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn group_passthrough_on_enum_link() {
+    // {this:zone} on an enum link when 'zone' is not yet resolved — passes through, no error.
+    assert_eq!(
+        show(r##"
+            type zone = 1 | 2 | 3
+            type svc  = { link location = zone  link image = reference }
+            svc my-svc { location: {this:zone}  image: "nginx" }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[zone, Enum[1|2|3]],
+                Type#1[svc, Struct[Link#0[location, IrRef[Enum(Type#0)]], Link#1[image, Prim(reference)]]],
+                Inst#0[Type#1, my-svc, Field[Link#0, Ref("{this:zone}")], Field[Link#1, Ref("nginx")]],
+                Scope[type:svc],
+            ]
         "##),
     );
 }
