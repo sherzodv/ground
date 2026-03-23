@@ -1,0 +1,61 @@
+/// Golden tests for parser error cases (`ground_compile::parse`).
+///
+/// Each test calls `show(input)` and asserts that the output contains
+/// one or more `ERR: ...` lines.  The parser is error-tolerant — it
+/// continues after failures — so some valid output may precede the errors.
+
+#[path = "helpers/golden_parse_helpers.rs"] mod golden_parse_helpers;
+use golden_parse_helpers::show;
+
+// ---------------------------------------------------------------------------
+// Moved from golden_parse_test.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn struct_type_bare_ref_is_error() {
+    let out = show("type foo { bar }");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
+#[test]
+fn error_unexpected_top_level() {
+    let out = show("??? garbage");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
+#[test]
+fn error_collected_continue_parsing() {
+    // Parser emits an error for the bad token but continues and parses the
+    // valid type definition that follows.
+    let out = show(r##"
+        ??? garbage
+        type x = a | b
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("Type[x,"), "expected recovery parse, got: {out}");
+}
+
+// ---------------------------------------------------------------------------
+// New coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn error_unclosed_list() {
+    // List opened but never closed; parser should surface an error.
+    let out = show("service my-svc { access: [svc-b }");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
+#[test]
+fn error_missing_field_value() {
+    // Field key present but no value; parser should surface an error.
+    let out = show("service my-svc { image: }");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
+#[test]
+fn error_deploy_missing_to() {
+    // `deploy` statement with no `to` keyword; parser should surface an error.
+    let out = show("deploy svc aws as prod {}");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}

@@ -27,12 +27,29 @@ impl<T> AstNode<T> {
 // Refs
 // ---------------------------------------------------------------------------
 
+/// The value of one ref segment: either a plain atom or a brace-group `{inner:ref}`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AstRefSegVal {
+    Plain(String),
+    Group(AstRef),
+}
+
 /// One segment of a colon-separated reference.
 /// `is_opt = true` when the segment was written `(ident)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstRefSeg {
-    pub value:  String,
+    pub value:  AstRefSegVal,
     pub is_opt: bool,
+}
+
+impl AstRefSeg {
+    /// Returns the plain string for Plain segments; None for Group segments.
+    pub fn as_plain(&self) -> Option<&str> {
+        match &self.value {
+            AstRefSegVal::Plain(s) => Some(s.as_str()),
+            AstRefSegVal::Group(_) => None,
+        }
+    }
 }
 
 /// A colon-separated reference: `seg0 ":" seg1 ":" …`

@@ -138,11 +138,28 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
     let mut kind_hint: Option<&str> = None;
 
     for seg in segments {
-        let val = &seg.inner.value;
+        // Group segments ({inner:ref}) are gen-time refs — not resolvable in
+        // static scope; pass through as Plain for now.
+        let val = match seg.inner.as_plain() {
+            Some(v) => v,
+            None => {
+                if let AstRefSegVal::Group(inner) = &seg.inner.value {
+                    let repr = inner.segments.iter()
+                        .filter_map(|s| s.inner.as_plain())
+                        .collect::<Vec<_>>().join(":");
+                    result.push(IrRefSeg {
+                        value: IrRefSegValue::Plain(format!("{{{}}}", repr)),
+                        is_opt: seg.inner.is_opt,
+                    });
+                }
+                kind_hint = None;
+                continue;
+            }
+        };
 
-        match val.as_str() {
+        match val {
             "pack" | "type" | "link" => {
-                kind_hint = Some(val.as_str());
+                kind_hint = Some(val);
                 continue;
             }
             _ => {}
@@ -151,15 +168,15 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
         let resolved = match kind_hint {
             Some("type") => ctx.lookup_type(scope, val)
                 .map(IrRefSegValue::Type)
-                .unwrap_or_else(|| IrRefSegValue::Plain(val.clone())),
+                .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
             Some("link") => ctx.lookup_link(scope, val)
                 .map(IrRefSegValue::Link)
-                .unwrap_or_else(|| IrRefSegValue::Plain(val.clone())),
+                .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
             Some("pack") => ctx.lookup_pack(scope, val)
                 .map(IrRefSegValue::Pack)
-                .unwrap_or_else(|| IrRefSegValue::Plain(val.clone())),
+                .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
             _ => {
                 // No hint — try type, then inst, then link, then pack; else plain.
@@ -172,7 +189,7 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
                 } else if let Some(id) = ctx.lookup_pack(scope, val) {
                     IrRefSegValue::Pack(id)
                 } else {
-                    IrRefSegValue::Plain(val.clone())
+                    IrRefSegValue::Plain(val.to_string())
                 }
             }
         };
@@ -253,12 +270,12 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
     let mut i = 0;
 
     // Consume optional `pack` keyword.
-    if segs.get(i).map(|s| s.inner.value.as_str()) == Some("pack") {
+    if segs.get(i).map(|s| s.inner.as_plain().unwrap_or("")) == Some("pack") {
         i += 1;
     }
 
     let pack_name = match segs.get(i) {
-        Some(s) => s.inner.value.clone(),
+        Some(s) => s.inner.as_plain().unwrap_or("").to_string(),
         None => {
             if kind == ImportKind::TypesLinksAndPacks {
                 ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
@@ -290,7 +307,7 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
     }
 
     // Parse optional kind hint.
-    let kind_hint = match segs.get(i).map(|s| s.inner.value.as_str()) {
+    let kind_hint = match segs.get(i).map(|s| s.inner.as_plain().unwrap_or("")) {
         Some("type") => { i += 1; Some("type") }
         Some("link") => { i += 1; Some("link") }
         Some("inst") => { i += 1; Some("inst") }
@@ -298,7 +315,7 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
     };
 
     let name = match segs.get(i) {
-        Some(s) => s.inner.value.clone(),
+        Some(s) => s.inner.as_plain().unwrap_or("").to_string(),
         None => {
             if kind == ImportKind::TypesLinksAndPacks {
                 ctx.errors.push(IrError {
@@ -569,7 +586,7 @@ fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: Scope
 
         AstTypeDefBody::Enum(refs) => {
             let variants = refs.iter()
-                .map(|r| r.inner.segments[0].inner.value.clone())
+                .map(|r| r.inner.segments[0].inner.as_plain().unwrap_or("").to_string())
                 .collect();
             IrTypeBody::Enum(variants)
         }
@@ -668,7 +685,7 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
         AstTypeDefBody::Enum(refs) => {
             // Anonymous inline enum — allocate an anonymous type.
             let variants = refs.iter()
-                .map(|r| r.inner.segments[0].inner.value.clone())
+                .map(|r| r.inner.segments[0].inner.as_plain().unwrap_or("").to_string())
                 .collect();
             let tid = ctx.alloc_type(None, scope, loc.clone(), IrTypeBody::Enum(variants));
             IrLinkType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }] })
@@ -692,13 +709,13 @@ fn lookup_type_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<TypeId
     let segs = &ref_.segments;
     match segs.len() {
         0 => None,
-        1 => ctx.lookup_type(scope, &segs[0].inner.value),
+        1 => ctx.lookup_type(scope, segs[0].inner.as_plain()?),
         _ => {
             let mut cur = scope;
             for seg in &segs[..segs.len() - 1] {
-                cur = ctx.lookup_pack(cur, &seg.inner.value)?;
+                cur = ctx.lookup_pack(cur, seg.inner.as_plain()?)?;
             }
-            ctx.lookup_type(cur, &segs.last().unwrap().inner.value)
+            ctx.lookup_type(cur, segs.last().unwrap().inner.as_plain()?)
         }
     }
 }
@@ -713,7 +730,7 @@ fn pass4_register_insts(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                     Some(tid) => tid,
                     None => {
                         let ref_name = type_ref.segments.iter()
-                            .map(|s| s.inner.value.as_str())
+                            .map(|s| s.inner.as_plain().unwrap_or("{...}"))
                             .collect::<Vec<_>>().join(":");
                         ctx.errors.push(IrError {
                             message: format!("unknown type '{}'", ref_name),
@@ -863,7 +880,7 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
     match link_type {
         IrLinkType::Primitive(IrPrimitive::Integer) => {
             let s = match v {
-                AstValue::Ref(r) => r.segments[0].inner.value.clone(),
+                AstValue::Ref(r) => r.segments[0].inner.as_plain().unwrap_or("").to_string(),
                 AstValue::Str(s) => s.clone(),
                 _ => { ctx.errors.push(IrError { message: "expected integer".into(), loc: loc.clone() }); return IrValue::Int(0); }
             };
@@ -876,7 +893,7 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
         IrLinkType::Primitive(IrPrimitive::String) => {
             match v {
                 AstValue::Str(s) => IrValue::Str(s.clone()),
-                AstValue::Ref(r) => IrValue::Str(r.segments[0].inner.value.clone()),
+                AstValue::Ref(r) => IrValue::Str(r.segments[0].inner.as_plain().unwrap_or("").to_string()),
                 _ => { ctx.errors.push(IrError { message: "expected string".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
             }
         }
@@ -885,7 +902,7 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
             match v {
                 AstValue::Str(s) => IrValue::Ref(s.clone()),
                 AstValue::Ref(r) => IrValue::Ref(
-                    r.segments.iter().map(|s| s.inner.value.as_str()).collect::<Vec<_>>().join(":")
+                    r.segments.iter().map(|s| s.inner.as_plain().unwrap_or("")).collect::<Vec<_>>().join(":")
                 ),
                 _ => { ctx.errors.push(IrError { message: "expected reference".into(), loc: loc.clone() }); IrValue::Ref(String::new()) }
             }
@@ -907,7 +924,7 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
                         // Validate and extract type hint if present.
                         let resolved_hint = if let Some(hint) = type_hint {
                             let hint_name = hint.inner.segments.last()
-                                .map(|s| s.inner.value.as_str())
+                                .and_then(|s| s.inner.as_plain())
                                 .unwrap_or("");
                             if let Some(hint_tid) = ctx.lookup_type(scope, hint_name) {
                                 if hint_tid != type_id {
@@ -967,7 +984,7 @@ fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope
     };
 
     if pattern.segments.len() == 1 {
-        return resolve_single_seg_value(&segs[0].inner.value, &pattern.segments[0], ctx, scope, loc);
+        return resolve_single_seg_value(segs[0].inner.as_plain().unwrap_or(""), &pattern.segments[0], ctx, scope, loc);
     }
 
     // Multi-segment typed path — segment counts must match.
@@ -982,7 +999,7 @@ fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope
     }
 
     let vals: Vec<IrValue> = pattern.segments.iter().zip(segs.iter()).map(|(pat_seg, val_seg)| {
-        resolve_single_seg_value(&val_seg.inner.value, pat_seg, ctx, scope, loc)
+        resolve_single_seg_value(val_seg.inner.as_plain().unwrap_or(""), pat_seg, ctx, scope, loc)
     }).collect();
     IrValue::Path(vals)
 }
@@ -1039,11 +1056,11 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     // For typed-path values like `service:api`, the first segment is a type qualifier
     // and the last segment is the actual instance name.
     let is_typed_path = r.segments.len() > 1
-        && ctx.lookup_type(scope, &r.segments[0].inner.value).is_some();
+        && r.segments[0].inner.as_plain().map_or(false, |v| ctx.lookup_type(scope, v).is_some());
     let inst_name = if is_typed_path {
-        r.segments.last().unwrap().inner.value.as_str()
+        r.segments.last().unwrap().inner.as_plain().unwrap_or("")
     } else {
-        r.segments[0].inner.value.as_str()
+        r.segments[0].inner.as_plain().unwrap_or("")
     };
 
     // Find which element pattern matches this instance's type.

@@ -1,47 +1,6 @@
-/// Hand-written recursive-descent parser for RFC 0005 + RFC 0008 (use/packs).
-/// Full grammar is documented in `grammar.md`.
-///
-/// ```bnf
-/// ident          ::= [a-zA-Z][a-zA-Z0-9\-_]*
-/// comment        ::= "#" [^\n]*
-/// string         ::= '"' [^"]* '"'
-/// ref-atom       ::= [a-zA-Z0-9\-_./]+
-/// ref-opt-atom   ::= "(" ident ")"
-/// ref-wild       ::= "*"
-/// ref-seg        ::= ref-opt-atom | ref-atom | ref-wild
-/// ref            ::= ref-seg (":" ref-seg)*
-///
-/// primitive      ::= "string" | "integer" | "reference"
-///
-/// type-expr      ::= primitive
-///                  | type-def
-///                  | "[" type-expr "]"
-///                  | ref ("|" ref)*        (single ref or sugar enum)
-///
-/// type-enum-item ::= ref-atom              (simple atom in explicit type body)
-/// type-enum-body ::= type-enum-item ("|" type-enum-item)*
-/// type-struct-item ::= type-def | link-def
-/// type-struct-body ::= "{" type-struct-item* "}"
-/// type-body        ::= type-struct-body | type-enum-body
-/// type-def         ::= "type" ident? "=" type-body
-///
-/// link-def       ::= "link" ident? "=" type-expr
-///
-/// inst-value     ::= string | "[" inst-value* "]" | ref
-/// inst-field     ::= ident ":" SP inst-value      (SP = 1+ whitespace)
-/// inst-item      ::= inst-field | inst-value
-/// inst           ::= ident ident ("{" inst-item* "}")?
-/// deploy         ::= "deploy" ref "to" ref "as" ref ("{" inst-field* "}")?
-/// use-stmt       ::= "use" ref
-///
-/// def            ::= use-stmt | type-def | link-def | deploy | inst
-/// system         ::= def*
-/// ```
-use crate::ast::*;
+/// Recursive-descent parser ground language
 
-// ---------------------------------------------------------------------------
-// Parser state
-// ---------------------------------------------------------------------------
+use crate::ast::*;
 
 struct Parser<'a> {
     src:    &'a str,
@@ -181,35 +140,78 @@ impl<'a> Parser<'a> {
     fn parse_ref_seg(&mut self) -> Option<AstNode<AstRefSeg>> {
         let start = self.pos;
         if let Some(v) = self.parse_ref_opt_atom() {
-            return Some(self.node(start, AstRefSeg { value: v, is_opt: true }));
+            return Some(self.node(start, AstRefSeg { value: AstRefSegVal::Plain(v), is_opt: true }));
         }
         if let Some(v) = self.parse_ref_atom() {
-            return Some(self.node(start, AstRefSeg { value: v, is_opt: false }));
+            return Some(self.node(start, AstRefSeg { value: AstRefSegVal::Plain(v), is_opt: false }));
         }
         // Wildcard segment — only semantically valid as final segment of a `use` path.
         if self.rest().starts_with('*') {
             self.advance(1);
-            return Some(self.node(start, AstRefSeg { value: "*".to_string(), is_opt: false }));
+            return Some(self.node(start, AstRefSeg { value: AstRefSegVal::Plain("*".to_string()), is_opt: false }));
         }
         None
     }
 
-    /// `ref-seg (":" ref-seg)*`
+    /// `ref-part ((":" | "") ref-part)*`
+    /// ref-part = `"{" inner-ref "}"` trailing-atom? | ref-seg
+    ///
+    /// `{this:name}-sg` → [Seg("this"), Seg("name"), Seg("-sg")]
     fn parse_ref(&mut self) -> Option<AstNode<AstRef>> {
         let start = self.pos;
-        let first = self.parse_ref_seg()?;
-        let mut segments = vec![first];
+        let mut segments = Vec::new();
+
+        if !self.collect_ref_part(&mut segments) { return None; }
+
         loop {
+            // Adjacent brace group continues this ref without a colon.
+            if self.rest().starts_with('{') {
+                if !self.collect_ref_part(&mut segments) { break; }
+                continue;
+            }
             let saved = self.pos;
             if !self.eat(":") { break; }
-            if let Some(seg) = self.parse_ref_seg() {
-                segments.push(seg);
-            } else {
+            if !self.collect_ref_part(&mut segments) {
                 self.pos = saved;
                 break;
             }
         }
+
         Some(self.node(start, AstRef { segments }))
+    }
+
+    /// Append one ref part to `out`. Returns true if anything was appended.
+    /// A brace group `{inner-ref}` produces a single Group segment, followed
+    /// by an optional trailing plain atom as its own segment (`-sg`, `_v2`, …).
+    fn collect_ref_part(&mut self, out: &mut Vec<AstNode<AstRefSeg>>) -> bool {
+        if self.rest().starts_with('{') {
+            let saved = self.pos;
+            self.advance(1);
+            if let Some(inner) = self.parse_ref() {
+                if self.eat("}") {
+                    let seg_start = saved;
+                    out.push(self.node(seg_start, AstRefSeg {
+                        value: AstRefSegVal::Group(inner.inner),
+                        is_opt: false,
+                    }));
+                    let trail_start = self.pos;
+                    if let Some(v) = self.parse_ref_atom() {
+                        out.push(self.node(trail_start, AstRefSeg {
+                            value: AstRefSegVal::Plain(v),
+                            is_opt: false,
+                        }));
+                    }
+                    return true;
+                }
+            }
+            self.pos = saved;
+            return false;
+        }
+        if let Some(seg) = self.parse_ref_seg() {
+            out.push(seg);
+            return true;
+        }
+        false
     }
 
     // -- primitives ------------------------------------------------------
@@ -345,7 +347,7 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let atom = self.parse_ref_atom()?;
         let seg = AstNode::new(self.unit, start as u32, self.pos as u32,
-            AstRefSeg { value: atom, is_opt: false });
+            AstRefSeg { value: AstRefSegVal::Plain(atom), is_opt: false });
         Some(self.node(start, AstRef { segments: vec![seg] }))
     }
 
@@ -430,31 +432,16 @@ impl<'a> Parser<'a> {
 
     // -- instance values & fields ----------------------------------------
 
-    /// `string | "[" inst-value* "]" | "{" inst-item* "}" | ref`
+    /// `string | "[" inst-value* "]" | ref | "{" inst-item* "}"`
+    ///
+    /// Ref is tried before bare struct so that `{this:name}-sg` is parsed as a
+    /// brace-group ref rather than a struct body.  A bare `{` that fails the ref
+    /// parse (e.g. `{ field: value }`) falls through to the struct branch.
     fn parse_inst_value(&mut self) -> Option<AstNode<AstValue>> {
         let start = self.pos;
 
         if let Some(s) = self.parse_string_lit() {
             return Some(self.node(start, AstValue::Str(s.inner)));
-        }
-
-        if self.rest().starts_with('{') {
-            self.advance(1);
-            let mut fields = Vec::new();
-            loop {
-                self.skip_ws();
-                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
-                if let Some(item) = self.parse_inst_item() {
-                    fields.push(item);
-                } else {
-                    self.push_error(self.pos, format!(
-                        "unexpected token in inline struct value: {:?}", self.peek()
-                    ));
-                    self.skip_past_line();
-                }
-            }
-            self.eat("}");
-            return Some(self.node(start, AstValue::Struct { type_hint: None, fields }));
         }
 
         if self.eat("[") {
@@ -495,6 +482,26 @@ impl<'a> Parser<'a> {
                 return Some(self.node(start, AstValue::Struct { type_hint: Some(r), fields }));
             }
             return Some(self.node(start, AstValue::Ref(r.inner)));
+        }
+
+        // Bare struct body — `{` that did not parse as a brace-group ref.
+        if self.rest().starts_with('{') {
+            self.advance(1);
+            let mut fields = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                if let Some(item) = self.parse_inst_item() {
+                    fields.push(item);
+                } else {
+                    self.push_error(self.pos, format!(
+                        "unexpected token in inline struct value: {:?}", self.peek()
+                    ));
+                    self.skip_past_line();
+                }
+            }
+            self.eat("}");
+            return Some(self.node(start, AstValue::Struct { type_hint: None, fields }));
         }
 
         None

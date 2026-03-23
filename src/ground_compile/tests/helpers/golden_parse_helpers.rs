@@ -1,5 +1,5 @@
 use ground_compile::ast::{
-    AstDef, AstField, AstLinkDef, AstPrimitive, AstRef, AstScope, AstScopeId,
+    AstDef, AstField, AstLinkDef, AstPrimitive, AstRef, AstRefSegVal, AstScope, AstScopeId,
     AstStructItem, AstTypeDef, AstTypeDefBody, AstValue, ScopeKind,
     ParseReq, ParseUnit,
     AstUse,
@@ -8,8 +8,11 @@ use ground_compile::parse::parse;
 
 pub fn show_ref(r: &AstRef) -> String {
     r.segments.iter().map(|s| {
-        if s.inner.is_opt { format!("{}?", s.inner.value) }
-        else              { s.inner.value.clone() }
+        let inner = match &s.inner.value {
+            AstRefSegVal::Plain(v) => v.clone(),
+            AstRefSegVal::Group(g) => format!("{{{}}}", show_ref(g)),
+        };
+        if s.inner.is_opt { format!("{}?", inner) } else { inner }
     }).collect::<Vec<_>>().join(":")
 }
 
