@@ -1,0 +1,14 @@
+{%- set name_u  = output.name | replace(from="-", to="_") -%}
+{%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
+{%- set pfx_u   = pfx | replace(from="-", to="_") -%}
+{
+  "resource": {
+    "aws_iam_role_policy_attachment": {
+      "{{ pfx_u }}{{ alias_u }}_{{ name_u }}": {
+        "role": "${aws_iam_role.{{ pfx_u }}{{ alias_u }}_{{ name_u }}.name}",
+        "policy_arn": "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      }
+    }
+  }
+}

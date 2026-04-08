@@ -3,10 +3,11 @@
 /// All symbolic names are replaced by typed indices into flat arenas.
 /// After this pass no string-based symbol lookup is needed by any consumer.
 ///
-///   `TypeId`  → `IrRes::types[id.0]`
-///   `LinkId`  → `IrRes::links[id.0]`
-///   `InstId`  → `IrRes::insts[id.0]`
-///   `ScopeId` → `IrRes::scopes[id.0]`  (`ScopeId(0)` is always the root)
+///   `TypeId`   → `IrRes::types[id.0]`
+///   `LinkId`   → `IrRes::links[id.0]`
+///   `InstId`   → `IrRes::insts[id.0]`
+///   `ScopeId`  → `IrRes::scopes[id.0]`  (`ScopeId(0)` is always the root)
+///   `TypeFnId` → `IrRes::type_fns[id.0]`
 
 use std::collections::HashMap;
 
@@ -25,6 +26,9 @@ pub struct InstId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeFnId(pub u32);
 
 // ---------------------------------------------------------------------------
 // Location
@@ -85,6 +89,12 @@ pub struct IrScope {
     pub links:     HashMap<String, LinkId>,
     pub insts:     HashMap<String, InstId>,
     pub packs:     HashMap<String, ScopeId>,
+    /// Named type functions in this scope (1-param or N-param), keyed by function name.
+    pub type_fns:      HashMap<String, TypeFnId>,
+    /// Anonymous 1-param type functions, keyed by the param's TypeId.
+    pub anon_type_fns: HashMap<TypeId, TypeFnId>,
+    /// Anonymous 2-param pair functions, keyed by (from TypeId, to TypeId).
+    pub anon_pair_fns: HashMap<(TypeId, TypeId), TypeFnId>,
     pub ambiguous: std::collections::HashSet<String>,
 }
 
@@ -112,7 +122,49 @@ pub struct IrTypeDef {
 }
 
 // ---------------------------------------------------------------------------
-// Links
+// Type function definitions
+// ---------------------------------------------------------------------------
+
+/// One parameter of a type function: `name: TypeId`
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrTypeFnParam {
+    pub name: String,
+    pub ty:   TypeId,
+}
+
+/// One entry in a type function body: `alias: vendor_type { fields... }`
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrTypeFnEntry {
+    pub alias:       String,
+    pub vendor_type: TypeId,
+    pub fields:      Vec<IrFnBodyField>,
+}
+
+/// A single field assignment in a type function entry body.
+/// Values use ordinary `IrValue` — group refs that reference params (e.g. `{this:name}`)
+/// are stored as `IrValue::Ref("{this:name}")` strings and substituted at ASM expand time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrFnBodyField {
+    pub name:  String,
+    pub value: IrValue,
+}
+
+/// A resolved type function definition.
+/// - `params.len() == 1` → 1-param type function (fires per matching instance)
+/// - `params.len() == 2` → 2-param pair function (fires per (from, to) pair)
+/// - `name.is_none()` → anonymous (auto-fires during walk)
+/// - `name.is_some()` → named (explicit application via deploy `to` target or override)
+#[derive(Debug, Clone)]
+pub struct IrTypeFnDef {
+    pub name:   Option<String>,
+    pub params: Vec<IrTypeFnParam>,
+    pub scope:  ScopeId,
+    pub loc:    IrLoc,
+    pub body:   Vec<IrTypeFnEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Link types
 // ---------------------------------------------------------------------------
 
 /// What a link ACCEPTS — its resolved type expression.
@@ -135,11 +187,11 @@ pub struct IrLinkDef {
 // Values  (instance fields — validated against IrLinkType patterns)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrValue {
     Str(String),
     Int(i64),
-    Ref(String),               // reference primitive (opaque)
+    Ref(String),               // reference primitive (opaque) OR unresolved param ref like "{this:name}-sg"
     Variant(TypeId, u32, Option<Box<IrValue>>), // enum type + variant index + optional typed payload
     Inst(InstId),
     Path(Vec<IrValue>),        // multi-segment typed path
@@ -170,11 +222,13 @@ pub struct IrInstDef {
 
 #[derive(Debug, Clone)]
 pub struct IrDeployDef {
-    pub what:   IrRef,
-    pub target: IrRef,
-    pub name:   IrRef,
-    pub loc:    IrLoc,
-    pub fields: Vec<IrField>,
+    pub what:       IrRef,
+    pub target:     IrRef,
+    pub name:       IrRef,
+    pub loc:        IrLoc,
+    pub fields:     Vec<IrField>,
+    /// Named type function resolved from the deploy `to` ref tail, if any.
+    pub to_type_fn: Option<TypeFnId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,10 +243,11 @@ pub struct IrError {
 
 #[derive(Debug)]
 pub struct IrRes {
-    pub types:   Vec<IrTypeDef>,
-    pub links:   Vec<IrLinkDef>,
-    pub insts:   Vec<IrInstDef>,
-    pub deploys: Vec<IrDeployDef>,
-    pub scopes:  Vec<IrScope>,
-    pub errors:  Vec<IrError>,
+    pub types:    Vec<IrTypeDef>,
+    pub links:    Vec<IrLinkDef>,
+    pub insts:    Vec<IrInstDef>,
+    pub deploys:  Vec<IrDeployDef>,
+    pub type_fns: Vec<IrTypeFnDef>,
+    pub scopes:   Vec<IrScope>,
+    pub errors:   Vec<IrError>,
 }

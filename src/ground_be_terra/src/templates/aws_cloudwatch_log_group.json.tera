@@ -4,10 +4,10 @@
 {%- set pfx_u   = pfx | replace(from="-", to="_") -%}
 {
   "resource": {
-    "aws_iam_role": {
+    "aws_cloudwatch_log_group": {
       "{{ pfx_u }}{{ alias_u }}_{{ name_u }}": {
-        "name": "{{ pfx }}{{ deploy.alias }}-{{ output.name }}",
-        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+        "name": "/{{ pfx }}{{ deploy.alias }}/{{ output.name }}",
+        "retention_in_days": 7,
         "tags": {
           "ground-managed": "true"
         }

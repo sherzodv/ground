@@ -1,0 +1,44 @@
+{%- set id_u    = output.identifier | replace(from="-", to="_") -%}
+{%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
+{%- set pfx_u   = pfx | replace(from="-", to="_") -%}
+{%- set sg_u    = output.sg | replace(from="-", to="_") -%}
+{%- set ng_u    = output.ng | replace(from="-", to="_") -%}
+{%- set engine_str = output.engine | default(value="postgres") -%}
+{%- if engine_str == "postgres" -%}{%- set aws_engine = "postgres" -%}{%- set db_version = "15" -%}
+{%- elif engine_str == "mysql" -%}{%- set aws_engine = "mysql" -%}{%- set db_version = "8.0" -%}
+{%- else -%}{%- set aws_engine = engine_str -%}{%- set db_version = "15" -%}
+{%- endif -%}
+{%- set size_str = output.size | default(value="small") -%}
+{%- if size_str == "small" -%}{%- set instance_class = "db.t3.micro" -%}
+{%- elif size_str == "medium" -%}{%- set instance_class = "db.t3.medium" -%}
+{%- elif size_str == "large" -%}{%- set instance_class = "db.r6g.large" -%}
+{%- elif size_str == "xlarge" -%}{%- set instance_class = "db.r6g.xlarge" -%}
+{%- else -%}{%- set instance_class = "db.t3.micro" -%}
+{%- endif -%}
+{%- set region_len = deploy.region | length -%}
+{%- if region_len >= 2 -%}{%- set multi_az = true -%}
+{%- else -%}{%- set multi_az = false -%}
+{%- endif -%}
+{
+  "resource": {
+    "aws_db_instance": {
+      "{{ pfx_u }}{{ alias_u }}_{{ id_u }}": {
+        "identifier": "{{ pfx }}{{ deploy.alias }}-{{ output.identifier }}",
+        "engine": "{{ aws_engine }}",
+        "engine_version": "{{ db_version }}",
+        "instance_class": "{{ instance_class }}",
+        "allocated_storage": {{ output.storage }},
+        "db_subnet_group_name": "${aws_db_subnet_group.{{ pfx_u }}{{ alias_u }}_{{ ng_u }}.name}",
+        "vpc_security_group_ids": ["${aws_security_group.{{ pfx_u }}{{ alias_u }}_{{ sg_u }}.id}"],
+        "username": "admin",
+        "password": "${random_password.{{ pfx_u }}{{ alias_u }}_{{ id_u }}.result}",
+        "skip_final_snapshot": true,
+        "multi_az": {{ multi_az }},
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+    }
+  }
+}

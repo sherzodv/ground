@@ -7,6 +7,7 @@
 ///   4. Register instance names (enables forward references).
 ///   5. Resolve instance fields (validated against link type patterns).
 ///   6. Resolve deploys.
+///   7. Resolve type function definitions.
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{self, *};
@@ -18,26 +19,30 @@ use crate::ir::ScopeKind as IrScopeKind;
 // ---------------------------------------------------------------------------
 
 struct Ctx {
-    types:  Vec<IrTypeDef>,
-    links:  Vec<IrLinkDef>,
-    insts:  Vec<IrInstDef>,
-    scopes: Vec<IrScope>,
-    errors: Vec<IrError>,
+    types:    Vec<IrTypeDef>,
+    links:    Vec<IrLinkDef>,
+    insts:    Vec<IrInstDef>,
+    type_fns: Vec<IrTypeFnDef>,
+    scopes:   Vec<IrScope>,
+    errors:   Vec<IrError>,
 }
 
 impl Ctx {
     fn new() -> Self {
         let root = IrScope {
-            kind:      IrScopeKind::Pack,
-            name:      None,
-            parent:    None,
-            types:     HashMap::new(),
-            links:     HashMap::new(),
-            insts:     HashMap::new(),
-            packs:     HashMap::new(),
-            ambiguous: HashSet::new(),
+            kind:           IrScopeKind::Pack,
+            name:           None,
+            parent:         None,
+            types:          HashMap::new(),
+            links:          HashMap::new(),
+            insts:          HashMap::new(),
+            packs:          HashMap::new(),
+            type_fns:       HashMap::new(),
+            anon_type_fns:  HashMap::new(),
+            anon_pair_fns:  HashMap::new(),
+            ambiguous:      HashSet::new(),
         };
-        Ctx { types: vec![], links: vec![], insts: vec![], scopes: vec![root], errors: vec![] }
+        Ctx { types: vec![], links: vec![], insts: vec![], type_fns: vec![], scopes: vec![root], errors: vec![] }
     }
 
     fn alloc_type(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, body: IrTypeBody) -> TypeId {
@@ -75,6 +80,28 @@ impl Ctx {
         }
         self.insts.push(IrInstDef { type_id, name, type_hint: None, scope, loc, fields: vec![] });
         id
+    }
+
+    fn alloc_type_fn(&mut self, def: IrTypeFnDef) -> TypeFnId {
+        let id = TypeFnId(self.type_fns.len() as u32);
+        let scope  = def.scope;
+        let name   = def.name.clone();
+        let params = def.params.clone();
+        self.type_fns.push(def);
+        match (name, params.len()) {
+            (Some(n), _) => { self.scopes[scope.0 as usize].type_fns.insert(n, id); }
+            (None, 1)    => { self.scopes[scope.0 as usize].anon_type_fns.insert(params[0].ty, id); }
+            (None, 2)    => { self.scopes[scope.0 as usize].anon_pair_fns.insert((params[0].ty, params[1].ty), id); }
+            _            => {}
+        }
+        id
+    }
+
+    fn lookup_type_fn(&self, scope: ScopeId, name: &str) -> Option<TypeFnId> {
+        let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) { return None; }
+        if let Some(&id) = s.type_fns.get(name) { return Some(id); }
+        s.parent.and_then(|p| self.lookup_type_fn(p, name))
     }
 
     fn push_error(&mut self, message: String) {
@@ -311,13 +338,16 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let new_id = ScopeId(ctx.scopes.len() as u32);
         ctx.scopes.push(IrScope {
             kind,
-            name:      name.clone(),
-            parent:    Some(parent),
-            types:     HashMap::new(),
-            links:     HashMap::new(),
-            insts:     HashMap::new(),
-            packs:     HashMap::new(),
-            ambiguous: HashSet::new(),
+            name:           name.clone(),
+            parent:         Some(parent),
+            types:          HashMap::new(),
+            links:          HashMap::new(),
+            insts:          HashMap::new(),
+            packs:          HashMap::new(),
+            type_fns:       HashMap::new(),
+            anon_type_fns:  HashMap::new(),
+            anon_pair_fns:  HashMap::new(),
+            ambiguous:      HashSet::new(),
         });
 
         // Only register Pack scopes by name — Type scopes are registered
@@ -597,6 +627,7 @@ fn pass2_register_names(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         for def in &ast_scope.defs {
             match def {
                 AstDef::Type(td) => {
+                    if !td.inner.params.is_empty() { continue; } // type fns resolved in pass7
                     if let Some(name_node) = &td.inner.name {
                         let id = TypeId(ctx.types.len() as u32);
                         ctx.scopes[scope.0 as usize].types.insert(name_node.inner.clone(), id);
@@ -640,6 +671,7 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         for def in &ast_scope.defs {
             match def {
                 AstDef::Type(td) => {
+                    if !td.inner.params.is_empty() { continue; } // type fns resolved in pass7
                     if let Some(name_node) = &td.inner.name {
                         if let Some(&tid) = ctx.scopes[scope.0 as usize].types.get(&name_node.inner) {
                             type_work.push((tid, td.clone(), scope));
@@ -734,9 +766,9 @@ fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: Scope
             IrTypeBody::Struct(resolve_struct_links(items, ctx, scope))
         }
 
-        AstTypeDefBody::Ref(_) | AstTypeDefBody::List(_) => {
+        AstTypeDefBody::Ref(_) | AstTypeDefBody::List(_) | AstTypeDefBody::TypeFn(_) => {
             ctx.errors.push(IrError {
-                message: "ref/list body not valid for a named type definition".into(),
+                message: "ref/list/typefn body not valid for a named type definition".into(),
                 loc: ir_loc(&body.loc),
             });
             IrTypeBody::Enum(vec![])
@@ -828,6 +860,14 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
                 .collect();
             let tid = ctx.alloc_type(None, scope, loc.clone(), IrTypeBody::Enum(variants));
             IrLinkType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }] })
+        }
+
+        AstTypeDefBody::TypeFn(_) => {
+            ctx.errors.push(IrError {
+                message: "type fn body not valid as a link type".into(),
+                loc: loc.clone(),
+            });
+            IrLinkType::Primitive(IrPrimitive::Reference)
         }
     }
 }
@@ -1371,6 +1411,131 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
 }
 
 // ---------------------------------------------------------------------------
+// Pass 7 — resolve type function definitions
+// ---------------------------------------------------------------------------
+
+/// Convert a type fn body field value to IrValue.
+/// Param refs like `{this:name}-sg` are stored as opaque `IrValue::Ref` strings
+/// for ASM-time substitution.
+fn lower_type_fn_value(ast_val: &AstValue, field_name: &str, ctx: &mut Ctx, loc: &IrLoc) -> IrValue {
+    match ast_val {
+        AstValue::Str(s) => IrValue::Str(s.clone()),
+        AstValue::Ref(r) => IrValue::Ref(ref_to_repr(r)),
+        _ => {
+            ctx.errors.push(IrError {
+                message: format!("type fn field '{}': expected string or ref expression", field_name),
+                loc: loc.clone(),
+            });
+            IrValue::Str(String::new())
+        }
+    }
+}
+
+fn pass7_resolve_type_fns(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    let mut work: Vec<(ScopeId, AstNode<AstTypeDef>)> = vec![];
+
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            if let AstDef::Type(td) = def {
+                if !td.inner.params.is_empty() {
+                    work.push((scope, td.clone()));
+                }
+            }
+        }
+    }
+
+    for (scope, td) in work {
+        let loc = ir_loc(&td.loc);
+
+        // Resolve params.
+        let mut params: Vec<IrTypeFnParam> = Vec::new();
+        for param in &td.inner.params {
+            let param_name = param.inner.name.inner.clone();
+            let type_ref   = &param.inner.ty.inner;
+            let tid = match lookup_type_by_ref(type_ref, ctx, scope) {
+                Some(t) => t,
+                None => {
+                    let ref_str = type_ref.segments.iter()
+                        .filter_map(|s| s.inner.as_plain())
+                        .collect::<Vec<_>>().join(":");
+                    ctx.errors.push(IrError {
+                        message: format!("type fn param '{}': unknown type '{}'", param_name, ref_str),
+                        loc: ir_loc(&param.loc),
+                    });
+                    continue;
+                }
+            };
+            params.push(IrTypeFnParam { name: param_name, ty: tid });
+        }
+
+        let fn_name = td.inner.name.as_ref().map(|n| n.inner.clone());
+
+        let entries = match &td.inner.body.inner {
+            AstTypeDefBody::TypeFn(entries) => entries.clone(),
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "type function definition must have a type fn body".into(),
+                    loc: ir_loc(&td.inner.body.loc),
+                });
+                continue;
+            }
+        };
+
+        let mut ir_entries: Vec<IrTypeFnEntry> = Vec::new();
+        for entry in &entries {
+            let alias      = entry.inner.alias.inner.clone();
+            let entry_loc  = ir_loc(&entry.loc);
+
+            let (vendor_type_id, ast_body_fields) = match &entry.inner.value.inner {
+                AstValue::Struct { type_hint: Some(hint), fields } => {
+                    let hint_name = hint.inner.segments.last()
+                        .and_then(|s| s.inner.as_plain())
+                        .unwrap_or("");
+                    let tid = match ctx.lookup_type(scope, hint_name) {
+                        Some(t) => t,
+                        None => {
+                            ctx.errors.push(IrError {
+                                message: format!("type fn entry '{}': unknown vendor type '{}'", alias, hint_name),
+                                loc: entry_loc.clone(),
+                            });
+                            continue;
+                        }
+                    };
+                    (tid, fields.as_slice())
+                }
+                AstValue::Struct { type_hint: None, .. } => {
+                    ctx.errors.push(IrError {
+                        message: format!("type fn entry '{}': missing vendor type annotation", alias),
+                        loc: entry_loc.clone(),
+                    });
+                    continue;
+                }
+                _ => {
+                    ctx.errors.push(IrError {
+                        message: format!("type fn entry '{}': expected a typed struct value", alias),
+                        loc: entry_loc.clone(),
+                    });
+                    continue;
+                }
+            };
+
+            let mut body: Vec<IrFnBodyField> = Vec::new();
+            for af in ast_body_fields {
+                let AstField::Named { name: fname, value: fval } = &af.inner else { continue; };
+                let ir_val = lower_type_fn_value(&fval.inner, &fname.inner, ctx, &ir_loc(&fval.loc));
+                body.push(IrFnBodyField { name: fname.inner.clone(), value: ir_val });
+            }
+
+            ir_entries.push(IrTypeFnEntry { alias, vendor_type: vendor_type_id, fields: body });
+        }
+
+        let def = IrTypeFnDef { name: fn_name, params, scope, loc, body: ir_entries };
+        ctx.alloc_type_fn(def);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pass 6 — resolve deploys
 // ---------------------------------------------------------------------------
 
@@ -1409,12 +1574,42 @@ fn pass6_resolve_deploys(parse_scopes: &[AstScope], ctx: &mut Ctx) -> Vec<IrDepl
                     Some(IrField { link_id: lid, name: field_name.clone(), loc: floc, value: ir_val })
                 }).collect();
 
-                deploys.push(IrDeployDef { what, target, name, loc, fields });
+                let to_type_fn = resolve_deploy_type_fn(&dep.inner.target.inner, ctx, scope);
+                deploys.push(IrDeployDef { what, target, name, loc, fields, to_type_fn });
             }
         }
     }
 
     deploys
+}
+
+/// Walk the deploy `to` ref, consuming pack segments greedily, then try the
+/// remaining segments as a named type fn key in the terminal pack scope.
+fn resolve_deploy_type_fn(target: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<TypeFnId> {
+    let segs = &target.segments;
+    let mut cur = scope;
+    let mut i = 0;
+
+    while i < segs.len() {
+        if let Some(plain) = segs[i].inner.as_plain() {
+            if let Some(pack) = ctx.lookup_pack(cur, plain) {
+                cur = pack;
+                i += 1;
+                continue;
+            }
+        }
+        break;
+    }
+
+    if i >= segs.len() { return None; }
+
+    let key: String = segs[i..].iter()
+        .filter_map(|s| s.inner.as_plain())
+        .collect::<Vec<_>>()
+        .join(":");
+
+    if key.is_empty() { return None; }
+    ctx.lookup_type_fn(cur, &key)
 }
 
 // ---------------------------------------------------------------------------
@@ -1432,6 +1627,7 @@ pub fn resolve(res: ParseRes) -> IrRes {
     pass3b_flatten_alias_types(&mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::Insts);
     pass5_resolve_inst_fields(&res.scopes, &mut ctx);
+    pass7_resolve_type_fns(&res.scopes, &mut ctx);
 
     let deploys = pass6_resolve_deploys(&res.scopes, &mut ctx);
 
@@ -1441,5 +1637,13 @@ pub fn resolve(res: ParseRes) -> IrRes {
         loc:     IrLoc { unit: e.loc.unit, start: e.loc.start, end: e.loc.end },
     }));
 
-    IrRes { types: ctx.types, links: ctx.links, insts: ctx.insts, deploys, scopes: ctx.scopes, errors }
+    IrRes {
+        types:    ctx.types,
+        links:    ctx.links,
+        insts:    ctx.insts,
+        deploys,
+        type_fns: ctx.type_fns,
+        scopes:   ctx.scopes,
+        errors,
+    }
 }

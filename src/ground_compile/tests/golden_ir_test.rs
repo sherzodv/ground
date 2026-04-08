@@ -1149,6 +1149,177 @@ fn use_qualified_import_bypasses_shadowed_name() {
 }
 
 // ---------------------------------------------------------------------------
+// Type function definitions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_fn_resolves_named() {
+    assert_eq!(
+        show(r##"
+            type aws_sg    = { link name    = string }
+            type stack     = { link sg_name = string }
+            type stack_gen(s: stack) = {
+                sg: aws_sg { name: "static-sg" }
+            }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[aws_sg, Struct[Link#0[name, Prim(string)]]],
+                Type#1[stack, Struct[Link#1[sg_name, Prim(string)]]],
+                TypeFn#0[stack_gen(s:Type#1), sg:Type#0[name=Str("static-sg")]],
+                Scope[type:aws_sg],
+                Scope[type:stack],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn type_fn_param_ref_as_opaque() {
+    // Param ref `{s:name}-sg` kept as opaque IrValue::Ref for ASM-time substitution.
+    assert_eq!(
+        show(r##"
+            type aws_sg  = { link name = string }
+            type service = { link port = integer }
+            type svc_gen(s: service) = {
+                sg: aws_sg { name: {s:name}-sg }
+            }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[aws_sg, Struct[Link#0[name, Prim(string)]]],
+                Type#1[service, Struct[Link#1[port, Prim(integer)]]],
+                TypeFn#0[svc_gen(s:Type#1), sg:Type#0[name=Ref("{s:name}-sg")]],
+                Scope[type:aws_sg],
+                Scope[type:service],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn type_fn_arbitrary_ref_opaque() {
+    // Arbitrary ref expressions kept as opaque strings.
+    assert_eq!(
+        show(r##"
+            type aws_cluster = { link name = string }
+            type stack       = { link region = string }
+            type stack_gen(s: stack) = {
+                cluster: aws_cluster { name: {s:deploy:alias} }
+            }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[aws_cluster, Struct[Link#0[name, Prim(string)]]],
+                Type#1[stack, Struct[Link#1[region, Prim(string)]]],
+                TypeFn#0[stack_gen(s:Type#1), cluster:Type#0[name=Ref("{s:deploy:alias}")]],
+                Scope[type:aws_cluster],
+                Scope[type:stack],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn type_fn_anonymous_one_param() {
+    // Anonymous 1-param type fn — name shown as `_`.
+    assert_eq!(
+        show(r##"
+            type aws_sg  = { link name = string }
+            type service = { link port = integer }
+            type (s: service) = {
+                sg: aws_sg { name: {s:name}-sg }
+            }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[aws_sg, Struct[Link#0[name, Prim(string)]]],
+                Type#1[service, Struct[Link#1[port, Prim(integer)]]],
+                TypeFn#0[_(s:Type#1), sg:Type#0[name=Ref("{s:name}-sg")]],
+                Scope[type:aws_sg],
+                Scope[type:service],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn type_fn_multi_entry_sibling_ref() {
+    // Multi-entry type fn; sibling refs like `{role:arn}` kept as opaque Ref.
+    assert_eq!(
+        show(r##"
+            type aws_role = { link arn      = string }
+            type aws_task = { link role_arn = string }
+            type service  = { link name     = string }
+            type svc_gen(s: service) = {
+                role: aws_role { arn:      {s:name}-role }
+                task: aws_task { role_arn: {role:arn}    }
+            }
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[aws_role, Struct[Link#0[arn, Prim(string)]]],
+                Type#1[aws_task, Struct[Link#1[role_arn, Prim(string)]]],
+                Type#2[service, Struct[Link#2[name, Prim(string)]]],
+                TypeFn#0[svc_gen(s:Type#2), role:Type#0[arn=Ref("{s:name}-role")], task:Type#1[role_arn=Ref("{role:arn}")]],
+                Scope[type:aws_role],
+                Scope[type:aws_task],
+                Scope[type:service],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn type_fn_deploy_links_to_type_fn() {
+    // Deploy target resolves to a named type fn → `to_type_fn` is set.
+    assert_eq!(
+        show(r##"
+            type aws_sg    = { link name    = string }
+            type stack     = { link sg_name = string }
+            type stack_gen(s: stack) = {
+                sg: aws_sg { name: {s:name} }
+            }
+            stack my-stack { sg_name: "prod" }
+            deploy my-stack to stack_gen as prod {}
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[aws_sg, Struct[Link#0[name, Prim(string)]]],
+                Type#1[stack, Struct[Link#1[sg_name, Prim(string)]]],
+                Inst#0[Type#1, my-stack, Field[Link#1, Str("prod")]],
+                TypeFn#0[stack_gen(s:Type#1), sg:Type#0[name=Ref("{s:name}")]],
+                Scope[type:aws_sg],
+                Scope[type:stack],
+            ]
+            Deploy[Inst#0, stack_gen, prod, type_fn=TypeFn#0]
+        "##),
+    );
+}
+
+#[test]
+fn type_fn_deploy_no_match() {
+    // Deploy to a plain name with no matching type fn — `to_type_fn` is None.
+    assert_eq!(
+        show(r##"
+            type stack = { link name = string }
+            type stack_gen(s: stack) = { }
+            stack my-stack { name: "x" }
+            deploy my-stack to aws as prod {}
+        "##),
+        norm(r##"
+            Scope[pack:test,
+                Type#0[stack, Struct[Link#0[name, Prim(string)]]],
+                Inst#0[Type#0, my-stack, Field[Link#0, Str("x")]],
+                TypeFn#0[stack_gen(s:Type#0)],
+                Scope[type:stack],
+            ]
+            Deploy[Inst#0, aws, prod]
+        "##),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Regression / integration
 // ---------------------------------------------------------------------------
 

@@ -911,3 +911,125 @@ fn inline_named_type_with_typed_path_ref() {
         "##),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Gen definitions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_fn_named_static_field() {
+    assert_eq!(
+        show(r#"
+            type stack_gen(s: stack) = {
+              vpc: aws_vpc { cidr_block: "10.0.0.0/16" }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                TypeFn[stack_gen(s:stack), TypeFn[vpc=Struct[Hint(aws_vpc), Field[cidr_block, Str("10.0.0.0/16")]]]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_named_interp_ref() {
+    // Brace-group ref in type fn body rendered as Ref at parse level.
+    assert_eq!(
+        show(r#"
+            type stack_gen(s: stack) = {
+              cluster: aws_ecs_cluster { name: {s:deploy:alias} }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                TypeFn[stack_gen(s:stack), TypeFn[cluster=Struct[Hint(aws_ecs_cluster), Field[name, Ref({s:deploy:alias})]]]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_named_interp_with_trailing() {
+    // Brace-group ref with trailing atom: {s:name}-sg.
+    assert_eq!(
+        show(r#"
+            type svc_gen(s: service) = {
+              sg: aws_sg { name: {s:name}-sg }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                TypeFn[svc_gen(s:service), TypeFn[sg=Struct[Hint(aws_sg), Field[name, Ref({s:name}-sg)]]]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_anonymous_one_param() {
+    // Anonymous 1-param type fn — no name.
+    assert_eq!(
+        show(r#"
+            type (s: service) = {
+              rule: aws_rule { from_port: {s:from:port} }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                TypeFn[_(s:service), TypeFn[rule=Struct[Hint(aws_rule), Field[from_port, Ref({s:from:port})]]]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_multi_entry() {
+    assert_eq!(
+        show(r#"
+            type svc_gen(s: service) = {
+              role: aws_iam_role { name: {s:name}-role }
+              task: aws_ecs_task { execution_role_arn: {role:arn} }
+            }
+        "#),
+        norm(r#"
+            Scope[pack:test,
+                TypeFn[svc_gen(s:service), TypeFn[role=Struct[Hint(aws_iam_role), Field[name, Ref({s:name}-role)]], task=Struct[Hint(aws_ecs_task), Field[execution_role_arn, Ref({role:arn})]]]],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_in_subpack() {
+    // Pack structure from file paths — use show_multi with path segments.
+    use golden_parse_helpers::show_multi;
+    assert_eq!(
+        show_multi(vec![
+            ("ecs", vec!["aws"], r#"
+                type stack_gen(s: stack) = {
+                  vpc: aws_vpc { cidr_block: "10.0.0.0/16" }
+                }
+            "#),
+        ]),
+        norm(r#"
+            Scope[pack:aws,
+                Scope[pack:ecs,
+                    TypeFn[stack_gen(s:stack), TypeFn[vpc=Struct[Hint(aws_vpc), Field[cidr_block, Str("10.0.0.0/16")]]]],
+                ],
+            ]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_empty_body() {
+    assert_eq!(
+        show("type stack_gen(s: stack) = { }"),
+        norm(r#"
+            Scope[pack:test,
+                TypeFn[stack_gen(s:stack), TypeFn[]],
+            ]
+        "#),
+    );
+}

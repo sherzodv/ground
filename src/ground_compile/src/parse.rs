@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
         // Primitive
         if let Some(prim) = self.parse_primitive() {
             let body = self.node(start, AstTypeDefBody::Primitive(prim.inner));
-            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
+            return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
         }
 
         // Explicit type-def: "type" ident? "=" body
@@ -257,7 +257,7 @@ impl<'a> Parser<'a> {
                 self.push_error(self.pos, "expected ']' after list type");
             }
             let body = self.node(start, AstTypeDefBody::List(Box::new(inner)));
-            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
+            return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
         }
 
         // Ref or sugar enum: ref ("|" ref)*
@@ -280,10 +280,10 @@ impl<'a> Parser<'a> {
         if refs.len() == 1 {
             let r = refs.remove(0);
             let body = self.node(start, AstTypeDefBody::Ref(r.inner));
-            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
+            Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }))
         } else {
             let body = self.node(start, AstTypeDefBody::Enum(refs));
-            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
+            Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }))
         }
     }
 
@@ -336,15 +336,6 @@ impl<'a> Parser<'a> {
         Some(items)
     }
 
-    /// Parse a single `ref-atom` and wrap it as a single-segment `AstRef`.
-    fn parse_atom_as_ref(&mut self) -> Option<AstNode<AstRef>> {
-        let start = self.pos;
-        let atom = self.parse_ref_atom()?;
-        let seg = AstNode::new(self.unit, start as u32, self.pos as u32,
-            AstRefSeg { value: AstRefSegVal::Plain(atom), is_opt: false });
-        Some(self.node(start, AstRef { segments: vec![seg] }))
-    }
-
     fn parse_struct_item(&mut self) -> Option<AstNode<AstStructItem>> {
         let start = self.pos;
 
@@ -387,23 +378,121 @@ impl<'a> Parser<'a> {
         Some(items)
     }
 
-    /// `"type" ident? "=" type-body`
+    // -- type function params & body -------------------------------------
+
+    /// Try to parse a parameter list `"(" ident ":" ref ("," ident ":" ref)* ")"`.
+    /// Returns empty vec and backtracks if the `(` is not followed by `ident :`.
+    fn try_parse_type_params(&mut self) -> Vec<AstNode<AstTypeParam>> {
+        if !self.rest().starts_with('(') { return vec![]; }
+        let saved = self.pos;
+        self.advance(1); // consume `(`
+        self.skip_ws();
+
+        let mut params = Vec::new();
+        loop {
+            let param_start = self.pos;
+            let name = match self.parse_ident() {
+                Some(n) => n,
+                None    => { self.pos = saved; return vec![]; }
+            };
+            self.skip_ws();
+            if !self.eat(":") { self.pos = saved; return vec![]; }
+            self.skip_ws();
+            let ty = match self.parse_ref() {
+                Some(r) => r,
+                None    => { self.pos = saved; return vec![]; }
+            };
+            params.push(self.node(param_start, AstTypeParam { name, ty }));
+            self.skip_ws();
+            if self.eat(",") { self.skip_ws(); continue; }
+            break;
+        }
+
+        if !self.eat(")") { self.pos = saved; return vec![]; }
+        self.skip_ws();
+        params
+    }
+
+    /// Parse a type function body: `"{" (ident ":" SP inst-value)* "}"`
+    /// Each entry is `alias: vendor-type { fields }`.
+    fn parse_typefn_body(&mut self) -> Option<Vec<AstNode<AstTypeFnEntry>>> {
+        if !self.eat("{") { return None; }
+        let mut entries = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+            if let Some(entry) = self.try_parse_typefn_entry() {
+                entries.push(entry);
+            } else {
+                self.push_error(self.pos, format!(
+                    "unexpected token in type function body: {:?}", self.peek()
+                ));
+                self.skip_past_line();
+            }
+        }
+        self.eat("}");
+        Some(entries)
+    }
+
+    /// `ident ":" SP inst-value` — same disambiguation as `try_parse_inst_field`.
+    fn try_parse_typefn_entry(&mut self) -> Option<AstNode<AstTypeFnEntry>> {
+        let start = self.pos;
+        let saved = self.pos;
+
+        let alias = self.parse_ident()?;
+
+        if !self.eat(":") {
+            self.pos = saved;
+            return None;
+        }
+
+        let has_ws = self.peek().map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
+        if !has_ws {
+            self.pos = saved;
+            return None;
+        }
+        self.skip_ws();
+
+        let value = match self.parse_inst_value() {
+            Some(v) => v,
+            None => {
+                self.push_error(self.pos, format!("expected value for type fn entry '{}'", alias.inner));
+                self.pos = saved;
+                return None;
+            }
+        };
+
+        Some(self.node(start, AstTypeFnEntry { alias, value }))
+    }
+
+    // -- type def --------------------------------------------------------
+
+    /// `"type" (name | anonymous) (params)? "=" body`
     ///
-    /// Returns `None` and backtracks fully if the pattern doesn't match
-    /// (allows callers to try other alternatives).
+    /// Forms:
+    ///   `type name = body`               — zero-param named type
+    ///   `type = body`                    — zero-param anonymous type
+    ///   `type name(p: T, ...) = { ... }` — named type function
+    ///   `type (p: T, ...) = { ... }`     — anonymous type function
+    ///
+    /// Returns `None` and backtracks fully if the pattern doesn't match.
     fn parse_type_def(&mut self) -> Option<AstNode<AstTypeDef>> {
         let start = self.pos;
         if !self.at_keyword("type") { return None; }
         self.advance("type".len());
         self.skip_ws();
 
-        let name = if !self.rest().starts_with('=') {
+        // Determine name: skip if next char is `=` (anonymous zero-param) or `(` (anonymous fn)
+        let name = if self.rest().starts_with('=') || self.rest().starts_with('(') {
+            None
+        } else {
             let id = self.parse_ident();
             if id.is_some() { self.skip_ws(); }
             id
-        } else {
-            None
         };
+
+        // Try to parse parameter list `(ident: ref, ...)`
+        let params = self.try_parse_type_params();
 
         if !self.eat("=") {
             // Not a type-def — backtrack so caller can try other alternatives.
@@ -413,7 +502,16 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         let body_start = self.pos;
-        let body = if self.rest().starts_with('{') {
+        let body = if !params.is_empty() {
+            // Type function: body must be `{ alias: vendor-type { ... } ... }`
+            if self.rest().starts_with('{') {
+                let entries = self.parse_typefn_body().unwrap_or_default();
+                self.node(body_start, AstTypeDefBody::TypeFn(entries))
+            } else {
+                self.push_error(self.pos, "expected '{' for type function body");
+                self.node(body_start, AstTypeDefBody::TypeFn(vec![]))
+            }
+        } else if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
             self.node(body_start, AstTypeDefBody::Struct(items))
         } else {
@@ -421,7 +519,7 @@ impl<'a> Parser<'a> {
             self.node(body_start, AstTypeDefBody::Enum(items))
         };
 
-        Some(self.node(start, AstTypeDef { name, body, scope: None }))
+        Some(self.node(start, AstTypeDef { name, params, body, scope: None }))
     }
 
     // -- instance values & fields ----------------------------------------
@@ -720,9 +818,12 @@ impl<'a> Parser<'a> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// For a named struct `AstTypeDef`: create a `ScopeKind::Type` scope under `parent_scope`,
-/// store its id in `td.inner.scope`, move `TypeDef` struct items into that scope (removing
-/// them from the struct body), then recurse into hoisted TypeDefs and remaining LinkDef types.
+/// For a named struct `AstTypeDef` (zero-param only): create a `ScopeKind::Type` scope under
+/// `parent_scope`, store its id in `td.inner.scope`, move `TypeDef` struct items into that
+/// scope (removing them from the struct body), then recurse into hoisted TypeDefs and
+/// remaining LinkDef types.
+///
+/// Type function defs (params non-empty) are skipped — their bodies are TypeFn, not Struct.
 fn hoist_struct_scopes(
     td:           &mut AstNode<AstTypeDef>,
     parent_scope: AstScopeId,
@@ -732,6 +833,9 @@ fn hoist_struct_scopes(
         Some(n) => n,
         None    => return,
     };
+    // Skip type function definitions — they have TypeFn bodies, not struct bodies.
+    if !td.inner.params.is_empty() { return; }
+
     // Take items out first so we can freely mutate `td` below.
     let all_items = match &mut td.inner.body.inner {
         AstTypeDefBody::Struct(items) => std::mem::take(items),

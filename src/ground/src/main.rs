@@ -2,7 +2,7 @@ mod ops_display;
 
 use std::{env, fs, path::Path, process};
 
-use ground_compile::{compile, CompileReq, CompileRes, AsmValue, Unit};
+use ground_compile::{compile, CompileReq, CompileRes, AsmValue, AsmInstRef, Symbol, Unit};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
@@ -183,7 +183,7 @@ fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
                 _ => None,
             })
             .unwrap_or_default();
-        for inst_ref in &deploy.members {
+        for inst_ref in collect_members(&deploy.inst, &res.symbol) {
             let inst_u = inst_ref.name.replace('-', "_");
             let key    = format!("{pfx_u}{alias_u}_{inst_u}");
             let label  = format!("{}:{}", inst_ref.type_name, inst_ref.name);
@@ -191,6 +191,41 @@ fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
         }
     }
     lookup
+}
+
+fn collect_members(inst: &ground_compile::AsmInst, symbol: &Symbol) -> Vec<AsmInstRef> {
+    let mut out  = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(inst.name.clone());
+    for f in &inst.fields {
+        collect_refs_deep(&f.value, symbol, &mut out, &mut seen);
+    }
+    out
+}
+
+fn collect_refs_deep(
+    v:      &AsmValue,
+    symbol: &Symbol,
+    out:    &mut Vec<AsmInstRef>,
+    seen:   &mut std::collections::HashSet<String>,
+) {
+    match v {
+        AsmValue::InstRef(r) => {
+            if seen.insert(r.name.clone()) {
+                out.push(r.clone());
+                if let Some(inst) = symbol.get(&r.name) {
+                    for f in &inst.fields {
+                        collect_refs_deep(&f.value, symbol, out, seen);
+                    }
+                }
+            }
+        }
+        AsmValue::List(items)  => { for i in items  { collect_refs_deep(i, symbol, out, seen); } }
+        AsmValue::Path(segs)   => { for s in segs   { collect_refs_deep(s, symbol, out, seen); } }
+        AsmValue::Inst(i)      => { for f in &i.fields { collect_refs_deep(&f.value, symbol, out, seen); } }
+        AsmValue::Variant(v)   => { if let Some(p) = &v.payload { collect_refs_deep(p, symbol, out, seen); } }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------

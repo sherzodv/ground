@@ -4,7 +4,7 @@ pub mod parse;
 pub mod resolve;
 pub mod asm;
 
-pub use asm::{AsmInst, AsmField, AsmValue, AsmVariant, AsmInstRef};
+pub use asm::{AsmInst, AsmField, AsmValue, AsmVariant, AsmInstRef, AsmExpansion, AsmOutput, AsmLinkOutput, AsmOverrides};
 
 const STDLIB: &str = include_str!("stdlib.grd");
 
@@ -50,11 +50,12 @@ impl Symbol {
 
 /// A fully resolved, self-contained deployment context.
 pub struct Deploy {
-    pub target:  Vec<String>,
-    pub name:    String,
-    pub inst:    AsmInst,
-    pub fields:  Vec<AsmField>,
-    pub members: Vec<AsmInstRef>,  // ordered refs to instances referenced from inst's fields
+    pub target:    Vec<String>,
+    pub name:      String,
+    pub inst:      AsmInst,
+    pub fields:    Vec<AsmField>,
+    pub expansion: Option<AsmExpansion>,
+    pub overrides: AsmOverrides,
 }
 
 pub struct CompileRes {
@@ -95,15 +96,13 @@ pub fn compile(req: CompileReq) -> CompileRes {
 
     let symbol = Symbol { instances: ctx.symbol.insts };
 
-    let deploys = ctx.deploys.into_iter().map(|d| {
-        let members = collect_inst_refs(&d.inst);
-        Deploy {
-            target:  d.target,
-            name:    d.name,
-            inst:    d.inst,
-            fields:  d.fields,
-            members,
-        }
+    let deploys = ctx.deploys.into_iter().map(|d| Deploy {
+        target:    d.target,
+        name:      d.name,
+        inst:      d.inst,
+        fields:    d.fields,
+        expansion: d.expansion,
+        overrides: d.overrides,
     }).collect();
 
     CompileRes { symbol, deploys, errors }
@@ -119,38 +118,4 @@ fn offset_to_line_col(src: &str, offset: u32) -> (u32, u32) {
     let line   = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
     let col    = before.rfind('\n').map_or(offset, |p| offset - p - 1) as u32 + 1;
     (line, col)
-}
-
-/// Collect unique `AsmInstRef`s referenced from an instance's fields (shallow — top-level fields only).
-fn collect_inst_refs(inst: &AsmInst) -> Vec<AsmInstRef> {
-    let mut refs: Vec<AsmInstRef> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for f in &inst.fields {
-        collect_refs_in_value(&f.value, &mut refs, &mut seen);
-    }
-    refs
-}
-
-fn collect_refs_in_value(
-    v: &AsmValue,
-    refs: &mut Vec<AsmInstRef>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    match v {
-        AsmValue::InstRef(r) => {
-            if seen.insert(r.name.clone()) {
-                refs.push(AsmInstRef { type_name: r.type_name.clone(), name: r.name.clone() });
-            }
-        }
-        AsmValue::Path(segs) => {
-            for s in segs { collect_refs_in_value(s, refs, seen); }
-        }
-        AsmValue::List(items) => {
-            for i in items { collect_refs_in_value(i, refs, seen); }
-        }
-        AsmValue::Inst(i) => {
-            for f in &i.fields { collect_refs_in_value(&f.value, refs, seen); }
-        }
-        _ => {}
-    }
 }

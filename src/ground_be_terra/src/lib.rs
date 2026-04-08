@@ -1,16 +1,23 @@
 pub mod terra_ops;
 
-use ground_compile::{CompileRes, Deploy, AsmInst, AsmValue};
+use ground_compile::{CompileRes, Deploy, AsmExpansion, AsmOutput, AsmLinkOutput, AsmValue};
 use ground_gen::{render, merge_json};
 use serde_json::{json, Map, Value};
 
 pub use ground_gen::GenError;
 
-const ROOT_TPL:         &str = include_str!("templates/root.json.tera");
-const SVC_TPL:          &str = include_str!("templates/type_service.json.tera");
-const DB_TPL:           &str = include_str!("templates/type_database.json.tera");
-const LINK_SVC_DB_TPL:  &str = include_str!("templates/link_access_service_database.json.tera");
-const LINK_SVC_SVC_TPL: &str = include_str!("templates/link_access_service_service.json.tera");
+const ROOT_TPL:          &str = include_str!("templates/root.json.tera");
+const IAM_ROLE_TPL:      &str = include_str!("templates/aws_iam_role.json.tera");
+const IAM_ATTACH_TPL:    &str = include_str!("templates/aws_iam_role_policy_attachment.json.tera");
+const SG_TPL:            &str = include_str!("templates/aws_security_group.json.tera");
+const SG_EGRESS_TPL:     &str = include_str!("templates/aws_vpc_security_group_egress_rule.json.tera");
+const SG_INGRESS_TPL:    &str = include_str!("templates/aws_vpc_security_group_ingress_rule.json.tera");
+const LOG_GROUP_TPL:     &str = include_str!("templates/aws_cloudwatch_log_group.json.tera");
+const ECS_TD_TPL:        &str = include_str!("templates/aws_ecs_task_definition.json.tera");
+const ECS_SVC_TPL:       &str = include_str!("templates/aws_ecs_service.json.tera");
+const RAND_PW_TPL:       &str = include_str!("templates/random_password.json.tera");
+const DB_SNG_TPL:        &str = include_str!("templates/aws_db_subnet_group.json.tera");
+const DB_INST_TPL:       &str = include_str!("templates/aws_db_instance.json.tera");
 
 pub fn generate(res: &CompileRes) -> Result<String, GenError> {
     let mut frags: Vec<String> = Vec::new();
@@ -18,64 +25,84 @@ pub fn generate(res: &CompileRes) -> Result<String, GenError> {
     for deploy in &res.deploys {
         let deploy_ctx = deploy_to_ctx(deploy);
 
-        let instances_ctx: Vec<Value> = deploy.members.iter()
-            .filter_map(|r| res.symbol.get(&r.name))
-            .map(|i| Value::Object(inst_to_ctx(i)))
-            .collect();
-
-        // Root
-        let rendered = render(ROOT_TPL, &json!({ "deploy": deploy_ctx, "instances": instances_ctx }))?;
+        // Root template — always rendered.
+        let rendered = render(ROOT_TPL, &json!({ "deploy": deploy_ctx }))?;
         push_nonempty(&mut frags, rendered);
 
-        // Type hooks
-        for inst_ref in &deploy.members {
-            let tpl = match inst_ref.type_name.as_str() {
-                "service"  => SVC_TPL,
-                "database" => DB_TPL,
-                _          => continue,
-            };
-            if let Some(inst) = res.symbol.get(&inst_ref.name) {
-                let rendered = render(tpl, &json!({ "deploy": deploy_ctx, "instance": inst_to_ctx(inst) }))?;
-                push_nonempty(&mut frags, rendered);
-            }
-        }
-
-        // Link hooks — access field
-        for inst_ref in &deploy.members {
-            let Some(inst) = res.symbol.get(&inst_ref.name) else { continue };
-            for field in &inst.fields {
-                if field.name != "access" { continue; }
-                if let AsmValue::List(items) = &field.value {
-                    for item in items {
-                        let (target_name, extra): (&str, &[AsmValue]) = match item {
-                            AsmValue::InstRef(ir)  => (&ir.name, &[]),
-                            AsmValue::Path(segs)   => match segs.first() {
-                                Some(AsmValue::InstRef(ir)) => (&ir.name, &segs[1..]),
-                                _                           => continue,
-                            },
-                            _ => continue,
-                        };
-                        if let Some(target) = res.symbol.get(target_name) {
-                            let tpl = match target.type_name.as_str() {
-                                "database" => LINK_SVC_DB_TPL,
-                                "service"  => LINK_SVC_SVC_TPL,
-                                _          => continue,
-                            };
-                            let rendered = render(tpl, &json!({
-                                "deploy":   deploy_ctx,
-                                "source":   inst_to_ctx(inst),
-                                "target":   inst_to_ctx(target),
-                                "segments": segments_ctx(extra),
-                            }))?;
-                            push_nonempty(&mut frags, rendered);
-                        }
-                    }
-                }
-            }
+        // Walk the expansion tree produced by type function firing.
+        if let Some(exp) = &deploy.expansion {
+            walk_expansion(exp, &deploy_ctx, &mut frags)?;
         }
     }
 
     merge_json(frags)
+}
+
+/// Recursively walk an `AsmExpansion` tree and render outputs via Tera templates.
+fn walk_expansion(
+    exp:        &AsmExpansion,
+    deploy_ctx: &Map<String, Value>,
+    frags:      &mut Vec<String>,
+) -> Result<(), GenError> {
+    // 1-param outputs: one entry per fired type-function entry.
+    for output in &exp.outputs {
+        if let Some(tpl) = load_template(&output.scope, &output.vendor_type) {
+            let ctx = output_to_ctx(output);
+            let rendered = render(tpl, &json!({ "deploy": deploy_ctx, "output": ctx }))?;
+            push_nonempty(frags, rendered);
+        }
+    }
+
+    // 2-param link outputs.
+    for link_out in &exp.link_outs {
+        render_link_out(link_out, deploy_ctx, frags)?;
+    }
+
+    // Children (recursively expanded linked instances).
+    for child in &exp.children {
+        walk_expansion(child, deploy_ctx, frags)?;
+    }
+
+    Ok(())
+}
+
+fn render_link_out(
+    link_out:   &AsmLinkOutput,
+    deploy_ctx: &Map<String, Value>,
+    frags:      &mut Vec<String>,
+) -> Result<(), GenError> {
+    for output in &link_out.outputs {
+        if let Some(tpl) = load_template(&output.scope, &output.vendor_type) {
+            let ctx = json!({
+                "deploy": deploy_ctx,
+                "from":   { "type_name": link_out.from.type_name, "name": link_out.from.name },
+                "to":     { "type_name": link_out.to.type_name,   "name": link_out.to.name   },
+                "output": output_to_ctx(output),
+            });
+            let rendered = render(tpl, &ctx)?;
+            push_nonempty(frags, rendered);
+        }
+    }
+    Ok(())
+}
+
+/// Load a Tera template by scope path + vendor type name.
+fn load_template(scope: &[String], vendor_type: &str) -> Option<&'static str> {
+    let _ = scope;
+    match vendor_type {
+        "aws_iam_role"                        => Some(IAM_ROLE_TPL),
+        "aws_iam_role_policy_attachment"      => Some(IAM_ATTACH_TPL),
+        "aws_security_group"                  => Some(SG_TPL),
+        "aws_vpc_security_group_egress_rule"  => Some(SG_EGRESS_TPL),
+        "aws_vpc_security_group_ingress_rule" => Some(SG_INGRESS_TPL),
+        "aws_cloudwatch_log_group"            => Some(LOG_GROUP_TPL),
+        "aws_ecs_task_definition"             => Some(ECS_TD_TPL),
+        "aws_ecs_service"                     => Some(ECS_SVC_TPL),
+        "random_password"                     => Some(RAND_PW_TPL),
+        "aws_db_subnet_group"                 => Some(DB_SNG_TPL),
+        "aws_db_instance"                     => Some(DB_INST_TPL),
+        _ => None,
+    }
 }
 
 fn push_nonempty(frags: &mut Vec<String>, s: String) {
@@ -93,11 +120,11 @@ fn deploy_to_ctx(d: &Deploy) -> Map<String, Value> {
     m
 }
 
-fn inst_to_ctx(i: &AsmInst) -> Map<String, Value> {
+fn output_to_ctx(o: &AsmOutput) -> Map<String, Value> {
     let mut m = Map::new();
-    m.insert("type_name".into(), json!(i.type_name));
-    m.insert("name".into(),      json!(i.name));
-    for f in &i.fields { m.insert(f.name.clone(), asm_value_to_json(&f.value)); }
+    m.insert("alias".into(),       json!(o.alias));
+    m.insert("vendor_type".into(), json!(o.vendor_type));
+    for f in &o.fields { m.insert(f.name.clone(), asm_value_to_json(&f.value)); }
     m
 }
 
@@ -112,10 +139,4 @@ fn asm_value_to_json(v: &AsmValue) -> Value {
         AsmValue::Path(segs)  => Value::Array(segs.iter().map(asm_value_to_json).collect()),
         AsmValue::List(items) => Value::Array(items.iter().map(asm_value_to_json).collect()),
     }
-}
-
-fn segments_ctx(segs: &[AsmValue]) -> Map<String, Value> {
-    segs.iter().enumerate()
-        .map(|(i, v)| (format!("seg{i}"), asm_value_to_json(v)))
-        .collect()
 }

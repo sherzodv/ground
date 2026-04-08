@@ -198,6 +198,83 @@ fn inst_inline_struct_type_hint_unknown() {
 // Use / import errors
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Gen definition errors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_fn_error_unknown_param_type() {
+    let out = show("type svc_gen(s: nonexistent) = { }");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("nonexistent"), "error should name the unknown param type: {out}");
+}
+
+#[test]
+fn type_fn_error_unknown_vendor_type() {
+    let out = show(r##"
+        type stack = { link name = string }
+        type svc_gen(s: stack) = {
+            sg: nonexistent_vendor { name: "x" }
+        }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("nonexistent_vendor"), "error should name the unknown vendor type: {out}");
+}
+
+#[test]
+fn type_fn_error_missing_vendor_annotation() {
+    // Entry value without a type hint → error.
+    let out = show(r##"
+        type stack = { link name = string }
+        type svc_gen(s: stack) = {
+            sg: { name: "x" }
+        }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("missing vendor type"), "error should mention 'missing vendor type': {out}");
+}
+
+#[test]
+fn type_fn_error_entry_not_struct() {
+    // Entry value is a string literal, not a typed struct → error.
+    let out = show(r##"
+        type stack = { link name = string }
+        type svc_gen(s: stack) = {
+            sg: "plain-value"
+        }
+    "##);
+    // The entry value `"plain-value"` is a Str — doesn't match AstValue::Struct pattern.
+    // The parser will likely parse `sg: "plain-value"` as the entry value = Str,
+    // which then fails in resolve because it's not a struct.
+    // We just check that an error is produced.
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
+#[test]
+fn type_fn_error_param_registered_not_as_type() {
+    // Registering two type fns with the same named param type: both are valid.
+    // This is a positive test that two named type fns can coexist.
+    let out = show(r##"
+        type stack    = { link name = string }
+        type stack_a(s: stack) = { sg: nonexistent { } }
+        type stack_b(s: stack) = { db: nonexistent { } }
+    "##);
+    // Both reference nonexistent vendor types — two errors expected.
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
+#[test]
+fn gen_error_missing_vendor_type_annotation() {
+    // A type fn entry that is a plain struct without a type hint.
+    let out = show(r##"
+        type stack = { link name = string }
+        type svc_gen(s: stack) = {
+            sg: { name: "x" }
+        }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+}
+
 #[test]
 fn error_use_pack_not_found() {
     let out = show("use pack:nonexistent");

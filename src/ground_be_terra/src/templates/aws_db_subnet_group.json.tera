@@ -4,10 +4,13 @@
 {%- set pfx_u   = pfx | replace(from="-", to="_") -%}
 {
   "resource": {
-    "aws_iam_role": {
+    "aws_db_subnet_group": {
       "{{ pfx_u }}{{ alias_u }}_{{ name_u }}": {
         "name": "{{ pfx }}{{ deploy.alias }}-{{ output.name }}",
-        "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+        "subnet_ids": [
+          {% for zone_entry in deploy.region %}"${aws_subnet.{{ pfx_u }}{{ alias_u }}_nprv_{{ zone_entry[1] }}.id}"{% if not loop.last %},{% endif %}
+          {% endfor %}
+        ],
         "tags": {
           "ground-managed": "true"
         }

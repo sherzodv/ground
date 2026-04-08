@@ -70,6 +70,24 @@ pub struct AstRef {
 pub enum AstPrimitive { String, Integer, Reference }
 
 // ---------------------------------------------------------------------------
+// Type function parameters & entries
+// ---------------------------------------------------------------------------
+
+/// One parameter in a type function definition: `name: type-ref`
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstTypeParam {
+    pub name: AstNode<String>,
+    pub ty:   AstNode<AstRef>,
+}
+
+/// One entry in a type function body: `alias: vendor-type { fields... }`
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstTypeFnEntry {
+    pub alias: AstNode<String>,
+    pub value: AstNode<AstValue>,  // AstValue::Struct with type_hint
+}
+
+// ---------------------------------------------------------------------------
 // Type definitions — the universal type expression
 // ---------------------------------------------------------------------------
 
@@ -85,15 +103,19 @@ pub enum AstTypeDefBody {
     Struct(Vec<AstNode<AstStructItem>>),
     /// List whose element type is described by the inner `AstTypeDef`: `[ … ]`
     List(Box<AstNode<AstTypeDef>>),
+    /// Type function body: `{ alias: vendor-type { fields } … }` — only valid when params non-empty
+    TypeFn(Vec<AstNode<AstTypeFnEntry>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstTypeDef {
-    pub name:  Option<AstNode<String>>,
-    pub body:  AstNode<AstTypeDefBody>,
+    pub name:   Option<AstNode<String>>,
+    /// Non-empty for type function definitions: `type name(param: type) = { ... }`
+    pub params: Vec<AstNode<AstTypeParam>>,
+    pub body:   AstNode<AstTypeDefBody>,
     /// Populated by the parse pass for named struct types: the `ScopeKind::Type`
     /// scope that holds this struct's inline type definitions.
-    pub scope: Option<AstScopeId>,
+    pub scope:  Option<AstScopeId>,
 }
 
 // ---------------------------------------------------------------------------

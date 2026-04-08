@@ -436,6 +436,166 @@ fn use_imported_type_deploy() {
 // Type hints on struct values
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Type function definitions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_fn_static_field_in_asm() {
+    assert_eq!(
+        show(r#"
+            type aws_sg    = { link name    = string }
+            type stack     = { link sg_name = string }
+            type stack_gen(s: stack) = { sg: aws_sg { name: "static-sg" } }
+            stack my-stack { sg_name: "prod" }
+            deploy my-stack to stack_gen as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[stack, my-stack, sg_name=Str("prod")],
+            ]
+            Deploy[stack_gen, prod]
+              inst: Inst[stack, my-stack, sg_name=Str("prod")]
+              type_fn: stack_gen
+              expansion:
+                Inst[stack, my-stack, sg_name=Str("prod")]
+                Output[sg:aws_sg name=Str("static-sg")]
+            TypeFn[stack_gen(s: stack) scope=[test], sg:aws_sg[name=Str("static-sg")]]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_interp_field_in_asm() {
+    // Param ref `{s:name}` is kept as an opaque Ref string for ASM-time substitution.
+    assert_eq!(
+        show(r#"
+            type aws_sg  = { link name = string }
+            type service = { link port = integer }
+            type svc_gen(s: service) = { sg: aws_sg { name: {s:name}-sg } }
+            service my-svc { port: 8080 }
+            deploy my-svc to svc_gen as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[service, my-svc, port=Int(8080)],
+            ]
+            Deploy[svc_gen, prod]
+              inst: Inst[service, my-svc, port=Int(8080)]
+              type_fn: svc_gen
+              expansion:
+                Inst[service, my-svc, port=Int(8080)]
+                Output[sg:aws_sg name=Str("my-svc-sg")]
+            TypeFn[svc_gen(s: service) scope=[test], sg:aws_sg[name=Ref("{s:name}-sg")]]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_named_deploy_no_match() {
+    // Deploy target `aws` has no matching type fn — `type_fn:` line absent.
+    assert_eq!(
+        show(r#"
+            type aws_sg    = { link name    = string }
+            type stack     = { link sg_name = string }
+            type stack_gen(s: stack) = { sg: aws_sg { name: "x" } }
+            stack my-stack { sg_name: "prod" }
+            deploy my-stack to aws as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[stack, my-stack, sg_name=Str("prod")],
+            ]
+            Deploy[aws, prod]
+              inst: Inst[stack, my-stack, sg_name=Str("prod")]
+            TypeFn[stack_gen(s: stack) scope=[test], sg:aws_sg[name=Str("x")]]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_deploy_to_type_not_fn() {
+    // Deploy target `stack` is a type, not a type fn — no `type_fn:` line.
+    assert_eq!(
+        show(r#"
+            type stack = { link name = string }
+            stack my-stack { name: "test" }
+            deploy my-stack to stack as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[stack, my-stack, name=Str("test")],
+            ]
+            Deploy[stack, prod]
+              inst: Inst[stack, my-stack, name=Str("test")]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_multi_entry_in_asm() {
+    // Type fn with two entries; sibling alias ref kept as opaque Ref.
+    assert_eq!(
+        show(r#"
+            type aws_role = { link arn      = string }
+            type aws_task = { link role_arn = string }
+            type service  = { link name     = string }
+            type svc_gen(s: service) = {
+                role: aws_role { arn:      {s:name}-role }
+                task: aws_task { role_arn: {role:arn}    }
+            }
+            service my-svc { name: "api" }
+            deploy my-svc to svc_gen as prod {}
+        "#),
+        norm(r#"
+            Scope[pack:test,
+              Inst[service, my-svc, name=Str("api")],
+            ]
+            Deploy[svc_gen, prod]
+              inst: Inst[service, my-svc, name=Str("api")]
+              type_fn: svc_gen
+              expansion:
+                Inst[service, my-svc, name=Str("api")]
+                Output[role:aws_role arn=Str("my-svc-role")]
+                Output[task:aws_task role_arn=Ref("{role:arn}")]
+            TypeFn[svc_gen(s: service) scope=[test], role:aws_role[arn=Ref("{s:name}-role")], task:aws_task[role_arn=Ref("{role:arn}")]]
+        "#),
+    );
+}
+
+#[test]
+fn type_fn_in_subpack_scope() {
+    // Type fn and type both in `aws` pack; app imports the type and deploys.
+    // `scope=` in the TypeFn def reflects the pack path [aws].
+    assert_eq!(
+        show_multi(vec![
+            ("aws", vec![], r#"
+                type aws_sg    = { link name    = string }
+                type stack     = { link sg_name = string }
+                type stack_gen(s: stack) = { sg: aws_sg { name: {s:name}-sg } }
+            "#),
+            ("app", vec![], r#"
+                use pack:aws:type:stack
+                stack my-stack { sg_name: "prod" }
+                deploy my-stack to aws:stack_gen as prod {}
+            "#),
+        ]),
+        norm(r#"
+            Scope[pack:aws]
+            Scope[pack:app,
+              Inst[stack, my-stack, sg_name=Str("prod")],
+            ]
+            Deploy[aws:stack_gen, prod]
+              inst: Inst[stack, my-stack, sg_name=Str("prod")]
+              type_fn: stack_gen
+              expansion:
+                Inst[stack, my-stack, sg_name=Str("prod")]
+                Output[sg:aws_sg name=Str("my-stack-sg")]
+            TypeFn[stack_gen(s: stack) scope=[aws], sg:aws_sg[name=Ref("{s:name}-sg")]]
+        "#),
+    );
+}
+
 #[test]
 fn deploy_inline_struct_with_type_hint() {
     assert_eq!(

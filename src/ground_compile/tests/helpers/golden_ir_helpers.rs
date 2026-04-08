@@ -177,7 +177,33 @@ pub fn show_inst_entry(idx: usize, ir: &IrRes) -> String {
 pub fn show_deploy_entry(dep: &IrDeployDef, ir: &IrRes) -> String {
     let mut parts = vec![show_ref(&dep.what), show_ref(&dep.target), show_ref(&dep.name)];
     parts.extend(dep.fields.iter().map(|f| show_field(f, ir)));
+    if let Some(fid) = dep.to_type_fn {
+        parts.push(format!("type_fn=TypeFn#{}", fid.0));
+    }
     format!("Deploy[{}]", parts.join(", "))
+}
+
+// ---------------------------------------------------------------------------
+// Type function definitions
+// ---------------------------------------------------------------------------
+
+pub fn show_type_fn_entry(idx: usize, ir: &IrRes) -> String {
+    let fd = &ir.type_fns[idx];
+    let name = fd.name.as_deref().unwrap_or("_");
+    let params: Vec<_> = fd.params.iter()
+        .map(|p| format!("{}:Type#{}", p.name, p.ty.0))
+        .collect();
+    let body: Vec<_> = fd.body.iter().map(|entry| {
+        let fields: Vec<_> = entry.fields.iter()
+            .map(|bf| format!("{}={}", bf.name, show_value(&bf.value, ir)))
+            .collect();
+        format!("{}:Type#{}[{}]", entry.alias, entry.vendor_type.0, fields.join(", "))
+    }).collect();
+    if body.is_empty() {
+        format!("TypeFn#{}[{}({})]", idx, name, params.join(", "))
+    } else {
+        format!("TypeFn#{}[{}({}), {}]", idx, name, params.join(", "), body.join(", "))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +241,13 @@ fn show_scope_ir(scope_id: ScopeId, ir: &IrRes) -> String {
     for (i, inst) in ir.insts.iter().enumerate() {
         if inst.scope == scope_id {
             parts.push(show_inst_entry(i, ir));
+        }
+    }
+
+    // Type fn defs belonging to this scope
+    for (i, tf) in ir.type_fns.iter().enumerate() {
+        if tf.scope == scope_id {
+            parts.push(show_type_fn_entry(i, ir));
         }
     }
 
@@ -277,7 +310,7 @@ fn show_ir(ir: IrRes) -> String {
         }
     }
 
-    // Deploys are flat for now (IrDeployDef has no scope field yet)
+    // Deploys
     for dep in &ir.deploys {
         lines.push(show_deploy_entry(dep, &ir));
     }

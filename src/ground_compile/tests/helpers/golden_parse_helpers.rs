@@ -2,9 +2,33 @@ use ground_compile::ast::{
     AstDef, AstField, AstLinkDef, AstPrimitive, AstRef, AstRefSegVal, AstScope, AstScopeId,
     AstStructItem, AstTypeDef, AstTypeDefBody, AstValue, ScopeKind,
     ParseReq, ParseUnit,
-    AstUse,
+    AstUse, AstTypeFnEntry,
 };
 use ground_compile::parse::parse;
+
+/// Parse multiple units, return the scope tree.
+/// Each entry is `(name, path_segs, src)`.
+pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
+    let req = ParseReq {
+        units: units.into_iter().map(|(name, path, src)| ParseUnit {
+            name: name.into(),
+            path: path.into_iter().map(|s| s.to_string()).collect(),
+            src:  src.to_string(),
+        }).collect(),
+    };
+    let res = parse(req);
+
+    let mut lines: Vec<String> = res.scopes.iter().enumerate().skip(1)
+        .filter(|(_, s)| s.parent == Some(AstScopeId(0)))
+        .map(|(i, _)| show_scope(&res.scopes, AstScopeId(i as u32)))
+        .collect();
+
+    for e in &res.errors {
+        lines.push(format!("ERR: {}", e.message));
+    }
+
+    norm(&lines.join("\n"))
+}
 
 pub fn show_ref(r: &AstRef) -> String {
     r.segments.iter().map(|s| {
@@ -28,6 +52,10 @@ pub fn show_primitive(p: &AstPrimitive) -> &'static str {
     }
 }
 
+fn show_typefn_entry(e: &AstTypeFnEntry) -> String {
+    format!("{}={}", e.alias.inner, show_value(&e.value.inner))
+}
+
 pub fn show_type_def_body(body: &AstTypeDefBody) -> String {
     match body {
         AstTypeDefBody::Primitive(p) => format!("Primitive({})", show_primitive(p)),
@@ -43,12 +71,23 @@ pub fn show_type_def_body(body: &AstTypeDefBody) -> String {
         AstTypeDefBody::List(inner) => {
             format!("List[{}]", show_type_def(&inner.inner))
         }
+        AstTypeDefBody::TypeFn(entries) => {
+            let parts: Vec<_> = entries.iter().map(|e| show_typefn_entry(&e.inner)).collect();
+            format!("TypeFn[{}]", parts.join(", "))
+        }
     }
 }
 
 pub fn show_type_def(td: &AstTypeDef) -> String {
     let name = td.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    format!("Type[{}, {}]", name, show_type_def_body(&td.body.inner))
+    if td.params.is_empty() {
+        format!("Type[{}, {}]", name, show_type_def_body(&td.body.inner))
+    } else {
+        let params: Vec<_> = td.params.iter()
+            .map(|p| format!("{}:{}", p.inner.name.inner, show_ref(&p.inner.ty.inner)))
+            .collect();
+        format!("TypeFn[{}({}), {}]", name, params.join(", "), show_type_def_body(&td.body.inner))
+    }
 }
 
 pub fn show_struct_item(item: &AstStructItem) -> String {

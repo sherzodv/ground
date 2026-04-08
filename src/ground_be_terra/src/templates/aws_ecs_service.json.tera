@@ -1,0 +1,36 @@
+{%- set name_u  = output.name | replace(from="-", to="_") -%}
+{%- set alias_u = deploy.alias | replace(from="-", to="_") -%}
+{%- set pfx     = deploy.prefix | default(value="") -%}
+{%- set pfx_u   = pfx | replace(from="-", to="_") -%}
+{%- set td_u    = output.td | replace(from="-", to="_") -%}
+{%- set sg_u    = output.sg | replace(from="-", to="_") -%}
+{
+  "resource": {
+    "aws_ecs_service": {
+      "{{ pfx_u }}{{ alias_u }}_{{ name_u }}": {
+        "name": "{{ pfx }}{{ deploy.alias }}-{{ output.name }}",
+        "cluster": "${aws_ecs_cluster.{{ pfx_u }}{{ alias_u }}_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.{{ pfx_u }}{{ alias_u }}_{{ td_u }}.arn}",
+        "desired_count": 1,
+        "capacity_provider_strategy": [
+          {
+            "capacity_provider": "FARGATE",
+            "weight": 1
+          }
+        ],
+        "network_configuration": {
+          "subnets": [
+            {% for zone_entry in deploy.region %}"${aws_subnet.{{ pfx_u }}{{ alias_u }}_nprv_{{ zone_entry[1] }}.id}"{% if not loop.last %},{% endif %}
+            {% endfor %}
+          ],
+          "security_groups": [
+            "${aws_security_group.{{ pfx_u }}{{ alias_u }}_{{ sg_u }}.id}"
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+    }
+  }
+}
