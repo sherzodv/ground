@@ -1,0 +1,32 @@
+use std
+use marstech:*
+
+space stg {
+    host: stg.internal
+
+    use app:*
+    use routing:*
+
+    space app {
+        host:     app
+        services: [ service:api-gen ]
+    }
+
+    stack marstech {
+        service:api-gen
+        database:main
+        secret:core
+        secret:pay
+        secret:media
+        domain:influencer-ae
+        edge:edge-api
+        space:app
+    }
+}
+
+deploy stg:marstech to aws as stg-eu {
+    region: [ eu-central:1 ]
+
+    main:    { size: small  storage: 20 }
+    api-gen: { size: small  scaling: { min: 1  max: 1 } }
+}

@@ -1,0 +1,36 @@
+type boolean = true | false
+
+type bucket = {
+    link name   = string
+    type access = read | write
+}
+
+type domain = {
+    link host = string
+}
+
+type space = {
+    link host     = string
+    link services = [ service ]
+}
+
+type edge = {
+    link domain  = domain
+    link sub     = string
+    link backend = service
+}
+
+type service = {
+    type port    = grpc | http
+    link access  = [ service:(port) | database | bucket:(access) | secret ]
+    link observe = type observe = {
+        link tracing = boolean
+        link datadog = boolean
+    }
+}
+
+type secret
+
+type stack = {
+    link = [ type:service | type:database | type:bucket | type:edge | type:domain | type:space | type:secret ]
+}

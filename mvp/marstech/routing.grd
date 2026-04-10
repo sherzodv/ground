@@ -1,0 +1,36 @@
+use std
+use app:*
+use poc:*
+use ops:*
+
+domain marstech-co {
+    host: marstech.co
+}
+
+domain influencer-ae {
+    host: moonadmin.influencer.ae
+}
+
+edge edge-api {
+    domain:  domain:influencer-ae
+    sub:     api
+    backend: service:api-gen
+}
+
+edge edge-hub {
+    domain:  domain:marstech-co
+    sub:     hub
+    backend: service:hub
+}
+
+edge edge-workflows {
+    domain:  domain:marstech-co
+    sub:     workflows
+    backend: service:product-wf
+}
+
+edge edge-metrics {
+    domain:  domain:marstech-co
+    sub:     metrics
+    backend: service:metrics
+}

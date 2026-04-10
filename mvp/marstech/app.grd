@@ -1,0 +1,53 @@
+use std
+
+secret media
+secret pay
+secret core
+secret hubspot
+secret notify
+
+database main {
+    engine: postgresql
+}
+
+bucket media {
+    name: media-content
+}
+
+service api-gen {
+    access: [
+        database:main
+        service:media:http
+        service:pay:http
+        service:core:http
+    ]
+}
+
+service hub
+
+service media {
+    access: [
+        database:main
+        bucket:media:write
+        secret:media
+    ]
+}
+
+service pay {
+    access: [ database:main  secret:pay ]
+}
+
+service core {
+    access:  [ secret:core ]
+    observe: { tracing: true }
+}
+
+service hubspot {
+    access:  [ secret:hubspot  secret:datadog ]
+    observe: { tracing: true  datadog: true }
+}
+
+service notify {
+    access:  [ secret:notify  secret:datadog ]
+    observe: { tracing: true  datadog: true }
+}

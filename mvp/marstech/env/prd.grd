@@ -1,0 +1,91 @@
+use std
+use marstech:*
+
+space prd {
+    host: prd.internal
+
+    use app:*
+    use poc:*
+    use ops:*
+    use routing:*
+
+    space app {
+        host:     app
+        services: [
+            service:media
+            service:pay
+            service:core
+            service:hubspot
+            service:notify
+        ]
+    }
+
+    space poc {
+        host:     poc
+        services: [ service:product-wf ]
+    }
+
+    stack marstech {
+        service:api-gen
+        service:hub
+        service:product-wf
+        service:metrics
+        service:media
+        service:pay
+        service:core
+        service:hubspot
+        service:notify
+        database:main
+        bucket:media
+        secret:datadog
+        secret:media
+        secret:pay
+        secret:core
+        secret:hubspot
+        secret:notify
+        domain:marstech-co
+        domain:influencer-ae
+        space:app
+        space:poc
+        edge:edge-api
+        edge:edge-hub
+        edge:edge-workflows
+        edge:edge-metrics
+    }
+}
+
+deploy prd:marstech to aws as prd-eu {
+    region: [
+        eu-central:1
+        eu-central:2
+        eu-central:3
+    ]
+
+    main:       { size: medium  storage: 20 }
+
+    api-gen:    { size: large   scaling: { min: 1  max: 4 } }
+    hub:        { size: medium  scaling: { min: 1  max: 2 } }
+    product-wf: { size: medium  scaling: { min: 1  max: 2 } }
+    metrics:    { size: small   scaling: { min: 1  max: 1 } }
+    media:      { size: medium  scaling: { min: 1  max: 2 } }
+    pay:        { size: small   scaling: { min: 1  max: 2 } }
+    core:       { size: medium  scaling: { min: 1  max: 2 } }
+    hubspot:    { size: medium  scaling: { min: 1  max: 2 } }
+    notify:     { size: medium  scaling: { min: 1  max: 2 } }
+}
+
+deploy prd:marstech to aws as prd-me {
+    region: [ me-central:1 ]
+
+    main:       { size: small  storage: 20 }
+
+    api-gen:    { size: medium  scaling: { min: 1  max: 2 } }
+    hub:        { size: small   scaling: { min: 1  max: 1 } }
+    product-wf: { size: small   scaling: { min: 1  max: 1 } }
+    metrics:    { size: small   scaling: { min: 1  max: 1 } }
+    media:      { size: small   scaling: { min: 1  max: 1 } }
+    pay:        { size: small   scaling: { min: 1  max: 1 } }
+    core:       { size: small   scaling: { min: 1  max: 1 } }
+    hubspot:    { size: small   scaling: { min: 1  max: 1 } }
+    notify:     { size: small   scaling: { min: 1  max: 1 } }
+}
