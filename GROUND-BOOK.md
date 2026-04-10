@@ -699,3 +699,193 @@ Resolving `prod` produces:
 - `api`: fires `(svc: service)`
 - `api → main`: fires `(from: service, to: database)`
 - `api → users`: fires `(from: service, to: service)`
+
+## TypeScript functions
+
+A type function can name a TypeScript implementation that computes its output links. The name sits between `=` and the output body:
+
+```ground
+type (svc: service, vpc_id: string) = make_service {
+    link sg  = aws_security_group
+    link ecs = aws_ecs_service
+}
+```
+
+Ground generates TypeScript interfaces for both sides. The user implements the pure function:
+
+```typescript
+// generated
+interface MakeServiceInput  { svc: { name: string }; vpc_id: string }
+interface MakeServiceOutput { sg: AwsSecurityGroup; ecs: AwsEcsService }
+
+// user implements
+export function make_service(input: MakeServiceInput): MakeServiceOutput { ... }
+```
+
+The function name is optional. Without it, output values come from ref expressions or further Ground decomposition:
+
+```ground
+# ref expressions — no function needed
+type (svc: service, vpc_id: string) = {
+    sg:  aws_security_group { name: {svc.name}-sg  vpc_id: {vpc_id} }
+    ecs: aws_ecs_service    { name: {svc.name}-svc  sg_name: {svc.name}-sg }
+}
+```
+
+The function name is mandatory when all output links are primitive types — Ground has no other way to produce their values:
+
+```ground
+# string outputs cannot be produced by decomposition — function is mandatory
+type aws_security_group(svc: service, vpc_id: string) = make_sg {
+    link name   = string
+    link vpc_id = string
+}
+```
+
+The hook can be placed at any level of the output hierarchy. Coarser means TypeScript handles more; finer means Ground handles more structure, TypeScript only at the leaves:
+
+```ground
+# coarse — one function produces everything
+type (svc: service, vpc_id: string) = make_service {
+    link sg  = aws_security_group
+    link ecs = aws_ecs_service
+}
+
+# fine — Ground holds the structure, TypeScript only at terminal types
+type (svc: service, vpc_id: string) = {
+    link sg  = aws_security_group
+    link ecs = aws_ecs_service
+}
+
+type aws_security_group(svc: service, vpc_id: string) = make_sg {
+    link name   = string
+    link vpc_id = string
+}
+
+type aws_ecs_service(svc: service, sg: aws_security_group) = make_ecs {
+    link name    = string
+    link sg_name = string
+}
+```
+
+Both produce identical output — the difference is where the computation boundary sits.
+
+### Complete example
+
+```ground
+type service = {
+    link name = string
+}
+
+type aws_security_group = {
+    link name   = string
+    link vpc_id = string
+}
+
+type aws_ecs_service = {
+    link name    = string
+    link sg_name = string
+}
+
+type (svc: service, vpc_id: string) = make_service {
+    link sg  = aws_security_group
+    link ecs = aws_ecs_service
+}
+
+service payments { name: payments }
+service api      { name: api }
+
+stack prod {
+    payments
+    api
+}
+```
+
+Resolving `prod` with `vpc_id = "vpc-abc"` calls `make_service` once per service.
+Ground generates the input and output interfaces; the user fills in the function body:
+
+```typescript
+export function make_service({ svc, vpc_id }: MakeServiceInput): MakeServiceOutput {
+    return {
+        sg:  { name: `${svc.name}-sg`,  vpc_id },
+        ecs: { name: `${svc.name}-svc`, sg_name: `${svc.name}-sg` },
+    }
+}
+```
+
+Output for `prod`:
+```
+payments → sg: { name: "payments-sg", vpc_id: "vpc-abc" }
+           ecs: { name: "payments-svc", sg_name: "payments-sg" }
+api      → sg: { name: "api-sg",      vpc_id: "vpc-abc" }
+           ecs: { name: "api-svc",     sg_name: "api-sg" }
+```
+
+## Resolution
+
+Ground produces output by resolving the final graph. Applying a stack triggers resolution
+of every node and every link. For each link value, Ground tries three things in order:
+
+1. A **ref expression** provides the value directly — `name: {svc.name}-sg`
+2. A **TypeScript hook** on the enclosing type function provides it — `= make_sg { ... }`
+3. **Further decomposition** — the link's type is itself a type function that resolves recursively
+
+If none of these apply, the link is unresolvable — a compile error.
+
+A bare primitive link with no ref and no hook is always an error:
+
+```ground
+type aws_security_group(svc: service, vpc_id: string) = {
+    link name   = string   # error: name cannot be resolved
+    link vpc_id = string   # error: vpc_id cannot be resolved
+}
+```
+
+`string` is a terminal type — there is no further decomposition and no ref expression
+has been given. Ground cannot produce the value. A hook or a ref is required:
+
+```ground
+# resolved via ref expression — no hook needed
+type aws_security_group(svc: service, vpc_id: string) = {
+    name:   {svc.name}-sg
+    vpc_id: {vpc_id}
+}
+
+# resolved via TypeScript hook — no ref needed
+type aws_security_group(svc: service, vpc_id: string) = make_sg {
+    link name   = string
+    link vpc_id = string
+}
+```
+
+TypeScript hooks are not a special transformation phase — they are one resolution
+mechanism among others. Ground simply tries to resolve every link in the graph and
+stops, with an error, wherever resolution is not possible.
+
+## Ref expressions and TypeScript values (raw idea)
+
+Ref expressions currently reach into Ground-resolved values using dot syntax:
+
+```ground
+{svc.name}         # name field of svc
+{svc.scaling.max}  # nested field
+```
+
+An open question: can dot syntax reach into TypeScript-produced values the same way?
+
+```ground
+# hypothetical — ts function result used inline in a ref expression
+type (cidr: string, azs: [string]) = {
+    first_public: {allocate_subnets(cidr, azs).public.first.cidr_block}
+}
+```
+
+The idea is that any ref segment could resolve through a TypeScript function call,
+making TS results first-class values in Ground's ref system. A TypeScript function
+becomes callable anywhere a ref expression is valid — not just as a named hook on a
+type function body, but inline, as a value source.
+
+This would allow fine-grained use of TypeScript computation without declaring a full
+type function: individual field values can call TypeScript directly, while the
+surrounding structure remains Ground. The exact syntax and resolution semantics are
+not yet defined.

@@ -1,0 +1,231 @@
+use std
+
+# ── Networking ───────────────────────────────────────────────────────────────────
+
+type aws_vpc = {
+    link cidr_block           = string
+    link enable_dns_support   = boolean
+    link enable_dns_hostnames = boolean
+}
+
+type aws_internet_gateway = {
+    link vpc = aws_vpc
+}
+
+type aws_subnet = {
+    link vpc                     = aws_vpc
+    link cidr_block              = string
+    link availability_zone       = string
+    link map_public_ip_on_launch = boolean
+}
+
+type aws_eip = {
+    type domain = vpc
+}
+
+type aws_nat_gateway = {
+    link subnet     = aws_subnet
+    link allocation = aws_eip
+}
+
+type aws_route_table = {
+    link vpc    = aws_vpc
+    link routes = [ type route = {
+        link cidr_block = string
+        link gateway    = aws_internet_gateway | aws_nat_gateway
+    }]
+}
+
+type aws_route_table_association = {
+    link subnet      = aws_subnet
+    link route_table = aws_route_table
+}
+
+type aws_security_group = {
+    link vpc         = aws_vpc
+    link name        = string
+    link description = string
+}
+
+type aws_vpc_security_group_ingress_rule = {
+    link security_group            = aws_security_group
+    link from_port                 = int
+    link to_port                   = int
+    link ip_protocol               = string
+    link cidr_ipv4                 = string
+    link referenced_security_group = aws_security_group
+}
+
+type aws_vpc_security_group_egress_rule = {
+    link security_group = aws_security_group
+    link cidr_ipv4      = string
+    link ip_protocol    = string
+}
+
+# ── IAM ──────────────────────────────────────────────────────────────────────────
+
+type aws_iam_role = {
+    link name               = string
+    link assume_role_policy = string
+}
+
+type aws_iam_role_policy_attachment = {
+    link role       = aws_iam_role
+    link policy_arn = string
+}
+
+type aws_iam_role_policy = {
+    link name   = string
+    link role   = aws_iam_role
+    link policy = string
+}
+
+# ── CloudWatch ───────────────────────────────────────────────────────────────────
+
+type aws_cloudwatch_log_group = {
+    link name              = string
+    link retention_in_days = int
+}
+
+# ── ECS ──────────────────────────────────────────────────────────────────────────
+
+type aws_ecs_cluster = {
+    link name = string
+}
+
+type aws_service_discovery_private_dns_namespace = {
+    link name = string
+    link vpc  = aws_vpc
+}
+
+type aws_ecs_task_definition = {
+    link family                   = string
+    type network_mode             = awsvpc | bridge | host | none
+    link requires_compatibilities = [ type compatibility = FARGATE | EC2 ]
+    link cpu                      = int
+    link memory                   = int
+    link execution_role           = aws_iam_role
+    link task_role                = aws_iam_role
+    link log_group                = aws_cloudwatch_log_group
+}
+
+type aws_ecs_service = {
+    link name            = string
+    link cluster         = aws_ecs_cluster
+    link task_definition = aws_ecs_task_definition
+    link desired_count   = int
+    type launch_type     = FARGATE | EC2
+    link subnets         = [ aws_subnet ]
+    link security_groups = [ aws_security_group ]
+}
+
+# ── RDS ──────────────────────────────────────────────────────────────────────────
+
+type aws_db_subnet_group = {
+    link name    = string
+    link subnets = [ aws_subnet ]
+}
+
+type aws_db_instance = {
+    link identifier          = string
+    type engine              = postgres | mysql
+    link engine_version      = string
+    link instance_class      = string
+    link allocated_storage   = int
+    link db_name             = string
+    link username            = string
+    link subnet_group        = aws_db_subnet_group
+    link security_groups     = [ aws_security_group ]
+    link skip_final_snapshot = boolean
+}
+
+# ── S3 ───────────────────────────────────────────────────────────────────────────
+
+type aws_s3_bucket = {
+    link bucket = string
+}
+
+# ── Secrets Manager ──────────────────────────────────────────────────────────────
+
+type aws_secretsmanager_secret = {
+    link name                    = string
+    link recovery_window_in_days = int
+}
+
+# ── Route53 / ACM ────────────────────────────────────────────────────────────────
+
+type aws_route53_zone = {
+    link name = string
+}
+
+type aws_acm_certificate = {
+    link domain_name               = string
+    link subject_alternative_names = [ string ]
+    link zone                      = aws_route53_zone
+    type validation_method         = DNS | EMAIL
+}
+
+type aws_route53_record = {
+    link zone        = aws_route53_zone
+    link name        = string
+    type record_type = A | CNAME | MX | TXT
+    link ttl         = int
+    link records     = [ string ]
+}
+
+type aws_acm_certificate_validation = {
+    link certificate        = aws_acm_certificate
+    link validation_records = [ aws_route53_record ]
+}
+
+# ── ALB ──────────────────────────────────────────────────────────────────────────
+
+type aws_lb = {
+    link name               = string
+    type load_balancer_type = application | network
+    type scheme             = internal | internet-facing
+    link vpc                = aws_vpc
+    link security_groups    = [ aws_security_group ]
+}
+
+type redirect_action = {
+    link port        = int
+    type protocol    = HTTP | HTTPS
+    link status_code = string
+}
+
+type fixed_response_action = {
+    link content_type = string
+    link message_body = string
+    link status_code  = string
+}
+
+type aws_lb_listener = {
+    link load_balancer  = aws_lb
+    link port           = int
+    type protocol       = HTTP | HTTPS
+    link ssl_policy     = string
+    link certificate    = aws_acm_certificate_validation
+    link default_action = redirect_action | fixed_response_action
+}
+
+type aws_lb_listener_certificate = {
+    link listener    = aws_lb_listener
+    link certificate = aws_acm_certificate_validation
+}
+
+type aws_lb_target_group = {
+    link name                 = string
+    link port                 = int
+    type protocol             = HTTP | HTTPS
+    type target_type          = ip | instance | lambda
+    link vpc                  = aws_vpc
+    link health_check_path    = string
+    link health_check_matcher = string
+}
+
+type aws_lb_listener_rule = {
+    link listener     = aws_lb_listener
+    link target_group = aws_lb_target_group
+    link host_header  = string
+}
