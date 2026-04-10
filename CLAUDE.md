@@ -8,61 +8,11 @@ Ground is an architecture definition language. Infrastructure is derived.
 - Compiler passes, codegen pipeline, error reporting
 - Ask: "How does X work in ground_compile?" → spawn Tassadar to explore and report back
 
-**Fenix** (Terraform Backend Expert) — delegate all exploration and questions about AWS Terraform generation:
-- Root: `ground_be_terra/` crate
-- Template rendering, resource naming, tagging rules, HCL generation
-- Ask: "How is X generated in ground_be_terra?" → spawn Fenix to explore and report back
-
-**Artanis** (Real Infra Reader) — read-only reference for real-world Terraform patterns:
-- Root: `../../moontech/repo/infra-cloud-aws/` (never write, never modify)
-- Use to understand how real AWS resources are structured, named, tagged in production
-- Ask: "What does real infra look like for X?" → spawn Artanis to explore and report back
-
 ## Current focus
 
-We are trying to explore minimal syntax / grammar for the Ground language that will allow us to define an architecture of any system abstracting over raw provider specific details, but still keeping it definitive. For that we use real infra in terraform and defining it in `./mvp/`. We need to keep in mind the whole flow:
+Our main focus currently is the Ground Book. It was written to sketch the foundational concepts and usage patterns of the Ground language. Our goal is to make it strict, consistent and complete, while keeping it's current style and approach. In the `mvp` folder there is a full real world example that contains some concepts yet not described in the Ground Book.
 
-1. Ground has predefined entities to describe arcitecture: std pack
-2. Ground has predefined vendor entites in packs: std:aws, std:gcp etc. For now we only focus on aws
-3. Ground has predefined transformations defined for std -> std:aws
-4. Ground has predefined templates to render terraform out of std:aws
-
-Current grammar is described in GROUND-BOOK.md. Nothing is set in stone, we're exploring possibilities, but we want to be consistent with basic ideas of the ground language: types & links. Some of the possibilities like nested structs are not described and implemented but used in marstech.
-
-**File layout:** `mvp/` is the working example project:
-- `mvp/std.grd` — std pack (no pack wrapper; file = pack)
-- `mvp/marstech/pack.grd` — marstech root (shared declarations, e.g. `secret datadog`)
-- `mvp/marstech/app.grd`, `poc.grd`, `ops.grd`, `routing.grd` — sub-packs
-- `mvp/marstech/env/prd.grd`, `stg.grd` — environment spaces + deploy configs
-- `mvp/marstech.tf` — hand-written Terraform derived from marstech, covering prd-eu, prd-me, stg-eu
-
-**Pack syntax conventions:**
-- File path = pack identity; no `pack foo { }` wrapper needed
-- Empty bodies omitted: `service hub` not `service hub { }`
-- `use` imports are file-level or inside a scope that needs them
-
-Main questions we should always ask ourselves:
-
-1. What to have on architecture definition layer
-2. What to have on vendor layer
-3. What to have on templates layer
-
-**Heuristic for std layer:** a concept belongs in `std` if it is (1) consistent across all vendors and (2) architecturally intentional — the architect consciously names and places it, rather than it being auto-generated per-service. IAM roles and security groups fail criterion 2 (derived). CloudWatch log groups fail both. `database`, `bucket`, `secret`, `domain` pass both.
-
-In general we want to keep templates layer dumb: simple foreach, ifs, no new concepts are created in it. The vendor layer must mirror the **complete** Terraform resource structure — every resource type and every attribute, including those that are fully derived (security groups, IAM roles, route tables, CloudWatch log groups, etc.). Templates receive fully-resolved vendor entities and only render them; they never invent structure.
-
-Our current plan is:
-
-1. **[ACTIVE]** Make marstech definitive and complete.
-   - Method: explore real infra (via Artanis) and map every resource/pattern into marstech
-   - Real infra is the floor, not the ceiling — also consider common architectural patterns not yet
-     present in marstech (queues, caches, CDN, workers, etc.) and decide what belongs in std
-   - Done when: marstech fully represents the real system AND exposes the language capabilities
-     needed for a general architecture definition language
-   - Do NOT touch the compiler, IR, templates, or backend crates during this step
-2. Define comprehensive vendor entities for aws to completely cover marstech.
-3. Define transformations from std types & links to std:aws — most complex and crucial step.
-4. Define aws templates that will give us complete real terraform structure.
+We are doing this with perspective to work on the actual implementation of the compiler, resolver and other phases in the project.
 
 ## Default behavior
 

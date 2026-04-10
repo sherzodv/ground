@@ -39,6 +39,10 @@ deploy shop to aws as shop-eu-central {
 }
 ```
 
+**Heuristic for std layer:** a concept belongs in `std` if it is (1) consistent across all vendors and (2) architecturally intentional — the architect consciously names and places it, rather than it being auto-generated per-service. IAM roles and security groups fail criterion 2 (derived). CloudWatch log groups fail both. `database`, `bucket`, `secret`, `domain` pass both.
+
+In general we want to keep templates layer dumb: simple foreach, ifs, no new concepts are created in it. The vendor layer must mirror the **complete** Terraform resource structure — every resource type and every attribute, including those that are fully derived (security groups, IAM roles, route tables, CloudWatch log groups, etc.). Templates receive fully-resolved vendor entities and only render them; they never invent structure.
+
 ---
 ## CLI
 
