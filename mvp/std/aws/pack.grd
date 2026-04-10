@@ -229,3 +229,14 @@ type aws_lb_listener_rule = {
     link target_group = aws_lb_target_group
     link host_header  = string
 }
+
+# ── Deploy ───────────────────────────────────────────────────────────────────────
+
+deploy aws_deploy = {
+    link vpc             = aws_vpc
+    link public_subnets  = [ aws_subnet ]
+    link private_subnets = [ aws_subnet ]
+    link internet_gw     = aws_internet_gateway
+    link nat_gw          = aws_nat_gateway
+    link lb              = aws_lb
+}

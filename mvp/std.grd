@@ -5,6 +5,10 @@ type bucket = {
     type access = read | write
 }
 
+type database = {
+    link engine = postgres | mysql
+}
+
 type domain = {
     link host = string
 }
@@ -33,4 +37,30 @@ type secret
 
 type stack = {
     link = [ type:service | type:database | type:bucket | type:edge | type:domain | type:space | type:secret ]
+}
+
+type size = small | medium | large | xlarge
+
+type scaling = {
+    link min = int
+    link max = int
+}
+
+type service_config = {
+    link service = service
+    link size    = size
+    link scaling = scaling
+}
+
+type database_config = {
+    link database = database
+    link size     = size
+    link storage  = int
+}
+
+type deploy = {
+    link stack     = stack
+    link region    = [ string ]
+    link services  = [ service_config ]
+    link databases = [ database_config ]
 }

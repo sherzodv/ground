@@ -25,6 +25,15 @@ space prd {
         services: [ service:product-wf ]
     }
 
+    space api {
+        host:     api
+        services: [
+            service:api-gen
+            service:hub
+            service:metrics
+        ]
+    }
+
     stack marstech {
         service:api-gen
         service:hub
@@ -47,6 +56,7 @@ space prd {
         domain:influencer-ae
         space:app
         space:poc
+        space:api
         edge:edge-api
         edge:edge-hub
         edge:edge-workflows
@@ -54,38 +64,44 @@ space prd {
     }
 }
 
-deploy prd:marstech to aws as prd-eu {
-    region: [
-        eu-central:1
-        eu-central:2
-        eu-central:3
+aws_deploy prd-eu {
+    stack:  marstech
+    region: [ eu-central:1  eu-central:2  eu-central:3 ]
+
+    databases: [
+        { database: main  size: medium  storage: 20 }
     ]
 
-    main:       { size: medium  storage: 20 }
-
-    api-gen:    { size: large   scaling: { min: 1  max: 4 } }
-    hub:        { size: medium  scaling: { min: 1  max: 2 } }
-    product-wf: { size: medium  scaling: { min: 1  max: 2 } }
-    metrics:    { size: small   scaling: { min: 1  max: 1 } }
-    media:      { size: medium  scaling: { min: 1  max: 2 } }
-    pay:        { size: small   scaling: { min: 1  max: 2 } }
-    core:       { size: medium  scaling: { min: 1  max: 2 } }
-    hubspot:    { size: medium  scaling: { min: 1  max: 2 } }
-    notify:     { size: medium  scaling: { min: 1  max: 2 } }
+    services: [
+        { service: api-gen     size: large   scaling: { min: 1  max: 4 } }
+        { service: hub         size: medium  scaling: { min: 1  max: 2 } }
+        { service: product-wf  size: medium  scaling: { min: 1  max: 2 } }
+        { service: metrics     size: small   scaling: { min: 1  max: 1 } }
+        { service: media       size: medium  scaling: { min: 1  max: 2 } }
+        { service: pay         size: small   scaling: { min: 1  max: 2 } }
+        { service: core        size: medium  scaling: { min: 1  max: 2 } }
+        { service: hubspot     size: medium  scaling: { min: 1  max: 2 } }
+        { service: notify      size: medium  scaling: { min: 1  max: 2 } }
+    ]
 }
 
-deploy prd:marstech to aws as prd-me {
+aws_deploy prd-me {
+    stack:  marstech
     region: [ me-central:1 ]
 
-    main:       { size: small  storage: 20 }
+    databases: [
+        { database: main  size: small  storage: 20 }
+    ]
 
-    api-gen:    { size: medium  scaling: { min: 1  max: 2 } }
-    hub:        { size: small   scaling: { min: 1  max: 1 } }
-    product-wf: { size: small   scaling: { min: 1  max: 1 } }
-    metrics:    { size: small   scaling: { min: 1  max: 1 } }
-    media:      { size: small   scaling: { min: 1  max: 1 } }
-    pay:        { size: small   scaling: { min: 1  max: 1 } }
-    core:       { size: small   scaling: { min: 1  max: 1 } }
-    hubspot:    { size: small   scaling: { min: 1  max: 1 } }
-    notify:     { size: small   scaling: { min: 1  max: 1 } }
+    services: [
+        { service: api-gen     size: medium  scaling: { min: 1  max: 2 } }
+        { service: hub         size: small   scaling: { min: 1  max: 1 } }
+        { service: product-wf  size: small   scaling: { min: 1  max: 1 } }
+        { service: metrics     size: small   scaling: { min: 1  max: 1 } }
+        { service: media       size: small   scaling: { min: 1  max: 1 } }
+        { service: pay         size: small   scaling: { min: 1  max: 1 } }
+        { service: core        size: small   scaling: { min: 1  max: 1 } }
+        { service: hubspot     size: small   scaling: { min: 1  max: 1 } }
+        { service: notify      size: small   scaling: { min: 1  max: 1 } }
+    ]
 }

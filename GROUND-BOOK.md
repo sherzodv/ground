@@ -889,3 +889,38 @@ This would allow fine-grained use of TypeScript computation without declaring a 
 type function: individual field values can call TypeScript directly, while the
 surrounding structure remains Ground. The exact syntax and resolution semantics are
 not yet defined.
+
+## Best practices
+
+### Expressing phases through types
+
+When resolution must happen in stages, declare the phase boundary as a type.
+
+A common pattern: a deploy entity must produce networking infrastructure before
+individual services can be expanded. Rather than declaring phases explicitly, make
+the phase-1 output a named type with the produced artifacts as links. Phase-2
+functions take that type as an arg — Ground derives ordering from the arg graph.
+
+```ground
+# Phase 1 — deploy produces infra
+type (d: aws_deploy) = make_aws_deploy {
+    link vpc             = aws_vpc
+    link private_subnets = [ aws_subnet ]
+}
+
+# Phase 2 — service takes deploy (with infra already filled)
+type (svc: service, sp: space, d: aws_deploy) = make_service {
+    link sg  = aws_security_group
+    link ecs = aws_ecs_service
+}
+```
+
+`make_service` takes `d: aws_deploy` as an arg. Ground knows `aws_deploy` must resolve
+first. The dependency graph is the execution plan — no explicit `before`/`after` needed.
+
+This is the same principle Terraform uses: attribute references are implicit dependencies.
+In Ground, args are implicit dependencies.
+
+The same pattern applies to edge rules after node rules: edge functions reference node
+outputs (security group names, IAM role ARNs) by naming convention, so they implicitly
+depend on node expansion having run.
