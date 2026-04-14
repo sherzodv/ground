@@ -10,7 +10,7 @@ Ground is an architecture definition language. Infrastructure is derived.
 
 ## Current focus
 
-Our main focus currently is the Ground Book. It was written to sketch the foundational concepts and usage patterns of the Ground language. Our goal is to make it strict, consistent and complete, while keeping it's current style and approach. In the `mvp` folder there is a full real world example that contains some concepts yet not described in the Ground Book.
+Our main focus currently is the Ground Book. It was written to sketch the foundational concepts and usage patterns of the Ground language. Our goal is to make it strict, consistent and complete, while keeping it's current incremental explanational approach. In the `mvp` folder there is a full real world example defined in an old, yet inconsistent Ground syntax. We need to fully rewrite mvp in a consistent and complete way, connecting all the dots. Mvp should not loose any current information.
 
 We are doing this with perspective to work on the actual implementation of the compiler, resolver and other phases in the project.
 
@@ -24,11 +24,9 @@ We are doing this with perspective to work on the actual implementation of the c
 ## Agent coordination rules
 
 - **Spawn agents for exploration, not for decisions.** Agents read and report; you synthesize and decide.
-- **One agent per domain per task.** Don't spawn Tassadar and Fenix for the same question — if the task spans both, ask one to explore first, then the other with context from the first.
+- **One agent per domain per task.**
 - **Front-load the prompt.** Give the agent: (1) the specific question, (2) the suspected location, (3) what you already know. No vague asks.
 - **Cap scope.** Ask agents to return findings in under 300 words. Summaries, not dumps.
-- **Artanis is reference-only.** Never use Artanis findings as requirements — only as real-world pattern reference.
-- **Parallel-spawn when independent.** If questions to Tassadar and Fenix don't depend on each other, spawn both simultaneously.
 
 ## When NOT to consult
 

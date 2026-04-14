@@ -30,7 +30,7 @@ space stg {
     }
 }
 
-aws_deploy stg-eu {
+deploy stg-eu {
     stack:  marstech
     region: [ eu-central:1 ]
 
@@ -42,3 +42,5 @@ aws_deploy stg-eu {
         { service: api-gen  size: small  scaling: { min: 1  max: 1 } }
     ]
 }
+
+plan stg-eu

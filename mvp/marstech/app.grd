@@ -7,7 +7,7 @@ secret hubspot
 secret notify
 
 database main {
-    engine: postgresql
+    engine: postgres
 }
 
 bucket media {
@@ -16,10 +16,10 @@ bucket media {
 
 service api-gen {
     access: [
-        database:main
-        service:media:http
-        service:pay:http
-        service:core:http
+        main              # database — unambiguous, only 'main' in scope
+        media:http        # service — :http port disambiguates from bucket:media
+        pay:http          # service — :http port disambiguates from secret:pay
+        core:http         # service — :http port disambiguates from secret:core
     ]
 }
 
@@ -27,27 +27,27 @@ service hub
 
 service media {
     access: [
-        database:main
-        bucket:media:write
-        secret:media
+        main
+        media:write          # bucket — :write access disambiguates from service:media
+        def:secret:media     # secret — explicit, 'media' alone would be ambiguous
     ]
 }
 
 service pay {
-    access: [ database:main  secret:pay ]
+    access: [ main  def:secret:pay ]
 }
 
 service core {
-    access:  [ secret:core ]
+    access:  [ def:secret:core ]
     observe: { tracing: true }
 }
 
 service hubspot {
-    access:  [ secret:hubspot  secret:datadog ]
+    access:  [ def:secret:hubspot  datadog ]
     observe: { tracing: true  datadog: true }
 }
 
 service notify {
-    access:  [ secret:notify  secret:datadog ]
+    access:  [ def:secret:notify  datadog ]
     observe: { tracing: true  datadog: true }
 }

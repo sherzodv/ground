@@ -1,66 +1,72 @@
-type boolean = true | false
+boolean = true | false
 
-type bucket = {
-    link name   = string
-    type access = read | write
+bucket = {
+    name   = string
+    access = read | write
 }
 
-type database = {
-    link engine = postgres | mysql
+database = {
+    engine = postgres | mysql
 }
 
-type domain = {
-    link host = string
+domain = {
+    host = string
 }
 
-type space = {
-    link host     = string
-    link services = [ service ]
+space = {
+    host     = string
+    services = [ service ]
 }
 
-type edge = {
-    link domain  = domain
-    link sub     = string
-    link backend = service
+edge = {
+    domain  = domain
+    sub     = string
+    backend = service
 }
 
-type service = {
-    type port    = grpc | http
-    link access  = [ service:(port) | database | bucket:(access) | secret ]
-    link observe = type observe = {
-        link tracing = boolean
-        link datadog = boolean
-    }
+observe = {
+    tracing = boolean
+    datadog = boolean
 }
 
-type secret
-
-type stack = {
-    link = [ type:service | type:database | type:bucket | type:edge | type:domain | type:space | type:secret ]
+# HACK 1: access encodes a typed permission graph — (port) and (access) optional
+# qualifiers give each edge semantic type, making this an adjacency schema, not a list of strings
+service = {
+    port    = grpc | http
+    access  = [ service:(port) | database | bucket:(access) | secret ]
+    observe = observe
 }
 
-type size = small | medium | large | xlarge
+secret
 
-type scaling = {
-    link min = int
-    link max = int
+# HACK 2: stack uses an anonymous field — a typed heterogeneous bag with no field names,
+# just typed slots. The membership list has no keys, only types.
+stack = {
+    = [ def:service | def:database | def:bucket | def:edge | def:domain | def:space | def:secret ]
 }
 
-type service_config = {
-    link service = service
-    link size    = size
-    link scaling = scaling
+size = small | medium | large | xlarge
+
+scaling = {
+    min = integer
+    max = integer
 }
 
-type database_config = {
-    link database = database
-    link size     = size
-    link storage  = int
+service_config = {
+    service = service
+    size    = size
+    scaling = scaling
 }
 
-type deploy = {
-    link stack     = stack
-    link region    = [ string ]
-    link services  = [ service_config ]
-    link databases = [ database_config ]
+database_config = {
+    database = database
+    size     = size
+    storage  = integer
+}
+
+deploy = {
+    stack     = stack
+    region    = [ string ]
+    services  = [ service_config ]
+    databases = [ database_config ]
 }

@@ -10,9 +10,23 @@ type BucketAccess = 'read' | 'write';
 type DbEngine = 'postgres' | 'mysql';
 type Size = 'small' | 'medium' | 'large' | 'xlarge';
 
+interface StdObserve {
+  tracing: boolean;
+  datadog: boolean;
+}
+
+// Typed access items — each carries resolved resources needed to produce AWS rules
+type AccessItem =
+  | { kind: 'service'; target: StdService; port: ServicePort; target_sg: AwsSecurityGroup }
+  | { kind: 'database'; target: StdDatabase; target_sg: AwsSecurityGroup }
+  | { kind: 'bucket'; target: StdBucket; access: BucketAccess; s3: AwsS3Bucket }
+  | { kind: 'secret'; target: StdSecret; sm: AwsSecretsManagerSecret };
+
 interface StdService {
   name: string;
   port: ServicePort;
+  access: AccessItem[];
+  observe: StdObserve;
 }
 
 interface StdDatabase {
@@ -473,16 +487,13 @@ export function make_lb_listener(i: MakeLbListenerI): MakeLbListenerO {
 export interface MakeServiceI {
   svc: StdService;
   sp: StdSpace;
-  // aws_deploy fields needed for placement
   d: {
     stack_name: string;
     vpc: AwsVpc;
     private_subnets: AwsSubnet[];
   };
-  // from deploy service_config
   size: Size;
   scaling: StdScaling;
-  // cluster produced by make_space for this space
   cluster: AwsEcsCluster;
 }
 
@@ -495,6 +506,9 @@ export interface MakeServiceO {
   exec_policy: AwsIamRolePolicyAttachment;
   task_role: AwsIamRole;
   log: AwsCloudwatchLogGroup;
+  db_ingresses: AwsVpcSecurityGroupIngressRule[];
+  svc_ingresses: AwsVpcSecurityGroupIngressRule[];
+  iam_policies: AwsIamRolePolicy[];
 }
 
 export function make_service(i: MakeServiceI): MakeServiceO {
@@ -553,7 +567,64 @@ export function make_service(i: MakeServiceI): MakeServiceO {
     security_groups: [sg],
   };
 
-  return { sg, egress, ecs, task_def, exec_role, exec_policy, task_role, log };
+  // Access dispatch — TypeScript pattern-matches the typed access list and produces
+  // the appropriate AWS resources for each relationship kind
+  const db_ingresses: AwsVpcSecurityGroupIngressRule[] = [];
+  const svc_ingresses: AwsVpcSecurityGroupIngressRule[] = [];
+  const iam_policies: AwsIamRolePolicy[] = [];
+
+  for (const item of svc.access) {
+    switch (item.kind) {
+      case 'database': {
+        const port = DB_PORT[item.target.engine];
+        db_ingresses.push({
+          security_group: item.target_sg,
+          from_port: port,
+          to_port: port,
+          ip_protocol: 'tcp',
+          referenced_security_group: sg,
+        });
+        break;
+      }
+      case 'service': {
+        svc_ingresses.push({
+          security_group: item.target_sg,
+          from_port: 0,
+          to_port: 65535,
+          ip_protocol: 'tcp',
+          referenced_security_group: sg,
+        });
+        break;
+      }
+      case 'secret': {
+        const secretArn = `arn:aws:secretsmanager:*:*:secret:${item.sm.name}-*`;
+        iam_policies.push({
+          name: `${svc.name}-${item.target.name}-secret-policy`,
+          role: task_role,
+          policy: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: ['secretsmanager:GetSecretValue'], Resource: secretArn }],
+          }),
+        });
+        break;
+      }
+      case 'bucket': {
+        const resource = `arn:aws:s3:::${item.s3.bucket}/*`;
+        const actions = item.access === 'read' ? ['s3:GetObject'] : ['s3:PutObject', 's3:DeleteObject'];
+        iam_policies.push({
+          name: `${svc.name}-${item.target.name}-bucket-policy`,
+          role: task_role,
+          policy: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: actions, Resource: resource }],
+          }),
+        });
+        break;
+      }
+    }
+  }
+
+  return { sg, egress, ecs, task_def, exec_role, exec_policy, task_role, log, db_ingresses, svc_ingresses, iam_policies };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -782,145 +853,3 @@ export function make_space(i: MakeSpaceI): MakeSpaceO {
   return { cluster, namespace };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 10. make_service_database_access
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface MakeServiceDatabaseAccessI {
-  from: StdService;
-  to: StdDatabase;
-  // security groups produced by make_service / make_database
-  from_sg: AwsSecurityGroup;
-  to_sg: AwsSecurityGroup;
-}
-
-export interface MakeServiceDatabaseAccessO {
-  ingress: AwsVpcSecurityGroupIngressRule;
-}
-
-export function make_service_database_access(i: MakeServiceDatabaseAccessI): MakeServiceDatabaseAccessO {
-  const port = DB_PORT[i.to.engine];
-
-  const ingress: AwsVpcSecurityGroupIngressRule = {
-    security_group: i.to_sg,
-    from_port: port,
-    to_port: port,
-    ip_protocol: 'tcp',
-    referenced_security_group: i.from_sg,
-  };
-
-  return { ingress };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 11. make_service_service_access
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface MakeServiceServiceAccessI {
-  from: StdService;
-  to: StdService;
-  from_sg: AwsSecurityGroup;
-  to_sg: AwsSecurityGroup;
-}
-
-export interface MakeServiceServiceAccessO {
-  ingress: AwsVpcSecurityGroupIngressRule;
-}
-
-export function make_service_service_access(i: MakeServiceServiceAccessI): MakeServiceServiceAccessO {
-  // Full TCP range for service-to-service access, matching marstech.tf pattern
-  const ingress: AwsVpcSecurityGroupIngressRule = {
-    security_group: i.to_sg,
-    from_port: 0,
-    to_port: 65535,
-    ip_protocol: 'tcp',
-    referenced_security_group: i.from_sg,
-  };
-
-  return { ingress };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 12. make_service_secret_access
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface MakeServiceSecretAccessI {
-  from: StdService;
-  to: StdSecret;
-  // task_role produced by make_service for from
-  task_role: AwsIamRole;
-  // sm produced by make_secret for to
-  sm: AwsSecretsManagerSecret;
-}
-
-export interface MakeServiceSecretAccessO {
-  policy: AwsIamRolePolicy;
-}
-
-export function make_service_secret_access(i: MakeServiceSecretAccessI): MakeServiceSecretAccessO {
-  // ARN format uses wildcard suffix because Secrets Manager appends a random 6-char suffix
-  const secretArn = `arn:aws:secretsmanager:*:*:secret:${i.sm.name}-*`;
-
-  const policyDocument = JSON.stringify({
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Effect: 'Allow',
-        Action: ['secretsmanager:GetSecretValue'],
-        Resource: secretArn,
-      },
-    ],
-  });
-
-  const policy: AwsIamRolePolicy = {
-    name: `${i.from.name}-${i.to.name}-secret-policy`,
-    role: i.task_role,
-    policy: policyDocument,
-  };
-
-  return { policy };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 13. make_service_bucket_access
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface MakeServiceBucketAccessI {
-  from: StdService;
-  to: StdBucket;
-  // task_role produced by make_service for from
-  task_role: AwsIamRole;
-  // s3 produced by make_bucket for to
-  s3: AwsS3Bucket;
-}
-
-export interface MakeServiceBucketAccessO {
-  policy: AwsIamRolePolicy;
-}
-
-export function make_service_bucket_access(i: MakeServiceBucketAccessI): MakeServiceBucketAccessO {
-  const resource = `arn:aws:s3:::${i.s3.bucket}/*`;
-
-  const actions = i.to.access === 'read'
-    ? ['s3:GetObject']
-    : ['s3:PutObject', 's3:DeleteObject'];
-
-  const policyDocument = JSON.stringify({
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Effect: 'Allow',
-        Action: actions,
-        Resource: resource,
-      },
-    ],
-  });
-
-  const policy: AwsIamRolePolicy = {
-    name: `${i.from.name}-${i.to.name}-bucket-policy`,
-    role: i.task_role,
-    policy: policyDocument,
-  };
-
-  return { policy };
-}

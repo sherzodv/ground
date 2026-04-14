@@ -64,7 +64,11 @@ space prd {
     }
 }
 
-aws_deploy prd-eu {
+# HACK 3: two plan statements, same stack — independent materializations with
+# different regions and sizing. Ground produces two complete outputs from one
+# architecture definition. plan is a typed execution trigger, not a template call.
+
+deploy prd-eu {
     stack:  marstech
     region: [ eu-central:1  eu-central:2  eu-central:3 ]
 
@@ -85,7 +89,7 @@ aws_deploy prd-eu {
     ]
 }
 
-aws_deploy prd-me {
+deploy prd-me {
     stack:  marstech
     region: [ me-central:1 ]
 
@@ -105,3 +109,6 @@ aws_deploy prd-me {
         { service: notify      size: small   scaling: { min: 1  max: 1 } }
     ]
 }
+
+plan prd-eu
+plan prd-me
