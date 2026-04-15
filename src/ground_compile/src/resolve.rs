@@ -23,6 +23,7 @@ struct Ctx {
     links:    Vec<IrLinkDef>,
     insts:    Vec<IrInstDef>,
     type_fns: Vec<IrTypeFnDef>,
+    hooks:    Vec<IrHookDef>,
     scopes:   Vec<IrScope>,
     errors:   Vec<IrError>,
 }
@@ -42,7 +43,7 @@ impl Ctx {
             anon_pair_fns:  HashMap::new(),
             ambiguous:      HashSet::new(),
         };
-        Ctx { types: vec![], links: vec![], insts: vec![], type_fns: vec![], scopes: vec![root], errors: vec![] }
+        Ctx { types: vec![], links: vec![], insts: vec![], type_fns: vec![], hooks: vec![], scopes: vec![root], errors: vec![] }
     }
 
     fn alloc_type(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, body: IrTypeBody) -> TypeId {
@@ -71,13 +72,23 @@ impl Ctx {
         id
     }
 
+    /// Allocate a struct-body field link without registering it in the scope's
+    /// link name map.  Struct field resolution walks the type's `link_ids` list
+    /// directly (not the scope map), so registration is not needed — and
+    /// skipping it prevents false "duplicate link name" errors when an imported
+    /// link shares the same name as a struct field.
+    fn alloc_struct_link(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, link_type: IrLinkType) -> LinkId {
+        let id = LinkId(self.links.len() as u32);
+        self.links.push(IrLinkDef { name, scope, loc, link_type });
+        id
+    }
+
     fn alloc_inst(&mut self, name: String, scope: ScopeId, loc: IrLoc, type_id: TypeId) -> InstId {
         let id = InstId(self.insts.len() as u32);
-        if self.scopes[scope.0 as usize].insts.contains_key(&name) {
-            self.push_error(format!("duplicate instance name '{}' in scope", name));
-        } else {
-            self.scopes[scope.0 as usize].insts.insert(name.clone(), id);
-        }
+        self.scopes[scope.0 as usize].insts
+            .entry(name.clone())
+            .or_default()
+            .push(id);
         self.insts.push(IrInstDef { type_id, name, type_hint: None, scope, loc, fields: vec![] });
         id
     }
@@ -136,8 +147,22 @@ impl Ctx {
     fn lookup_inst(&self, scope: ScopeId, name: &str) -> Option<InstId> {
         let s = &self.scopes[scope.0 as usize];
         if s.ambiguous.contains(name) { return None; }
-        if let Some(&id) = s.insts.get(name) { return Some(id); }
+        if let Some(ids) = s.insts.get(name) {
+            if ids.len() == 1 { return Some(ids[0]); }
+            if !ids.is_empty() { return None; } // ambiguous type-wise — caller must use lookup_inst_typed
+        }
         s.parent.and_then(|p| self.lookup_inst(p, name))
+    }
+
+    fn lookup_inst_typed(&self, scope: ScopeId, name: &str, type_id: TypeId) -> Option<InstId> {
+        let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) { return None; }
+        if let Some(ids) = s.insts.get(name) {
+            if let Some(&iid) = ids.iter().find(|&&iid| self.insts[iid.0 as usize].type_id == type_id) {
+                return Some(iid);
+            }
+        }
+        s.parent.and_then(|p| self.lookup_inst_typed(p, name, type_id))
     }
 
     fn lookup_pack(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
@@ -277,7 +302,7 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
         };
 
         match val {
-            "pack" | "type" | "link" => {
+            "pack" | "type" | "link" | "def" => {
                 kind_hint = Some(val);
                 continue;
             }
@@ -285,7 +310,7 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
         }
 
         let resolved = match kind_hint {
-            Some("type") => ctx.lookup_type(scope, val)
+            Some("type") | Some("def") => ctx.lookup_type(scope, val)
                 .map(IrRefSegValue::Type)
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
@@ -485,8 +510,10 @@ fn do_wildcard_import(
     }
     if kind == ImportKind::Insts {
         if kind_hint.is_none() || kind_hint == Some("inst") {
-            for (name, &iid) in &src_scope.insts {
-                try_import_inst(name, iid, into, ctx, loc);
+            for (name, iids) in &src_scope.insts {
+                for &iid in iids {
+                    try_import_inst(name, iid, into, ctx, loc);
+                }
             }
         }
     }
@@ -534,8 +561,10 @@ fn do_specific_import(
     }
     if kind == ImportKind::Insts {
         if kind_hint.is_none() || kind_hint == Some("inst") {
-            if let Some(&iid) = src_scope.insts.get(name) {
-                try_import_inst(name, iid, into, ctx, loc);
+            if let Some(iids) = src_scope.insts.get(name) {
+                for &iid in iids {
+                    try_import_inst(name, iid, into, ctx, loc);
+                }
                 found = true;
             }
         }
@@ -556,10 +585,22 @@ fn do_specific_import(
 
 fn try_import_type(name: &str, tid: TypeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    // Idempotent: same type already imported from the same source — skip silently.
+    if let Some(&existing) = ctx.scopes[into.0 as usize].types.get(name) {
+        if existing == tid { return; }
+        // Local definition in this scope — it wins, skip the import silently.
+        if ctx.types[existing.0 as usize].scope == into { return; }
+        // Two different imports conflict.
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+        return;
+    }
     // Types and links are resolved through separate lookup functions, so they
     // can share a name without ambiguity — only a type/type or type/pack clash counts.
-    let conflict = ctx.scopes[into.0 as usize].types.contains_key(name)
-        || ctx.scopes[into.0 as usize].packs.contains_key(name);
+    let conflict = ctx.scopes[into.0 as usize].packs.contains_key(name);
     if conflict {
         ctx.errors.push(IrError {
             message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
@@ -573,10 +614,22 @@ fn try_import_type(name: &str, tid: TypeId, into: ScopeId, ctx: &mut Ctx, loc: &
 
 fn try_import_link(name: &str, lid: LinkId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    // Idempotent: same link already imported from the same source — skip silently.
+    if let Some(&existing) = ctx.scopes[into.0 as usize].links.get(name) {
+        if existing == lid { return; }
+        // Local definition in this scope — it wins, skip the import silently.
+        if ctx.links[existing.0 as usize].scope == into { return; }
+        // Two different imports conflict.
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+        return;
+    }
     // Types and links are resolved through separate lookup functions, so they
     // can share a name without ambiguity — only a link/link or link/pack clash counts.
-    let conflict = ctx.scopes[into.0 as usize].links.contains_key(name)
-        || ctx.scopes[into.0 as usize].packs.contains_key(name);
+    let conflict = ctx.scopes[into.0 as usize].packs.contains_key(name);
     if conflict {
         ctx.errors.push(IrError {
             message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
@@ -590,9 +643,18 @@ fn try_import_link(name: &str, lid: LinkId, into: ScopeId, ctx: &mut Ctx, loc: &
 
 fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    // Idempotent: same pack already imported from the same scope — skip silently.
+    if let Some(&existing) = ctx.scopes[into.0 as usize].packs.get(name) {
+        if existing == sid { return; }
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+        return;
+    }
     let conflict = ctx.scopes[into.0 as usize].types.contains_key(name)
-        || ctx.scopes[into.0 as usize].links.contains_key(name)
-        || ctx.scopes[into.0 as usize].packs.contains_key(name);
+        || ctx.scopes[into.0 as usize].links.contains_key(name);
     if conflict {
         ctx.errors.push(IrError {
             message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
@@ -604,16 +666,15 @@ fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: 
     }
 }
 
-fn try_import_inst(name: &str, iid: InstId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
+fn try_import_inst(name: &str, iid: InstId, into: ScopeId, ctx: &mut Ctx, _loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
-    if ctx.scopes[into.0 as usize].insts.contains_key(name) {
-        ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
-            loc: loc.clone(),
-        });
-        ctx.mark_ambiguous(into, name);
-    } else {
-        ctx.scopes[into.0 as usize].insts.insert(name.to_string(), iid);
+    let already = ctx.scopes[into.0 as usize].insts.get(name)
+        .map_or(false, |v| v.contains(&iid));
+    if !already {
+        ctx.scopes[into.0 as usize].insts
+            .entry(name.to_string())
+            .or_default()
+            .push(iid);
     }
 }
 
@@ -651,6 +712,19 @@ fn pass2_register_names(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                         });
                     }
                 }
+                AstDef::Def(td) => {
+                    // Both plain defs (no input) and hook defs (with input) register a
+                    // named type so they can be referenced.  Hook defs with explicit input
+                    // fields are resolved in pass3; plain defs are resolved there too.
+                    let id = TypeId(ctx.types.len() as u32);
+                    ctx.scopes[scope.0 as usize].types.insert(td.inner.name.inner.clone(), id);
+                    ctx.types.push(IrTypeDef {
+                        name:  Some(td.inner.name.inner.clone()),
+                        scope,
+                        loc:   ir_loc(&td.loc),
+                        body:  IrTypeBody::Enum(vec![]),  // placeholder
+                    });
+                }
                 _ => {}
             }
         }
@@ -665,6 +739,8 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     // Collect all work upfront to avoid mid-iteration borrow issues.
     let mut type_work: Vec<(TypeId, AstNode<AstTypeDef>, ScopeId)> = vec![];
     let mut link_work: Vec<(LinkId, AstNode<AstLinkDef>, ScopeId)> = vec![];
+    let mut def_work:  Vec<(TypeId, AstNode<AstTopDef>,  ScopeId)> = vec![];
+    let mut hook_work: Vec<(TypeId, AstNode<AstTopDef>,  ScopeId)> = vec![];
 
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
@@ -685,6 +761,18 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                         }
                     }
                 }
+                AstDef::Def(td) => {
+                    if let Some(&tid) = ctx.scopes[scope.0 as usize].types.get(&td.inner.name.inner) {
+                        // Route to hook_work if: has input fields OR has an explicit hook name.
+                        // Plain defs (no inputs, no hook name) go to def_work.
+                        let is_hook = !td.inner.input.is_empty() || td.inner.hook.is_some();
+                        if is_hook {
+                            hook_work.push((tid, td.clone(), scope));
+                        } else {
+                            def_work.push((tid, td.clone(), scope));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -701,6 +789,42 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     for (lid, ld, scope) in link_work {
         let lt = resolve_link_type(&ld.inner.ty.inner, ctx, scope, &ir_loc(&ld.loc));
         ctx.links[lid.0 as usize].link_type = lt;
+    }
+
+    for (tid, td, scope) in def_work {
+        let body = resolve_top_def_body(&td.inner, ctx, scope);
+        ctx.types[tid.0 as usize].body = body;
+    }
+
+    for (type_id, td, scope) in hook_work {
+        let name = td.inner.name.inner.clone();
+        let loc  = ir_loc(&td.loc);
+
+        // Resolve input field links (the fields before "=").
+        let inputs: Vec<LinkId> = td.inner.input.iter().map(|field| {
+            let fname = field.inner.name.as_ref().map(|n| n.inner.clone());
+            let floc  = ir_loc(&field.loc);
+            let lt    = resolve_link_type(&field.inner.ty.inner, ctx, scope, &floc);
+            ctx.alloc_struct_link(fname, scope, floc, lt)
+        }).collect();
+
+        // Resolve output struct links (the fields after "=").
+        let outputs = match &td.inner.output.inner {
+            AstTopDefOutput::Struct(items) => resolve_struct_links(items, ctx, scope),
+            _                              => vec![],
+        };
+
+        // Set the type body to all fields (inputs + outputs) so that instances can provide
+        // input values and the resolver accepts them during field validation.
+        let all_links: Vec<LinkId> = inputs.iter().chain(outputs.iter()).copied().collect();
+        ctx.types[type_id.0 as usize].body = IrTypeBody::Struct(all_links);
+
+        // Explicit hook function name between "=" and "{", or the def name by default.
+        let hook_fn = td.inner.hook.as_ref()
+            .map(|h| h.inner.clone())
+            .unwrap_or_else(|| name.clone());
+
+        ctx.hooks.push(IrHookDef { name, hook_fn, type_id, scope, loc, inputs, outputs });
     }
 }
 
@@ -751,6 +875,27 @@ fn pass3b_flatten_alias_types(ctx: &mut Ctx) {
     }
 }
 
+/// Resolve the body of an `AstTopDef` into an `IrTypeBody`.
+/// Called from pass3 (top-level defs) and `resolve_struct_links` (nested defs).
+fn resolve_top_def_body(td: &AstTopDef, ctx: &mut Ctx, scope: ScopeId) -> IrTypeBody {
+    match &td.output.inner {
+        AstTopDefOutput::Unit => IrTypeBody::Enum(vec![]),
+        AstTopDefOutput::TypeExpr(type_node) => {
+            let effective_scope = type_node.inner.scope.map(|s| ScopeId(s.0)).unwrap_or(scope);
+            match &type_node.inner.body.inner {
+                AstTypeDefBody::Ref(r) => {
+                    let ir_ref = resolve_ref(&r.segments, ctx, effective_scope);
+                    IrTypeBody::Enum(vec![ir_ref])
+                }
+                _ => resolve_type_body(&type_node.inner.body, ctx, effective_scope),
+            }
+        }
+        AstTopDefOutput::Struct(items) => {
+            IrTypeBody::Struct(resolve_struct_links(items, ctx, scope))
+        }
+    }
+}
+
 fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: ScopeId) -> IrTypeBody {
     match &body.inner {
         AstTypeDefBody::Primitive(p) => IrTypeBody::Primitive(convert_primitive(p)),
@@ -765,6 +910,8 @@ fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: Scope
         AstTypeDefBody::Struct(items) => {
             IrTypeBody::Struct(resolve_struct_links(items, ctx, scope))
         }
+
+        AstTypeDefBody::Unit => IrTypeBody::Enum(vec![]),
 
         AstTypeDefBody::Ref(_) | AstTypeDefBody::List(_) | AstTypeDefBody::TypeFn(_) => {
             ctx.errors.push(IrError {
@@ -792,6 +939,20 @@ fn resolve_struct_links(items: &[AstNode<AstStructItem>], ctx: &mut Ctx, scope: 
                 // Inline type-defs are hoisted to the type scope by parse;
                 // they are processed via pass2/pass3 on that scope's defs.
             }
+            AstStructItem::Field(fd) => {
+                let name = fd.inner.name.as_ref().map(|n| n.inner.clone());
+                let loc  = ir_loc(&fd.loc);
+                let lt   = resolve_link_type(&fd.inner.ty.inner, ctx, scope, &loc);
+                let lid  = ctx.alloc_struct_link(name, scope, loc, lt);
+                link_ids.push(lid);
+            }
+            AstStructItem::Def(inner_td) => {
+                // Named type nested in struct body — register inline in current scope.
+                let loc  = ir_loc(&inner_td.loc);
+                let body = resolve_top_def_body(&inner_td.inner, ctx, scope);
+                ctx.alloc_type(Some(inner_td.inner.name.inner.clone()), scope, loc, body);
+                // Not a field — don't add to link_ids.
+            }
         }
     }
 
@@ -803,6 +964,15 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
         AstTypeDefBody::Primitive(p) => IrLinkType::Primitive(convert_primitive(p)),
 
         AstTypeDefBody::List(inner) => {
+            // Primitive list shorthand: `[ string ]`, `[ integer ]`, `[ boolean ]`.
+            if let AstTypeDefBody::Primitive(p) = &inner.inner.body.inner {
+                let prim = convert_primitive(p);
+                let tid = ctx.alloc_type(None, scope, loc.clone(), IrTypeBody::Primitive(prim));
+                return IrLinkType::List(vec![IrRef {
+                    segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }],
+                }]);
+            }
+            let is_single_ref = matches!(&inner.inner.body.inner, AstTypeDefBody::Ref(_));
             let elem_refs: Vec<AstRef> = match &inner.inner.body.inner {
                 AstTypeDefBody::Ref(r)     => vec![r.clone()],
                 AstTypeDefBody::Enum(refs) => refs.iter().map(|r| r.inner.clone()).collect(),
@@ -816,13 +986,20 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
             };
             let ir_refs: Vec<IrRef> = elem_refs.iter().map(|r| {
                 let ir_ref = resolve_ref(&r.segments, ctx, scope);
-                for seg in &ir_ref.segments {
-                    if !seg.is_opt {
-                        if let IrRefSegValue::Plain(s) = &seg.value {
-                            ctx.errors.push(IrError {
-                                message: format!("unresolved type ref '{}'", s),
-                                loc: loc.clone(),
-                            });
+                // Validate unresolved refs when:
+                //   • single-type list: `[ aws_subnet ]` — always validate
+                //   • multi-segment enum variant: `[ type:service | type:databasee ]` — validate
+                //   • single-segment plain enum variant: `[ FARGATE | EC2 ]` — skip (string constants)
+                let should_validate = is_single_ref || r.segments.len() > 1;
+                if should_validate {
+                    for seg in &ir_ref.segments {
+                        if !seg.is_opt {
+                            if let IrRefSegValue::Plain(s) = &seg.value {
+                                ctx.errors.push(IrError {
+                                    message: format!("unresolved type ref '{}'", s),
+                                    loc: loc.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -860,6 +1037,10 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
                 .collect();
             let tid = ctx.alloc_type(None, scope, loc.clone(), IrTypeBody::Enum(variants));
             IrLinkType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Type(tid), is_opt: false }] })
+        }
+
+        AstTypeDefBody::Unit => {
+            IrLinkType::Primitive(IrPrimitive::Reference)
         }
 
         AstTypeDefBody::TypeFn(_) => {
@@ -936,7 +1117,16 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         for def in &ast_scope.defs {
             if let AstDef::Inst(inst) = def {
                 let name = &inst.inner.inst_name.inner;
-                if let Some(iid) = ctx.lookup_inst(scope, name) {
+                // Try typed lookup first (works for same-name multi-type instances),
+                // fall back to unambiguous single lookup.
+                let type_ref = &inst.inner.type_name.inner;
+                let iid = if let Some(type_id) = lookup_type_by_ref(type_ref, ctx, scope) {
+                    ctx.lookup_inst_typed(scope, name, type_id)
+                        .or_else(|| ctx.lookup_inst(scope, name))
+                } else {
+                    ctx.lookup_inst(scope, name)
+                };
+                if let Some(iid) = iid {
                     work.push((iid, inst.inner.fields.clone(), scope));
                 }
             }
@@ -967,7 +1157,7 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                     let items = anon_vals.iter()
                         .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
                         .collect();
-                    resolved.push(IrField { link_id: lid, name: "_".into(), loc, value: IrValue::List(items) });
+                    resolved.push(IrField { link_id: lid, name: "_".into(), loc, via: false, value: IrValue::List(items) });
                 }
                 _ => {
                     if anon_vals.len() > 1 {
@@ -977,7 +1167,7 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                         });
                     } else {
                         let ir_val = resolve_value(&anon_vals[0].inner, &link_type, ctx, scope, &loc);
-                        resolved.push(IrField { link_id: lid, name: "_".into(), loc, value: ir_val });
+                        resolved.push(IrField { link_id: lid, name: "_".into(), loc, via: false, value: ir_val });
                     }
                 }
             }
@@ -998,10 +1188,11 @@ fn resolve_named_fields(
     scope:      ScopeId,
 ) -> Vec<IrField> {
     // Group named fields by link, preserving first-occurrence order.
-    let mut groups: Vec<(String, IrLoc, LinkId, Vec<&AstNode<AstValue>>)> = Vec::new();
+    // The `via` bool is taken from the first occurrence of a given link field.
+    let mut groups: Vec<(String, IrLoc, LinkId, Vec<&AstNode<AstValue>>, bool)> = Vec::new();
 
     for af in ast_fields {
-        let AstField::Named { name, value } = &af.inner else { continue; };
+        let AstField::Named { name, value, via } = &af.inner else { continue; };
         let field_name = &name.inner;
         let loc        = ir_loc(&name.loc);
 
@@ -1021,7 +1212,7 @@ fn resolve_named_fields(
         if let Some(group) = groups.iter_mut().find(|g| g.2 == lid) {
             group.3.push(value);
         } else {
-            groups.push((field_name.clone(), loc, lid, vec![value]));
+            groups.push((field_name.clone(), loc, lid, vec![value], *via));
         }
     }
 
@@ -1030,7 +1221,7 @@ fn resolve_named_fields(
     let mut this_fields: HashMap<String, String> = HashMap::new();
     let mut pre_resolved: Vec<Option<IrField>> = (0..groups.len()).map(|_| None).collect();
 
-    for (i, (field_name, loc, lid, values)) in groups.iter().enumerate() {
+    for (i, (field_name, loc, lid, values, via)) in groups.iter().enumerate() {
         if values.iter().any(|v| matches!(&v.inner, AstValue::Ref(r) if has_group(r))) { continue; }
 
         let link_type = ctx.links[lid.0 as usize].link_type.clone();
@@ -1058,12 +1249,12 @@ fn resolve_named_fields(
             if let Some(plain) = ir_value_to_plain_str(&ir_val, ctx) {
                 this_fields.insert(field_name.clone(), plain);
             }
-            pre_resolved[i] = Some(IrField { link_id: *lid, name: field_name.clone(), loc: loc.clone(), value: ir_val });
+            pre_resolved[i] = Some(IrField { link_id: *lid, name: field_name.clone(), loc: loc.clone(), via: *via, value: ir_val });
         }
     }
 
     // Pass 2: reduce group fields using the full this_fields, resolve in source order.
-    groups.into_iter().enumerate().filter_map(|(i, (field_name, loc, lid, values))| {
+    groups.into_iter().enumerate().filter_map(|(i, (field_name, loc, lid, values, via))| {
         if let Some(cached) = pre_resolved[i].take() {
             return Some(cached);
         }
@@ -1098,7 +1289,7 @@ fn resolve_named_fields(
             resolve_value(&reduced[0].inner, &link_type, ctx, scope, &ir_loc(&reduced[0].loc))
         };
 
-        Some(IrField { link_id: lid, name: field_name, loc, value: ir_val })
+        Some(IrField { link_id: lid, name: field_name, loc, via, value: ir_val })
     }).collect()
 }
 
@@ -1322,15 +1513,21 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                                     return IrValue::Variant(*tid, idx as u32, None);
                                 }
                                 IrRefSegValue::Type(inner_tid) => {
-                                    if let Some(iid) = ctx.lookup_inst(scope, raw) {
-                                        if ctx.insts[iid.0 as usize].type_id == *inner_tid {
-                                            return IrValue::Variant(*tid, idx as u32, Some(Box::new(IrValue::Inst(iid))));
-                                        }
+                                    // Use typed lookup to find instances of the inner type by name.
+                                    let iid = ctx.lookup_inst_typed(scope, raw, *inner_tid)
+                                        .or_else(|| ctx.lookup_inst(scope, raw)
+                                            .filter(|&i| ctx.insts[i.0 as usize].type_id == *inner_tid));
+                                    if let Some(iid) = iid {
+                                        return IrValue::Variant(*tid, idx as u32, Some(Box::new(IrValue::Inst(iid))));
                                     }
                                 }
                                 _ => {}
                             }
                         }
+                    }
+                    // For unit/marker types (e.g. `def secret`), `raw` may be an instance name.
+                    if let Some(iid) = ctx.lookup_inst_typed(scope, raw, *tid) {
+                        return IrValue::Inst(iid);
                     }
                     let type_name = ctx.types[tid.0 as usize].name.as_deref().unwrap_or("?");
                     ctx.errors.push(IrError {
@@ -1340,7 +1537,10 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                     IrValue::Variant(*tid, 0, None)
                 }
                 Some(IrTypeBody::Struct(_)) => {
-                    match ctx.lookup_inst(scope, raw) {
+                    // Use typed lookup first — handles multi-type same-name instances.
+                    let iid = ctx.lookup_inst_typed(scope, raw, *tid)
+                        .or_else(|| ctx.lookup_inst(scope, raw));
+                    match iid {
                         Some(iid) => IrValue::Inst(iid),
                         None => {
                             ctx.errors.push(IrError {
@@ -1367,11 +1567,49 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
 }
 
 fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+    // Handle inline struct literals `{ field: val ... }` — find the first matching struct pattern.
+    if let AstValue::Struct { .. } = v {
+        for pattern in patterns {
+            if pattern.segments.len() == 1 {
+                if let IrRefSegValue::Type(tid) = &pattern.segments[0].value {
+                    if matches!(ctx.types.get(tid.0 as usize).map(|t| &t.body), Some(IrTypeBody::Struct(_))) {
+                        return resolve_value(v, &IrLinkType::Ref(pattern.clone()), ctx, scope, loc);
+                    }
+                }
+            }
+        }
+        ctx.errors.push(IrError { message: "list item must be a reference".into(), loc: loc.clone() });
+        return IrValue::Ref(String::new());
+    }
+
     let AstValue::Ref(r) = v else {
         ctx.errors.push(IrError { message: "list item must be a reference".into(), loc: loc.clone() });
         return IrValue::Ref(String::new());
     };
     if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+
+    // `def:TYPE:NAME` — explicit type-qualified instance reference.
+    // Resolve directly by type+name, bypassing pattern matching.
+    if r.segments.len() >= 2 && r.segments[0].inner.as_plain() == Some("def") {
+        let type_name = r.segments[1].inner.as_plain().unwrap_or("");
+        let inst_name_seg = r.segments.get(2);
+        if let Some(type_id) = ctx.lookup_type(scope, type_name) {
+            let name = inst_name_seg.and_then(|s| s.inner.as_plain()).unwrap_or(type_name);
+            if let Some(iid) = ctx.lookup_inst_typed(scope, name, type_id) {
+                return IrValue::Inst(iid);
+            }
+            ctx.errors.push(IrError {
+                message: format!("no instance '{}' of type '{}' in scope", name, type_name),
+                loc: loc.clone(),
+            });
+        } else {
+            ctx.errors.push(IrError {
+                message: format!("unknown type '{}' in def: qualifier", type_name),
+                loc: loc.clone(),
+            });
+        }
+        return IrValue::Ref(String::new());
+    }
 
     // For typed-path values like `service:api`, the first segment is a type qualifier
     // and the last segment is the actual instance name.
@@ -1387,13 +1625,26 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     let matched_pattern = patterns.iter().find(|pattern| {
         if let Some(base_seg) = pattern.segments.first() {
             if let IrRefSegValue::Type(tid) = &base_seg.value {
-                if let Some(iid) = ctx.lookup_inst(scope, inst_name) {
-                    return ctx.insts[iid.0 as usize].type_id == *tid;
-                }
+                return ctx.lookup_inst_typed(scope, inst_name, *tid).is_some();
             }
         }
         false
     }).or_else(|| patterns.first());
+
+    // For primitive-typed patterns (e.g. `[ string ]`), join all ref segments as a string value.
+    if let Some(pattern) = matched_pattern {
+        if pattern.segments.len() == 1 {
+            if let IrRefSegValue::Type(tid) = &pattern.segments[0].value {
+                if let Some(IrTypeBody::Primitive(_)) = ctx.types.get(tid.0 as usize).map(|t| &t.body) {
+                    let s = r.segments.iter()
+                        .filter_map(|s| s.inner.as_plain())
+                        .collect::<Vec<_>>()
+                        .join(":");
+                    return IrValue::Str(s);
+                }
+            }
+        }
+    }
 
     // For typed-path values against a single-segment pattern, resolve using just the instance name.
     if is_typed_path {
@@ -1404,8 +1655,9 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
         }
     }
 
+    let v_ref = AstValue::Ref(r.clone());
     match matched_pattern {
-        Some(pattern) => resolve_value_against_ref(v, pattern, ctx, scope, loc),
+        Some(pattern) => resolve_value_against_ref(&v_ref, pattern, ctx, scope, loc),
         None          => IrValue::Ref(String::new()),
     }
 }
@@ -1522,7 +1774,7 @@ fn pass7_resolve_type_fns(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 
             let mut body: Vec<IrFnBodyField> = Vec::new();
             for af in ast_body_fields {
-                let AstField::Named { name: fname, value: fval } = &af.inner else { continue; };
+                let AstField::Named { name: fname, value: fval, .. } = &af.inner else { continue; };
                 let ir_val = lower_type_fn_value(&fval.inner, &fname.inner, ctx, &ir_loc(&fval.loc));
                 body.push(IrFnBodyField { name: fname.inner.clone(), value: ir_val });
             }
@@ -1536,80 +1788,45 @@ fn pass7_resolve_type_fns(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Pass 6 — resolve deploys
+// Pass 6 — resolve plans
 // ---------------------------------------------------------------------------
 
-fn pass6_resolve_deploys(parse_scopes: &[AstScope], ctx: &mut Ctx) -> Vec<IrDeployDef> {
-    let mut deploys = Vec::new();
+fn pass6_resolve_plans(parse_scopes: &[AstScope], ctx: &mut Ctx) -> Vec<IrPlanDef> {
+    // Collect first to avoid mid-iteration borrow issues.
+    let work: Vec<(String, IrLoc, Vec<AstNode<AstField>>, ScopeId)> =
+        parse_scopes.iter().enumerate().flat_map(|(scope_idx, ast_scope)| {
+            let scope = ScopeId(scope_idx as u32);
+            ast_scope.defs.iter().filter_map(move |def| {
+                let AstDef::Plan(p) = def else { return None; };
+                Some((
+                    p.inner.name.inner.clone(),
+                    IrLoc { unit: p.loc.unit, start: p.loc.start, end: p.loc.end },
+                    p.inner.fields.clone(),
+                    scope,
+                ))
+            })
+        }).collect();
 
-    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
-        let scope = ScopeId(scope_idx as u32);
-        for def in &ast_scope.defs {
-            if let AstDef::Deploy(dep) = def {
-                let what   = resolve_ref(&dep.inner.what.inner.segments,   ctx, scope);
-                let target = resolve_ref(&dep.inner.target.inner.segments, ctx, scope);
-                let name   = resolve_ref(&dep.inner.name.inner.segments,   ctx, scope);
-                let loc    = ir_loc(&dep.loc);
-
-                let fields = dep.inner.fields.iter().filter_map(|af| {
-                    let AstField::Named { name: fname, value } = &af.inner else { return None; };
-                    let field_name = &fname.inner;
-                    let floc       = ir_loc(&fname.loc);
-
-                    let (lid, link_type) = match ctx.lookup_link(scope, field_name) {
-                        Some(lid) => {
-                            let lt = ctx.links[lid.0 as usize].link_type.clone();
-                            (lid, lt)
-                        }
-                        None => {
-                            ctx.errors.push(IrError {
-                                message: format!("unknown link '{}'", field_name),
-                                loc: floc.clone(),
-                            });
-                            return None;
-                        }
-                    };
-
-                    let ir_val = resolve_value(&value.inner, &link_type, ctx, scope, &ir_loc(&value.loc));
-                    Some(IrField { link_id: lid, name: field_name.clone(), loc: floc, value: ir_val })
-                }).collect();
-
-                let to_type_fn = resolve_deploy_type_fn(&dep.inner.target.inner, ctx, scope);
-                deploys.push(IrDeployDef { what, target, name, loc, fields, to_type_fn });
-            }
-        }
+    let mut plans = Vec::new();
+    for (name, loc, ast_fields, scope) in work {
+        // Resolve plan-level fields against the named deploy instance's type.
+        let fields = if ast_fields.is_empty() {
+            vec![]
+        } else {
+            let link_ids = ctx.lookup_inst(scope, &name)
+                .and_then(|iid| {
+                    let type_id = ctx.insts[iid.0 as usize].type_id;
+                    match ctx.types.get(type_id.0 as usize).map(|t| t.body.clone()) {
+                        Some(IrTypeBody::Struct(ids)) => Some(ids),
+                        _ => None,
+                    }
+                })
+                .unwrap_or_default();
+            resolve_named_fields(&ast_fields, &link_ids, ctx, scope)
+        };
+        plans.push(IrPlanDef { name, loc, fields });
     }
-
-    deploys
-}
-
-/// Walk the deploy `to` ref, consuming pack segments greedily, then try the
-/// remaining segments as a named type fn key in the terminal pack scope.
-fn resolve_deploy_type_fn(target: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<TypeFnId> {
-    let segs = &target.segments;
-    let mut cur = scope;
-    let mut i = 0;
-
-    while i < segs.len() {
-        if let Some(plain) = segs[i].inner.as_plain() {
-            if let Some(pack) = ctx.lookup_pack(cur, plain) {
-                cur = pack;
-                i += 1;
-                continue;
-            }
-        }
-        break;
-    }
-
-    if i >= segs.len() { return None; }
-
-    let key: String = segs[i..].iter()
-        .filter_map(|s| s.inner.as_plain())
-        .collect::<Vec<_>>()
-        .join(":");
-
-    if key.is_empty() { return None; }
-    ctx.lookup_type_fn(cur, &key)
+    plans
 }
 
 // ---------------------------------------------------------------------------
@@ -1629,7 +1846,7 @@ pub fn resolve(res: ParseRes) -> IrRes {
     pass5_resolve_inst_fields(&res.scopes, &mut ctx);
     pass7_resolve_type_fns(&res.scopes, &mut ctx);
 
-    let deploys = pass6_resolve_deploys(&res.scopes, &mut ctx);
+    let plans = pass6_resolve_plans(&res.scopes, &mut ctx);
 
     let mut errors = ctx.errors;
     errors.extend(res.errors.iter().map(|e| IrError {
@@ -1641,8 +1858,9 @@ pub fn resolve(res: ParseRes) -> IrRes {
         types:    ctx.types,
         links:    ctx.links,
         insts:    ctx.insts,
-        deploys,
+        plans,
         type_fns: ctx.type_fns,
+        hooks:    ctx.hooks,
         scopes:   ctx.scopes,
         errors,
     }

@@ -2,12 +2,12 @@
 ///
 /// All typed indices are replaced by resolved string values.
 /// `AsmSymbol` holds every named instance in the program.
-/// `AsmDeploy` is self-contained except for `InstRef` values,
-/// which are resolved by name against `AsmRes::symbol`.
-/// Generators walk `AsmDeploy` + `AsmSymbol` without needing a global arena or `IrRes`.
+/// `AsmPlan` is a self-contained plan context created from a `plan name` declaration.
+/// Generators walk `AsmPlan` + `AsmSymbol` without needing a global arena or `IrRes`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::ir::*;
+use ground_ts::exec::call_hook;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -15,9 +15,8 @@ use crate::ir::*;
 
 #[derive(Debug, Clone)]
 pub struct AsmRes {
-    pub deploys:  Vec<AsmDeploy>,
-    pub symbol:   AsmSymbol,
-    pub type_fns: Vec<AsmTypeFnDef>,
+    pub plans:  Vec<AsmPlan>,
+    pub symbol: AsmSymbol,
 }
 
 /// Global symbol table — all named instances in the program.
@@ -26,81 +25,14 @@ pub struct AsmSymbol {
     pub insts: Vec<AsmInst>,
 }
 
-/// A fully resolved, self-contained deployment context.
+/// A fully resolved plan context — created from a `plan name` declaration.
+/// `reachable` is topo-sorted (leaves first) so generators can walk dependencies in order.
 #[derive(Debug, Clone)]
-pub struct AsmDeploy {
-    pub target:    Vec<String>,          // scope path segments, e.g. ["aws", "ecs", "stack"]
-    pub name:      String,               // deployment name, e.g. "prod"
-    pub inst:      AsmInst,              // the instance being deployed
-    pub fields:    Vec<AsmField>,        // deploy-specific fields (separate from inst fields)
-    pub type_fn:   Option<String>,       // named type fn resolved from deploy target tail
-    pub expansion: Option<AsmExpansion>, // recursive structural walk result
-    pub overrides: AsmOverrides,         // link-slot and field overrides threaded through walk
-}
-
-/// Override set threaded through the recursive expansion walk.
-#[derive(Debug, Clone, Default)]
-pub struct AsmOverrides {
-    /// Link slot key → named type fn name; selects an explicit fn for pair expansion.
-    pub link_fns: HashMap<String, String>,
-}
-
-/// Result of recursively expanding one instance through type functions.
-#[derive(Debug, Clone)]
-pub struct AsmExpansion {
-    pub inst:      AsmInst,
-    pub outputs:   Vec<AsmOutput>,       // from 1-param type function firing
-    pub link_outs: Vec<AsmLinkOutput>,   // from 2-param pair function firing
-    pub children:  Vec<AsmExpansion>,    // recursive walk of inst links
-}
-
-/// One fired type-function entry — all `{param:field}` refs substituted.
-#[derive(Debug, Clone)]
-pub struct AsmOutput {
-    pub alias:       String,
-    pub vendor_type: String,
-    pub fields:      Vec<AsmField>,   // fully substituted
-    pub scope:       Vec<String>,     // pack path for template lookup
-}
-
-/// Outputs produced by firing a 2-param pair function on a (from, to) instance pair.
-#[derive(Debug, Clone)]
-pub struct AsmLinkOutput {
-    pub from:    AsmInstRef,
-    pub to:      AsmInstRef,
-    pub outputs: Vec<AsmOutput>,
-}
-
-// ---------------------------------------------------------------------------
-// Type fn ASM types
-// ---------------------------------------------------------------------------
-
-/// One entry in a type function at ASM level: `alias: VendorType { fields... }`
-/// Field values may contain param placeholder strings like `{param_name:field_name}`.
-#[derive(Debug, Clone)]
-pub struct AsmTypeFnEntry {
-    pub alias:       String,
-    pub vendor_type: String,
-    pub fields:      Vec<AsmField>,
-}
-
-/// A single named parameter in a type function def.
-#[derive(Debug, Clone)]
-pub struct AsmTypeFnParam {
-    pub name:      String,   // e.g. "this", "from", "to"
-    pub type_name: String,   // e.g. "service"
-}
-
-/// Type function def at ASM level — IDs replaced by strings.
-/// - `params.len() == 1` → fires per matching instance
-/// - `params.len() == 2` → fires per (from, to) pair
-/// - `name.is_none()`   → anonymous (auto-fires during walk)
-#[derive(Debug, Clone)]
-pub struct AsmTypeFnDef {
-    pub name:   Option<String>,
-    pub params: Vec<AsmTypeFnParam>,
-    pub scope:  Vec<String>,    // pack path segments
-    pub body:   Vec<AsmTypeFnEntry>,
+pub struct AsmPlan {
+    pub name:      String,        // plan name (e.g. "prd-eu")
+    pub root:      AsmInst,       // the root instance (lowered + hooks fired)
+    pub fields:    Vec<AsmField>, // root's fields + plan-level overrides
+    pub reachable: Vec<AsmInst>,  // all reachable named instances, topo-sorted (leaves first)
 }
 
 /// A fully resolved instance — no IDs, type name inlined.
@@ -147,299 +79,255 @@ pub struct AsmInstRef {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn lower(ir: &IrRes) -> AsmRes {
-    // Symbol and type_fns must be computed first — deploy expansion needs both.
-    let symbol   = lower_symbol(ir);
-    let type_fns: Vec<AsmTypeFnDef> = ir.type_fns.iter().map(|f| lower_type_fn_def(f, ir)).collect();
-    let deploys  = ir.deploys.iter().map(|d| lower_deploy(d, ir, &symbol, &type_fns)).collect();
-    AsmRes { deploys, symbol, type_fns }
-}
-
-// ---------------------------------------------------------------------------
-// Symbol lowering
-// ---------------------------------------------------------------------------
-
-fn lower_symbol(ir: &IrRes) -> AsmSymbol {
-    let insts = ir.insts.iter().enumerate()
-        .filter(|(_, i)| i.name != "_")
-        .map(|(idx, _)| lower_inst(InstId(idx as u32), ir))
+pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
+    // Build hook lookup: TypeId.0 → index into ir.hooks.
+    let hook_map: HashMap<u32, usize> = ir.hooks.iter().enumerate()
+        .map(|(idx, h)| (h.type_id.0, idx))
         .collect();
-    AsmSymbol { insts }
-}
 
-// ---------------------------------------------------------------------------
-// Deploy lowering
-// ---------------------------------------------------------------------------
+    // Shared resolution cache — populated bottom-up as plans are resolved.
+    let mut cache: HashMap<InstId, AsmInst> = HashMap::new();
 
-fn lower_deploy(dep: &IrDeployDef, ir: &IrRes, symbol: &AsmSymbol, type_fns: &[AsmTypeFnDef]) -> AsmDeploy {
-    let target = ref_to_strings(&dep.target, ir);
-    let name   = ref_to_strings(&dep.name, ir).join(":");
+    // Resolve each plan: topo-sort reachable instances, resolve leaves first.
+    let plans: Vec<AsmPlan> = ir.plans.iter().filter_map(|plan| {
+        // Find the root instance by name.
+        let root_id = ir.insts.iter().enumerate()
+            .find(|(_, i)| i.name == plan.name)
+            .map(|(idx, _)| InstId(idx as u32))?;
 
-    let type_fn = dep.to_type_fn.map(|fid| {
-        ir.type_fns[fid.0 as usize].name.clone().unwrap_or_default()
-    });
+        // Collect all named instances reachable from root_id.
+        let reachable_ids = collect_reachable(root_id, ir);
 
-    let what_id = match find_inst_in_ref(&dep.what, ir) {
-        Some(id) => id,
-        None     => {
-            let placeholder = AsmInst { type_name: String::new(), name: String::new(), type_hint: None, fields: vec![] };
-            let overrides   = AsmOverrides::default();
-            return AsmDeploy { target, name, inst: placeholder, fields: vec![], type_fn, expansion: None, overrides };
-        }
-    };
+        // Topo-sort: leaves (no deps in reachable set) come first.
+        let ordered = topo_sort(&reachable_ids, ir);
 
-    let inst   = lower_inst(what_id, ir);
-    let fields = dep.fields.iter().map(|f| lower_field(f, ir)).collect();
-
-    let overrides = AsmOverrides::default();
-    let mut visited = HashSet::new();
-    // Named type fn from deploy target takes priority over anonymous fn for the root inst.
-    let explicit_fn = dep.to_type_fn.map(|fid| fid.0 as usize);
-    let exp = expand_with_explicit_fn(&inst, explicit_fn, type_fns, symbol, &overrides, &mut visited);
-    let expansion = if exp.outputs.is_empty() && exp.link_outs.is_empty() && exp.children.is_empty() {
-        None
-    } else {
-        Some(exp)
-    };
-
-    AsmDeploy { target, name, inst, fields, type_fn, expansion, overrides }
-}
-
-// ---------------------------------------------------------------------------
-// Recursive expansion walk
-// ---------------------------------------------------------------------------
-
-/// Recursively expand `inst` through matching anonymous type functions.
-/// Returns an `AsmExpansion` tree; empty branches are still returned (callers collapse if needed).
-pub fn expand_inst(
-    inst:      &AsmInst,
-    type_fns:  &[AsmTypeFnDef],
-    symbol:    &AsmSymbol,
-    overrides: &AsmOverrides,
-    visited:   &mut HashSet<String>,
-) -> AsmExpansion {
-    expand_with_explicit_fn(inst, None, type_fns, symbol, overrides, visited)
-}
-
-/// Like `expand_inst` but allows specifying an explicit type fn index for the root node.
-/// `explicit_fn = Some(idx)` → fire `type_fns[idx]` on `inst` instead of the anonymous fn.
-/// Children always use anonymous fn lookup.
-fn expand_with_explicit_fn(
-    inst:        &AsmInst,
-    explicit_fn: Option<usize>,
-    type_fns:    &[AsmTypeFnDef],
-    symbol:      &AsmSymbol,
-    overrides:   &AsmOverrides,
-    visited:     &mut HashSet<String>,
-) -> AsmExpansion {
-    // Cycle guard — only named instances can form cycles.
-    if inst.name != "_" && !visited.insert(inst.name.clone()) {
-        return AsmExpansion { inst: inst.clone(), outputs: vec![], link_outs: vec![], children: vec![] };
-    }
-
-    // 1. Fire named (explicit) or anonymous 1-param type fn for this instance's type.
-    let outputs = if let Some(idx) = explicit_fn {
-        fire_1param(&type_fns[idx], inst)
-    } else {
-        find_anon_1param_fn(&inst.type_name, type_fns)
-            .map(|tf| fire_1param(tf, inst))
-            .unwrap_or_default()
-    };
-
-    // 2. Collect all InstRef targets from this instance's fields.
-    let mut refs: Vec<AsmInstRef> = Vec::new();
-    for f in &inst.fields {
-        collect_inst_refs_in_value(&f.value, &mut refs);
-    }
-
-    // 3. Recurse into referenced instances that have a matching type fn.
-    let mut children = Vec::new();
-    for r in &refs {
-        if has_any_fn_for_type(&r.type_name, type_fns) {
-            if let Some(child) = symbol.insts.iter().find(|i| i.name == r.name) {
-                children.push(expand_inst(child, type_fns, symbol, overrides, visited));
+        // Resolve bottom-up, caching results so via fields can look up post-hook values.
+        for &iid in &ordered {
+            if !cache.contains_key(&iid) {
+                let inst = lower_inst(iid, ir, &hook_map, ts_src, &cache);
+                cache.insert(iid, inst);
             }
         }
-    }
 
-    // 4. Fire anonymous 2-param pair fns for each (inst → ref) pair.
-    let mut link_outs = Vec::new();
-    for r in &refs {
-        if let Some(tf) = find_anon_2param_fn(&inst.type_name, &r.type_name, type_fns) {
-            if let Some(to_inst) = symbol.insts.iter().find(|i| i.name == r.name) {
-                let from_ref = AsmInstRef { type_name: inst.type_name.clone(), name: inst.name.clone() };
-                let to_ref   = AsmInstRef { type_name: r.type_name.clone(),    name: r.name.clone() };
-                let outputs  = fire_2param(tf, inst, to_inst);
-                link_outs.push(AsmLinkOutput { from: from_ref, to: to_ref, outputs });
+        let root = cache.get(&root_id)?.clone();
+
+        // Apply plan-level field overrides on top of the root's resolved fields.
+        let mut fields = root.fields.clone();
+        for plan_field in plan.fields.iter().map(|f| lower_field(f, ir)) {
+            if let Some(existing) = fields.iter_mut().find(|f| f.name == plan_field.name) {
+                *existing = plan_field;
+            } else {
+                fields.push(plan_field);
             }
         }
+
+        let reachable: Vec<AsmInst> = ordered.iter()
+            .filter_map(|iid| cache.get(iid))
+            .cloned()
+            .collect();
+
+        Some(AsmPlan { name: plan.name.clone(), root, fields, reachable })
+    }).collect();
+
+    // Build symbol table from all named instances; use cache where already resolved.
+    let symbol = build_symbol(ir, &hook_map, ts_src, &cache);
+
+    AsmRes { plans, symbol }
+}
+
+// ---------------------------------------------------------------------------
+// Graph helpers: reachability + topo-sort
+// ---------------------------------------------------------------------------
+
+/// Collect all named instance IDs reachable from `root` via `IrValue::Inst` references.
+/// Anonymous instances (name == "_") are traversed but not collected.
+fn collect_reachable(root: InstId, ir: &IrRes) -> HashSet<InstId> {
+    let mut visited: HashSet<InstId> = HashSet::new();
+    let mut queue: VecDeque<InstId> = VecDeque::new();
+    queue.push_back(root);
+    while let Some(id) = queue.pop_front() {
+        if !visited.insert(id) { continue; }
+        let inst = &ir.insts[id.0 as usize];
+        for f in &inst.fields {
+            enqueue_named_inst_refs(&f.value, ir, &mut queue);
+        }
     }
-
-    AsmExpansion { inst: inst.clone(), outputs, link_outs, children }
+    visited
 }
 
-// ---------------------------------------------------------------------------
-// Type fn firing
-// ---------------------------------------------------------------------------
-
-fn fire_1param(tf: &AsmTypeFnDef, inst: &AsmInst) -> Vec<AsmOutput> {
-    debug_assert_eq!(tf.params.len(), 1);
-    let param_name = &tf.params[0].name;
-    fire_entries(&tf.body, &[(param_name.as_str(), inst)], &tf.scope)
-}
-
-fn fire_2param(tf: &AsmTypeFnDef, from: &AsmInst, to: &AsmInst) -> Vec<AsmOutput> {
-    debug_assert_eq!(tf.params.len(), 2);
-    let from_name = &tf.params[0].name;
-    let to_name   = &tf.params[1].name;
-    fire_entries(&tf.body, &[(from_name.as_str(), from), (to_name.as_str(), to)], &tf.scope)
-}
-
-fn fire_entries(
-    body:     &[AsmTypeFnEntry],
-    bindings: &[(&str, &AsmInst)],
-    scope:    &[String],
-) -> Vec<AsmOutput> {
-    body.iter().map(|entry| {
-        let fields = entry.fields.iter().map(|f| AsmField {
-            name:  f.name.clone(),
-            value: substitute_value(&f.value, bindings),
-        }).collect();
-        AsmOutput { alias: entry.alias.clone(), vendor_type: entry.vendor_type.clone(), fields, scope: scope.to_vec() }
-    }).collect()
-}
-
-// ---------------------------------------------------------------------------
-// Param substitution
-// ---------------------------------------------------------------------------
-
-/// Substitute `{param_name:field_name}` placeholders in a value.
-/// If the whole `Ref` string is consumed by one substitution, the inner value type is preserved.
-/// If it's embedded in a larger string, the result is `Str` (string interpolation).
-fn substitute_value(v: &AsmValue, bindings: &[(&str, &AsmInst)]) -> AsmValue {
+fn enqueue_named_inst_refs(v: &IrValue, ir: &IrRes, queue: &mut VecDeque<InstId>) {
     match v {
-        AsmValue::Ref(s) => {
-            // Check for exact single-placeholder match: "{param:field}"
-            if let Some(inner) = s.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                if let Some((param_name, field_name)) = inner.split_once(':') {
-                    if let Some((_, inst)) = bindings.iter().find(|(n, _)| *n == param_name) {
-                        // Special intrinsic: {param:name} → the instance name.
-                        if field_name == "name" {
-                            return AsmValue::Str(inst.name.clone());
-                        }
-                        if let Some(field) = inst.fields.iter().find(|f| f.name == field_name) {
-                            return field.value.clone();
-                        }
-                    }
+        IrValue::Inst(iid) => {
+            let child = &ir.insts[iid.0 as usize];
+            if child.name != "_" {
+                queue.push_back(*iid);
+            } else {
+                // Anonymous: traverse its fields to find named refs within.
+                for f in &child.fields {
+                    enqueue_named_inst_refs(&f.value, ir, queue);
                 }
             }
-            // String interpolation: replace all {param:field} occurrences in the string.
-            let mut result = s.clone();
-            let mut changed = false;
-            for (param_name, inst) in bindings {
-                // Special intrinsic: {param:name} → the instance name.
-                let name_placeholder = format!("{{{param_name}:name}}");
-                if result.contains(&name_placeholder) {
-                    result = result.replace(&name_placeholder, &inst.name);
-                    changed = true;
-                }
-                for field in &inst.fields {
-                    let placeholder = format!("{{{param_name}:{}}}", field.name);
-                    if result.contains(&placeholder) {
-                        result = result.replace(&placeholder, &value_to_str(&field.value));
-                        changed = true;
-                    }
+        }
+        IrValue::List(items) => { for i in items { enqueue_named_inst_refs(i, ir, queue); } }
+        IrValue::Path(segs)  => { for s in segs  { enqueue_named_inst_refs(s, ir, queue); } }
+        _ => {}
+    }
+}
+
+/// Kahn's topo-sort over a set of named instance IDs.
+/// Returns them in dependency order — leaves (no deps) first, root last.
+fn topo_sort(ids: &HashSet<InstId>, ir: &IrRes) -> Vec<InstId> {
+    // For each id, compute its direct named-instance deps (within ids).
+    let mut deps_of: HashMap<InstId, HashSet<InstId>> = HashMap::new();
+    let mut dependents_of: HashMap<InstId, Vec<InstId>> = HashMap::new();
+
+    for &id in ids {
+        let mut deps: HashSet<InstId> = HashSet::new();
+        let inst = &ir.insts[id.0 as usize];
+        for f in &inst.fields {
+            collect_named_deps_in_value(&f.value, ids, ir, &mut deps);
+        }
+        // Remove self-loops (can arise from self-referential field values in the source).
+        deps.remove(&id);
+        for &dep in &deps {
+            dependents_of.entry(dep).or_default().push(id);
+        }
+        deps_of.insert(id, deps);
+    }
+
+    let mut in_degree: HashMap<InstId, usize> = deps_of.iter()
+        .map(|(&id, deps)| (id, deps.len()))
+        .collect();
+
+    let mut queue: VecDeque<InstId> = in_degree.iter()
+        .filter(|(_, &d)| d == 0)
+        .map(|(&id, _)| id)
+        .collect();
+
+    let mut result = Vec::with_capacity(ids.len());
+    while let Some(id) = queue.pop_front() {
+        result.push(id);
+        if let Some(dependents) = dependents_of.get(&id) {
+            for &dep in dependents {
+                let d = in_degree.get_mut(&dep).unwrap();
+                *d -= 1;
+                if *d == 0 {
+                    queue.push_back(dep);
                 }
             }
-            if changed { AsmValue::Str(result) } else { AsmValue::Ref(result) }
         }
-        AsmValue::List(items) => AsmValue::List(items.iter().map(|i| substitute_value(i, bindings)).collect()),
-        AsmValue::Path(segs)  => AsmValue::Path(segs.iter().map(|s| substitute_value(s, bindings)).collect()),
-        _ => v.clone(),
     }
+
+    result
 }
 
-fn value_to_str(v: &AsmValue) -> String {
+fn collect_named_deps_in_value(
+    v:   &IrValue,
+    ids: &HashSet<InstId>,
+    ir:  &IrRes,
+    out: &mut HashSet<InstId>,
+) {
     match v {
-        AsmValue::Str(s)      => s.clone(),
-        AsmValue::Ref(s)      => s.clone(),
-        AsmValue::Int(n)      => n.to_string(),
-        AsmValue::Variant(v)  => v.value.clone(),
-        _ => String::new(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Type fn lookup helpers
-// ---------------------------------------------------------------------------
-
-fn find_anon_1param_fn<'a>(type_name: &str, type_fns: &'a [AsmTypeFnDef]) -> Option<&'a AsmTypeFnDef> {
-    type_fns.iter().find(|f| {
-        f.name.is_none() && f.params.len() == 1 && f.params[0].type_name == type_name
-    })
-}
-
-fn find_anon_2param_fn<'a>(from_type: &str, to_type: &str, type_fns: &'a [AsmTypeFnDef]) -> Option<&'a AsmTypeFnDef> {
-    type_fns.iter().find(|f| {
-        f.name.is_none()
-            && f.params.len() == 2
-            && f.params[0].type_name == from_type
-            && f.params[1].type_name == to_type
-    })
-}
-
-fn has_any_fn_for_type(type_name: &str, type_fns: &[AsmTypeFnDef]) -> bool {
-    type_fns.iter().any(|f| {
-        f.params.first().map_or(false, |p| p.type_name == type_name)
-    })
-}
-
-// ---------------------------------------------------------------------------
-// InstRef collection from values
-// ---------------------------------------------------------------------------
-
-fn collect_inst_refs_in_value(v: &AsmValue, out: &mut Vec<AsmInstRef>) {
-    match v {
-        AsmValue::InstRef(r) => out.push(r.clone()),
-        AsmValue::Path(segs) => { for s in segs { collect_inst_refs_in_value(s, out); } }
-        AsmValue::List(items) => { for i in items { collect_inst_refs_in_value(i, out); } }
-        AsmValue::Inst(i) => { for f in &i.fields { collect_inst_refs_in_value(&f.value, out); } }
-        AsmValue::Variant(v) => {
-            if let Some(p) = &v.payload { collect_inst_refs_in_value(p, out); }
+        IrValue::Inst(iid) => {
+            let child = &ir.insts[iid.0 as usize];
+            if child.name != "_" {
+                if ids.contains(iid) { out.insert(*iid); }
+            } else {
+                // Anonymous: look through its fields for named deps.
+                for f in &child.fields {
+                    collect_named_deps_in_value(&f.value, ids, ir, out);
+                }
+            }
         }
+        IrValue::List(items) => { for i in items { collect_named_deps_in_value(i, ids, ir, out); } }
+        IrValue::Path(segs)  => { for s in segs  { collect_named_deps_in_value(s, ids, ir, out); } }
         _ => {}
     }
 }
 
 // ---------------------------------------------------------------------------
-// Return path segment names up to (and including) `scope`.
+// Symbol building
 // ---------------------------------------------------------------------------
 
-fn scope_path_names(scope: ScopeId, ir: &IrRes) -> Vec<String> {
-    let mut path = Vec::new();
-    let mut cur  = scope;
-    loop {
-        let s = &ir.scopes[cur.0 as usize];
-        if let Some(n) = &s.name { path.push(n.clone()); }
-        match s.parent {
-            Some(p) if p != cur => cur = p,
-            _                   => break,
-        }
-    }
-    path.reverse();
-    path
+/// Build the global symbol table from all named instances.
+/// Uses the cache for instances already resolved during plan walks;
+/// resolves fresh (with empty cache context) for any remaining.
+fn build_symbol(
+    ir:       &IrRes,
+    hook_map: &HashMap<u32, usize>,
+    ts_src:   &str,
+    cache:    &HashMap<InstId, AsmInst>,
+) -> AsmSymbol {
+    let insts = ir.insts.iter().enumerate()
+        .filter(|(_, i)| i.name != "_")
+        .map(|(idx, _)| {
+            let iid = InstId(idx as u32);
+            cache.get(&iid).cloned()
+                .unwrap_or_else(|| lower_inst(iid, ir, hook_map, ts_src, cache))
+        })
+        .collect();
+    AsmSymbol { insts }
 }
 
 // ---------------------------------------------------------------------------
 // Instance / field / value lowering
 // ---------------------------------------------------------------------------
 
-fn lower_inst(id: InstId, ir: &IrRes) -> AsmInst {
+fn lower_inst(
+    id:       InstId,
+    ir:       &IrRes,
+    hook_map: &HashMap<u32, usize>,
+    ts_src:   &str,
+    cache:    &HashMap<InstId, AsmInst>,
+) -> AsmInst {
     let inst      = &ir.insts[id.0 as usize];
     let type_name = ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
     let name      = inst.name.clone();
     let type_hint = inst.type_hint.clone();
-    let fields    = inst.fields.iter().map(|f| lower_field(f, ir)).collect();
+
+    // Lower all user-provided fields to AsmValue (raw, for ASM output).
+    let mut fields: Vec<AsmField> = inst.fields.iter().map(|f| lower_field(f, ir)).collect();
+
+    // If this type has a hook def and we have TypeScript source, execute the hook.
+    if !ts_src.is_empty() {
+        if let Some(&hook_idx) = hook_map.get(&inst.type_id.0) {
+            let hook_def = &ir.hooks[hook_idx];
+
+            // Build input JSON from the instance's user-provided fields (the input links).
+            // Fields marked `via` use the pre-resolved (post-hook) cached AsmInst as their value.
+            let input_link_set: HashSet<u32> = hook_def.inputs.iter().map(|l| l.0).collect();
+            let input_map: serde_json::Map<String, serde_json::Value> = inst.fields.iter()
+                .filter(|f| input_link_set.contains(&f.link_id.0))
+                .map(|f| {
+                    let json_val = if f.via {
+                        ir_value_to_json_via(&f.value, ir, cache)
+                    } else {
+                        ir_value_to_json(&f.value, ir)
+                    };
+                    (f.name.clone(), json_val)
+                })
+                .collect();
+            let input_json = serde_json::Value::Object(input_map).to_string();
+
+            // Call the TypeScript hook and merge output fields into the instance.
+            match call_hook(ts_src, &hook_def.hook_fn, &input_json) {
+                Ok(output_json) => {
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&output_json)
+                    {
+                        for (k, v) in map {
+                            fields.push(AsmField { name: k, value: json_val_to_asm_value(&v) });
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Hook execution errors surface at generation time when expected
+                    // fields are missing. Silently continue so other instances resolve.
+                }
+            }
+        }
+    }
+
     AsmInst { type_name, name, type_hint, fields }
 }
 
@@ -448,6 +336,8 @@ fn lower_field(f: &IrField, ir: &IrRes) -> AsmField {
 }
 
 fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
+    // Note: lower_value does not execute hooks on inline anonymous instances.
+    // Hooks only fire on named instances via lower_inst (hook_map/ts_src path).
     match v {
         IrValue::Str(s) => AsmValue::Str(s.clone()),
         IrValue::Int(n) => AsmValue::Int(*n),
@@ -474,8 +364,15 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
         IrValue::Inst(iid) => {
             let inst = &ir.insts[iid.0 as usize];
             if inst.name == "_" {
-                // Anonymous inline instance — embed fully.
-                AsmValue::Inst(Box::new(lower_inst(*iid, ir)))
+                // Anonymous inline instance — embed fully (no hook execution for inline insts).
+                let fields    = inst.fields.iter().map(|f| lower_field(f, ir)).collect();
+                let type_hint = inst.type_hint.clone();
+                AsmValue::Inst(Box::new(AsmInst {
+                    type_name: ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
+                    name: "_".into(),
+                    type_hint,
+                    fields,
+                }))
             } else {
                 // Named instance — emit a ref; full data lives in AsmSymbol.
                 let type_name = ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
@@ -494,69 +391,120 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
 }
 
 // ---------------------------------------------------------------------------
-// Type fn def lowering
+// Hook I/O serialisation helpers
 // ---------------------------------------------------------------------------
 
-fn lower_type_fn_def(f: &IrTypeFnDef, ir: &IrRes) -> AsmTypeFnDef {
-    let name   = f.name.clone();
-    let params = f.params.iter()
-        .map(|p| AsmTypeFnParam {
-            name:      p.name.clone(),
-            type_name: ir.types[p.ty.0 as usize].name.clone().unwrap_or_default(),
-        })
-        .collect();
-    let scope  = scope_path_names(f.scope, ir);
-    let body   = f.body.iter().map(|entry| {
-        let vendor_type = ir.types[entry.vendor_type.0 as usize].name.clone().unwrap_or_default();
-        let fields = entry.fields.iter().map(|bf| AsmField {
-            name:  bf.name.clone(),
-            value: lower_type_fn_field_value(&bf.value),
-        }).collect();
-        AsmTypeFnEntry { alias: entry.alias.clone(), vendor_type, fields }
-    }).collect();
-    AsmTypeFnDef { name, params, scope, body }
-}
-
-/// Lower a type fn body field value. Param placeholder refs like `{this:name}-sg`
-/// are kept as-is (`AsmValue::Ref`) for expand-time substitution.
-fn lower_type_fn_field_value(v: &IrValue) -> AsmValue {
+/// Convert an `IrValue` to a `serde_json::Value` for passing to a TypeScript hook.
+fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
     match v {
-        IrValue::Str(s) => AsmValue::Str(s.clone()),
-        IrValue::Ref(s) => AsmValue::Ref(s.clone()),
-        IrValue::Int(n) => AsmValue::Int(*n),
-        _               => AsmValue::Ref(String::new()),
+        IrValue::Str(s)  => serde_json::Value::String(s.clone()),
+        IrValue::Int(n)  => serde_json::json!(*n),
+        IrValue::Ref(s)  => serde_json::Value::String(s.clone()),
+
+        IrValue::Variant(tid, idx, payload) => {
+            let td = &ir.types[tid.0 as usize];
+            let variant_str = match &td.body {
+                IrTypeBody::Enum(vs) => match vs.get(*idx as usize)
+                    .and_then(|r| r.segments.first())
+                    .map(|s| &s.value)
+                {
+                    Some(IrRefSegValue::Plain(p)) => p.clone(),
+                    Some(IrRefSegValue::Type(vtid)) =>
+                        ir.types[vtid.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
+                    _ => "_".into(),
+                },
+                _ => "_".into(),
+            };
+            match payload {
+                Some(p) => serde_json::json!({ variant_str: ir_value_to_json(p, ir) }),
+                None    => serde_json::Value::String(variant_str),
+            }
+        }
+
+        IrValue::Inst(iid) => {
+            let child = &ir.insts[iid.0 as usize];
+            let mut map = serde_json::Map::new();
+            // Expose the instance name as "_name" so hooks can use it.
+            map.insert("_name".into(), serde_json::Value::String(child.name.clone()));
+            for f in &child.fields {
+                map.insert(f.name.clone(), ir_value_to_json(&f.value, ir));
+            }
+            serde_json::Value::Object(map)
+        }
+
+        IrValue::Path(segs)  => serde_json::Value::Array(
+            segs.iter().map(|s| ir_value_to_json(s, ir)).collect()),
+
+        IrValue::List(items) => serde_json::Value::Array(
+            items.iter().map(|i| ir_value_to_json(i, ir)).collect()),
     }
 }
 
-// ---------------------------------------------------------------------------
-// Ref helpers
-// ---------------------------------------------------------------------------
-
-/// Flatten an IrRef to a list of name strings.
-fn ref_to_strings(r: &IrRef, ir: &IrRes) -> Vec<String> {
-    r.segments.iter().map(|seg| match &seg.value {
-        IrRefSegValue::Pack(id)  => ir.scopes[id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
-        IrRefSegValue::Type(id)  => ir.types[id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
-        IrRefSegValue::Link(id)  => ir.links[id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
-        IrRefSegValue::Inst(id)  => ir.insts[id.0 as usize].name.clone(),
-        IrRefSegValue::Plain(s)  => s.clone(),
-    }).collect()
+/// Like `ir_value_to_json` but for `IrValue::Inst` uses the post-hook cached `AsmInst`.
+/// Used for fields marked `via` — the hook receives the already-resolved child value.
+fn ir_value_to_json_via(v: &IrValue, ir: &IrRes, cache: &HashMap<InstId, AsmInst>) -> serde_json::Value {
+    match v {
+        IrValue::Inst(iid) => {
+            if let Some(asm_inst) = cache.get(iid) {
+                asm_inst_to_json(asm_inst)
+            } else {
+                // Not yet cached (shouldn't happen in bottom-up walk) — fall back to raw.
+                ir_value_to_json(v, ir)
+            }
+        }
+        // For non-Inst values, via has no special meaning.
+        _ => ir_value_to_json(v, ir),
+    }
 }
 
-/// Find the first InstId in an IrRef, falling back to name-lookup for Plain segments.
-fn find_inst_in_ref(r: &IrRef, ir: &IrRes) -> Option<InstId> {
-    for seg in &r.segments {
-        match &seg.value {
-            IrRefSegValue::Inst(id) => return Some(*id),
-            IrRefSegValue::Plain(name) => {
-                // Deploy `what` may be unresolved if the instance was declared after
-                // the deploy in source; fall back to a linear name scan.
-                if let Some(idx) = ir.insts.iter().position(|i| &i.name == name) {
-                    return Some(InstId(idx as u32));
-                }
-            }
-            _ => {}
+fn asm_inst_to_json(inst: &AsmInst) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("_name".into(), serde_json::Value::String(inst.name.clone()));
+    for f in &inst.fields {
+        map.insert(f.name.clone(), asm_value_to_json(&f.value));
+    }
+    serde_json::Value::Object(map)
+}
+
+pub fn asm_value_to_json(v: &AsmValue) -> serde_json::Value {
+    match v {
+        AsmValue::Str(s)      => serde_json::Value::String(s.clone()),
+        AsmValue::Int(n)      => serde_json::json!(*n),
+        AsmValue::Ref(s)      => serde_json::Value::String(s.clone()),
+        AsmValue::Variant(gv) => match &gv.payload {
+            Some(p) => serde_json::json!({ gv.value.clone(): asm_value_to_json(p) }),
+            None    => serde_json::Value::String(gv.value.clone()),
+        },
+        AsmValue::InstRef(r)  => serde_json::json!({ "_name": r.name, "type_name": r.type_name }),
+        AsmValue::Inst(i)     => asm_inst_to_json(i),
+        AsmValue::Path(segs)  => serde_json::Value::Array(segs.iter().map(asm_value_to_json).collect()),
+        AsmValue::List(items) => serde_json::Value::Array(items.iter().map(asm_value_to_json).collect()),
+    }
+}
+
+/// Convert a `serde_json::Value` returned by a hook into an `AsmValue`.
+fn json_val_to_asm_value(v: &serde_json::Value) -> AsmValue {
+    match v {
+        serde_json::Value::String(s)  => AsmValue::Str(s.clone()),
+        serde_json::Value::Number(n)  => {
+            if let Some(i) = n.as_i64() { AsmValue::Int(i) }
+            else { AsmValue::Str(n.to_string()) }
+        }
+        serde_json::Value::Bool(b)    => AsmValue::Str(b.to_string()),
+        serde_json::Value::Null       => AsmValue::Str("null".into()),
+        serde_json::Value::Array(arr) =>
+            AsmValue::List(arr.iter().map(json_val_to_asm_value).collect()),
+        serde_json::Value::Object(map) => {
+            let fields = map.iter().map(|(k, v)| AsmField {
+                name:  k.clone(),
+                value: json_val_to_asm_value(v),
+            }).collect();
+            AsmValue::Inst(Box::new(AsmInst {
+                type_name: String::new(),
+                name:      "_".into(),
+                type_hint: None,
+                fields,
+            }))
         }
     }
-    None
 }

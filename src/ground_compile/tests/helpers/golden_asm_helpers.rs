@@ -44,71 +44,14 @@ pub fn show_inst(i: &AsmInst) -> String {
     format!("Inst[{}]", show_inst_inline(i))
 }
 
-pub fn show_type_fn_def(f: &AsmTypeFnDef) -> String {
-    let name   = f.name.as_deref().unwrap_or("_");
-    let scope  = if f.scope.is_empty() { String::new() } else { format!(" scope=[{}]", f.scope.join(":")) };
-    let params = f.params.iter()
-        .map(|p| format!("{}: {}", p.name, p.type_name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let entries: Vec<_> = f.body.iter().map(|entry| {
-        let fields: Vec<_> = entry.fields.iter()
-            .map(|bf| format!("{}={}", bf.name, show_value(&bf.value)))
-            .collect();
-        format!("{}:{}[{}]", entry.alias, entry.vendor_type, fields.join(", "))
-    }).collect();
-    if entries.is_empty() {
-        format!("TypeFn[{}({}){}]", name, params, scope)
-    } else {
-        format!("TypeFn[{}({}){}, {}]", name, params, scope, entries.join(", "))
-    }
-}
-
-fn show_output(o: &AsmOutput) -> String {
-    let fields: Vec<_> = o.fields.iter().map(show_field).collect();
-    format!("Output[{}:{} {}]", o.alias, o.vendor_type, fields.join(", "))
-}
-
-fn show_link_out(lo: &AsmLinkOutput) -> String {
-    let outs: Vec<_> = lo.outputs.iter().map(show_output).collect();
-    format!("LinkOut[{}->{}{}]",
-        lo.from.name,
-        lo.to.name,
-        if outs.is_empty() { String::new() } else { format!(" {}", outs.join(", ")) },
-    )
-}
-
-fn show_expansion(exp: &AsmExpansion, indent: usize) -> String {
-    let pad = "  ".repeat(indent);
-    let mut parts = vec![format!("{}{}", pad, show_inst(&exp.inst))];
-    for o in &exp.outputs {
-        parts.push(format!("{}  {}", pad, show_output(o)));
-    }
-    for lo in &exp.link_outs {
-        parts.push(format!("{}  {}", pad, show_link_out(lo)));
-    }
-    for child in &exp.children {
-        parts.push(show_expansion(child, indent + 1));
-    }
-    parts.join("\n")
-}
-
-pub fn show_deploy(d: &AsmDeploy) -> String {
-    let target     = d.target.join(":");
-    let dep_fields: Vec<_> = d.fields.iter().map(show_field).collect();
+pub fn show_plan(p: &AsmPlan) -> String {
+    let plan_fields: Vec<_> = p.fields.iter().map(show_field).collect();
     let mut parts = vec![
-        format!("Deploy[{}, {}]", target, d.name),
-        format!("  inst: {}", show_inst(&d.inst)),
+        format!("Plan[{}]", p.name),
+        format!("  root: {}", show_inst(&p.root)),
     ];
-    if let Some(tf) = &d.type_fn {
-        parts.push(format!("  type_fn: {}", tf));
-    }
-    if !dep_fields.is_empty() {
-        parts.push(format!("  fields: {}", dep_fields.join(", ")));
-    }
-    if let Some(exp) = &d.expansion {
-        parts.push(format!("  expansion:"));
-        parts.push(show_expansion(exp, 2));
+    if !plan_fields.is_empty() {
+        parts.push(format!("  fields: {}", plan_fields.join(", ")));
     }
     parts.join("\n")
 }
@@ -176,7 +119,7 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     };
     let res = parse(req);
     let ir  = resolve(res);
-    show_asm(lower(&ir), ir)
+    show_asm(lower(&ir, ""), ir)
 }
 
 /// Parse + resolve + lower `input`, format as compact string.
@@ -185,7 +128,16 @@ pub fn show(input: &str) -> String {
         units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string() }],
     });
     let ir  = resolve(res);
-    show_asm(lower(&ir), ir)
+    show_asm(lower(&ir, ""), ir)
+}
+
+/// Like `show` but also supplies TypeScript source for hook execution.
+pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
+    let res = parse(ParseReq {
+        units: vec![ParseUnit { name: "test".into(), path: vec![], src: grd_src.to_string() }],
+    });
+    let ir  = resolve(res);
+    show_asm(lower(&ir, ts_src), ir)
 }
 
 fn show_asm(asm: AsmRes, ir: IrRes) -> String {
@@ -207,11 +159,8 @@ fn show_asm(asm: AsmRes, ir: IrRes) -> String {
         }
     }
 
-    // Deploys
-    lines.extend(asm.deploys.iter().map(show_deploy));
-
-    // Type fn defs
-    lines.extend(asm.type_fns.iter().map(show_type_fn_def));
+    // Plans
+    lines.extend(asm.plans.iter().map(show_plan));
 
     norm(&lines.join("\n"))
 }

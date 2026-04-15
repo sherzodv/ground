@@ -7,4 +7,5 @@ members = [
   "src/ground_run",
   "src/ground_be_terra",
   "src/ground_test",
+  "src/ground_ts",
 ]

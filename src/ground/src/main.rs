@@ -1,8 +1,8 @@
 mod ops_display;
 
-use std::{env, fs, path::Path, process};
+use std::{env, fs, path::{Path, PathBuf}, process};
 
-use ground_compile::{compile, CompileReq, CompileRes, AsmValue, AsmInstRef, Symbol, Unit};
+use ground_compile::{compile, CompileReq, CompileRes, AsmValue, AsmInstRef, Symbol, Unit, STDLIB_UNIT_COUNT};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
@@ -92,33 +92,74 @@ fn cmd_init(git_ignore: bool) {
 // Compile .grd files and run code generation
 // ---------------------------------------------------------------------------
 
-fn compile_and_gen() -> (CompileRes, String, String) {
-    let entries = match fs::read_dir(".") {
-        Ok(e)  => e,
-        Err(e) => { eprintln!("error reading current directory: {e}"); process::exit(1); }
-    };
+/// Collect all `.grd` files under `root` recursively.
+/// Each file's pack path is derived from its directory relative to `root`.
+fn collect_grd_files(root: &Path) -> Vec<Unit> {
+    let mut units = Vec::new();
+    collect_grd_recursive(root, root, &mut units);
+    units
+}
 
-    let mut units: Vec<Unit> = Vec::new();
+fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e)  => e,
+        Err(e) => { eprintln!("warning: cannot read {:?}: {e}", dir); return; }
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "grd") {
-            let path_str = path.to_string_lossy().into_owned();
+        if path.is_dir() {
+            collect_grd_recursive(root, &path, units);
+        } else if path.extension().map_or(false, |e| e == "grd") {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            // Pack path = directory components (not the filename).
+            let pack_path: Vec<String> = rel.parent()
+                .map(|p| p.components()
+                    .filter_map(|c| match c {
+                        std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+                        _ => None,
+                    })
+                    .collect())
+                .unwrap_or_default();
+            // Unit name: the file stem unless it is "pack" (pack.grd merges into
+            // its directory scope; all other named files create a named sub-pack).
+            let stem = rel.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let name = if stem == "pack" {
+                String::new()
+            } else {
+                stem.to_string()
+            };
             match fs::read_to_string(&path) {
-                Ok(content) => units.push(Unit { name: path_str, path: vec![], src: content }),
-                Err(e)      => { eprintln!("error: {path_str}: {e}"); process::exit(1); }
+                Ok(src) => {
+                    let ts_src = path.with_extension("ts")
+                        .to_str()
+                        .and_then(|p| fs::read_to_string(p).ok());
+                    units.push(Unit { name, path: pack_path, src, ts_src });
+                }
+                Err(e) => { eprintln!("error: {}: {e}", path.display()); process::exit(1); }
             }
         }
     }
+}
+
+/// Compile all .grd files in the current directory, print errors and exit on failure.
+fn do_compile() -> CompileRes {
+    let units = collect_grd_files(&PathBuf::from("."));
 
     if units.is_empty() {
         eprintln!("no .grd files found in current directory");
         process::exit(1);
     }
 
-    // unit 0 is stdlib; user units start at index 1
-    let unit_names: Vec<String> = std::iter::once("std".to_string())
-        .chain(units.iter().map(|u| u.name.clone()))
-        .collect();
+    // stdlib units are prepended by compile(); their display names must come first.
+    let mut unit_names: Vec<String> = vec![
+        "<std>".into(),
+        "<std:aws>".into(),
+        "<std:aws:transform>".into(),
+    ];
+    debug_assert_eq!(unit_names.len(), STDLIB_UNIT_COUNT);
+    unit_names.extend(units.iter().map(|u| u.name.clone()));
 
     let res = compile(CompileReq { units });
 
@@ -134,18 +175,25 @@ fn compile_and_gen() -> (CompileRes, String, String) {
         process::exit(1);
     }
 
-    if res.deploys.is_empty() {
-        eprintln!("no deploy declarations found — nothing to generate");
+    if res.plans.is_empty() {
+        eprintln!("no plan declarations found — nothing to generate");
         process::exit(1);
     }
+
+    res
+}
+
+/// Compile and generate a merged Terraform JSON for the first deploy.
+/// Used by `cmd_plan` and `cmd_apply` which operate on a single terraform workspace.
+fn compile_and_gen() -> (CompileRes, String, String) {
+    let res = do_compile();
 
     let json = match ground_be_terra::generate(&res) {
         Ok(j)  => j,
         Err(e) => { eprintln!("error: {e}"); process::exit(1); }
     };
 
-    let stack_name = res.deploys[0].name.clone();
-
+    let stack_name = res.plans[0].name.clone();
     (res, json, stack_name)
 }
 
@@ -163,9 +211,17 @@ fn write_stack(stack_name: &str, json: &str) {
 }
 
 fn cmd_gen_terra() {
-    let (_res, json, stack_name) = compile_and_gen();
-    write_stack(&stack_name, &json);
-    println!("wrote .ground/terra/{stack_name}/main.tf.json");
+    let res = do_compile();
+
+    let outputs = match ground_be_terra::generate_each(&res) {
+        Ok(o)  => o,
+        Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+    };
+
+    for (name, json) in &outputs {
+        write_stack(name, json);
+        println!("wrote .ground/terra/{name}/main.tf.json");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,16 +230,16 @@ fn cmd_gen_terra() {
 
 fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
     let mut lookup = Vec::new();
-    for deploy in &res.deploys {
-        let alias_u = deploy.name.replace('-', "_");
-        let pfx_u = deploy.fields.iter()
+    for plan in &res.plans {
+        let alias_u = plan.name.replace('-', "_");
+        let pfx_u = plan.fields.iter()
             .find(|f| f.name == "prefix")
             .and_then(|f| match &f.value {
                 AsmValue::Str(s) | AsmValue::Ref(s) => Some(s.replace('-', "_")),
                 _ => None,
             })
             .unwrap_or_default();
-        for inst_ref in collect_members(&deploy.inst, &res.symbol) {
+        for inst_ref in collect_members(&plan.root, &res.symbol) {
             let inst_u = inst_ref.name.replace('-', "_");
             let key    = format!("{pfx_u}{alias_u}_{inst_u}");
             let label  = format!("{}:{}", inst_ref.type_name, inst_ref.name);

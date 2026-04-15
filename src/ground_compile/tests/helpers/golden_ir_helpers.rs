@@ -174,15 +174,6 @@ pub fn show_inst_entry(idx: usize, ir: &IrRes) -> String {
     format!("Inst#{}[{}]", idx, parts.join(", "))
 }
 
-pub fn show_deploy_entry(dep: &IrDeployDef, ir: &IrRes) -> String {
-    let mut parts = vec![show_ref(&dep.what), show_ref(&dep.target), show_ref(&dep.name)];
-    parts.extend(dep.fields.iter().map(|f| show_field(f, ir)));
-    if let Some(fid) = dep.to_type_fn {
-        parts.push(format!("type_fn=TypeFn#{}", fid.0));
-    }
-    format!("Deploy[{}]", parts.join(", "))
-}
-
 // ---------------------------------------------------------------------------
 // Type function definitions
 // ---------------------------------------------------------------------------
@@ -228,10 +219,19 @@ fn show_scope_ir(scope_id: ScopeId, ir: &IrRes) -> String {
         }
     }
 
-    // Pack-level links belonging to this scope (struct links are shown inline in type bodies)
+    // Pack-level links belonging to this scope.
+    // Struct-body links are shown inline in their type body — exclude them here
+    // regardless of which scope they landed in (old-syntax puts them in a Type
+    // sub-scope, new-syntax puts them directly in the pack scope).
     if scope.kind == ScopeKind::Pack {
+        let struct_link_ids: std::collections::HashSet<u32> = ir.types.iter()
+            .flat_map(|t| match &t.body {
+                IrTypeBody::Struct(ids) => ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+                _ => vec![],
+            })
+            .collect();
         for (i, l) in ir.links.iter().enumerate() {
-            if l.scope == scope_id {
+            if l.scope == scope_id && !struct_link_ids.contains(&(i as u32)) {
                 parts.push(show_link_entry(i, ir));
             }
         }
@@ -310,9 +310,9 @@ fn show_ir(ir: IrRes) -> String {
         }
     }
 
-    // Deploys
-    for dep in &ir.deploys {
-        lines.push(show_deploy_entry(dep, &ir));
+    // Plans
+    for plan in &ir.plans {
+        lines.push(format!("Plan[{}]", plan.name));
     }
 
     for e in &ir.errors {

@@ -1,4 +1,4 @@
-use std
+use std:*
 
 # ── Networking ───────────────────────────────────────────────────────────────────
 
@@ -20,7 +20,7 @@ aws_subnet = {
 }
 
 aws_eip = {
-    domain = vpc
+    domain = string
 }
 
 aws_nat_gateway = {
@@ -28,12 +28,14 @@ aws_nat_gateway = {
     allocation = aws_eip
 }
 
+aws_route = {
+    cidr_block = string
+    gateway    = aws_internet_gateway | aws_nat_gateway
+}
+
 aws_route_table = {
     vpc    = aws_vpc
-    routes = [ def route = {
-        cidr_block = string
-        gateway    = aws_internet_gateway | aws_nat_gateway
-    }]
+    routes = [ aws_route ]
 }
 
 aws_route_table_association = {

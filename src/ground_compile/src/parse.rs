@@ -260,6 +260,13 @@ impl<'a> Parser<'a> {
             return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
         }
 
+        // Struct body: "{" struct_items "}" — used for anonymous inline struct types in fields
+        if self.rest().starts_with('{') {
+            let items = self.parse_struct_body().unwrap_or_default();
+            let body = self.node(start, AstTypeDefBody::Struct(items));
+            return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
+        }
+
         // Ref or sugar enum: ref ("|" ref)*
         let first = self.parse_ref()?;
         let mut refs = vec![first];
@@ -339,6 +346,7 @@ impl<'a> Parser<'a> {
     fn parse_struct_item(&mut self) -> Option<AstNode<AstStructItem>> {
         let start = self.pos;
 
+        // Legacy: type keyword
         if self.at_keyword("type") {
             let saved = self.pos;
             if let Some(td) = self.parse_type_def() {
@@ -347,6 +355,7 @@ impl<'a> Parser<'a> {
             self.pos = saved;
         }
 
+        // Legacy: link keyword
         if self.at_keyword("link") {
             let saved = self.pos;
             if let Some(ld) = self.parse_link_def() {
@@ -354,6 +363,40 @@ impl<'a> Parser<'a> {
             }
             self.pos = saved;
         }
+
+        // New: def keyword → nested named def inside struct body
+        if self.at_keyword("def") {
+            if let Some(td) = self.parse_top_def_with_keyword() {
+                return Some(self.node(start, AstStructItem::Def(td)));
+            }
+        }
+
+        // New: anonymous field `= type_expr`
+        if self.rest().starts_with('=') {
+            let eq_pos = self.pos;
+            self.advance(1); // consume `=`
+            self.skip_ws();
+            if let Some(ty) = self.parse_type_expr() {
+                let fd = self.node(eq_pos, AstFieldDef { name: None, ty });
+                return Some(self.node(start, AstStructItem::Field(fd)));
+            }
+            self.pos = eq_pos;
+            return None;
+        }
+
+        // New: named field `ident = type_expr`
+        let saved = self.pos;
+        if let Some(name) = self.parse_ident() {
+            self.skip_ws();
+            if self.eat("=") {
+                self.skip_ws();
+                if let Some(ty) = self.parse_type_expr() {
+                    let fd = self.node(saved, AstFieldDef { name: Some(name), ty });
+                    return Some(self.node(start, AstStructItem::Field(fd)));
+                }
+            }
+        }
+        self.pos = saved;
 
         None
     }
@@ -621,6 +664,15 @@ impl<'a> Parser<'a> {
         }
         self.skip_ws();
 
+        // Detect `via` keyword: the word "via" followed by whitespace.
+        let via = {
+            let rest = &self.src[self.pos..];
+            let is_via = rest.starts_with("via") && rest[3..].chars().next()
+                .map_or(true, |c| !c.is_alphanumeric() && c != '_' && c != '-');
+            if is_via { self.pos += 3; self.skip_ws(); }
+            is_via
+        };
+
         let value = match self.parse_inst_value() {
             Some(v) => v,
             None => {
@@ -631,7 +683,7 @@ impl<'a> Parser<'a> {
         };
 
         let name = AstNode::new(self.unit, id.loc.start, id.loc.end, id.inner);
-        Some(self.node(start, AstField::Named { name, value }))
+        Some(self.node(start, AstField::Named { name, value, via }))
     }
 
     fn parse_inst_item(&mut self) -> Option<AstNode<AstField>> {
@@ -650,14 +702,18 @@ impl<'a> Parser<'a> {
         let start = self.pos;
 
         // Inst must not start with reserved keywords
-        if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") || self.at_keyword("use") {
+        if self.at_keyword("type")   || self.at_keyword("link")
+        || self.at_keyword("use")    || self.at_keyword("pack")   || self.at_keyword("plan")
+        || self.at_keyword("def") {
             return None;
         }
 
         let type_name = self.parse_ref()?;
         self.skip_ws();
 
-        if self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") || self.at_keyword("use") {
+        if self.at_keyword("type")   || self.at_keyword("link")
+        || self.at_keyword("use")    || self.at_keyword("pack")   || self.at_keyword("plan")
+        || self.at_keyword("def") {
             self.pos = start;
             return None;
         }
@@ -685,56 +741,6 @@ impl<'a> Parser<'a> {
         Some(self.node(start, AstInst { type_name, inst_name, fields }))
     }
 
-    /// `"deploy" ref "to" ref "as" ref ("{" inst-field* "}")?`
-    fn parse_deploy(&mut self) -> Option<AstNode<AstDeploy>> {
-        let start = self.pos;
-        if !self.at_keyword("deploy") { return None; }
-        self.advance("deploy".len());
-        self.skip_ws();
-
-        let what = self.parse_ref()?;
-        self.skip_ws();
-
-        if !self.at_keyword("to") {
-            self.push_error(self.pos, "expected 'to' after deploy target");
-            return None;
-        }
-        self.advance("to".len());
-        self.skip_ws();
-
-        let target = self.parse_ref()?;
-        self.skip_ws();
-
-        if !self.at_keyword("as") {
-            self.push_error(self.pos, "expected 'as' after deploy destination");
-            return None;
-        }
-        self.advance("as".len());
-        self.skip_ws();
-
-        let name = self.parse_ref()?;
-        self.skip_ws();
-
-        let mut fields = Vec::new();
-        if self.eat("{") {
-            loop {
-                self.skip_ws();
-                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
-                if let Some(f) = self.try_parse_inst_field() {
-                    fields.push(f);
-                } else {
-                    self.push_error(self.pos, format!(
-                        "unexpected token in deploy body: {:?}", self.peek()
-                    ));
-                    self.skip_past_line();
-                }
-            }
-            self.eat("}");
-        }
-
-        Some(self.node(start, AstDeploy { what, target, name, fields }))
-    }
-
     fn parse_use(&mut self) -> Option<AstNode<AstUse>> {
         let start = self.pos;
         if !self.at_keyword("use") { return None; }
@@ -744,11 +750,227 @@ impl<'a> Parser<'a> {
         Some(self.node(start, AstUse { path: path.inner }))
     }
 
+    // -- new keyword: pack -----------------------------------------------
+
+    /// `"pack" ref ("{" def* "}")?`
+    fn parse_pack(&mut self) -> Option<AstNode<AstPack>> {
+        let start = self.pos;
+        if !self.at_keyword("pack") { return None; }
+        let saved = self.pos;
+        self.advance("pack".len());
+        self.skip_ws();
+        let path = match self.parse_ref() {
+            Some(r) => r,
+            None    => { self.pos = saved; return None; }
+        };
+        self.skip_ws();
+        let defs = if self.eat("{") {
+            let mut defs = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                if let Some(def) = self.parse_def() {
+                    defs.push(def);
+                } else {
+                    self.push_error(self.pos, format!(
+                        "unexpected token in pack body: {:?}", self.peek()
+                    ));
+                    self.skip_to_next_def();
+                    if self.pos >= self.src.len() { break; }
+                }
+            }
+            self.eat("}");
+            defs
+        } else {
+            vec![]
+        };
+        Some(self.node(start, AstPack { path, defs }))
+    }
+
+    // -- new keyword: plan -----------------------------------------------
+
+    /// `"plan" ident ("{" inst-field* "}")?`
+    fn parse_plan(&mut self) -> Option<AstNode<AstPlan>> {
+        let start = self.pos;
+        if !self.at_keyword("plan") { return None; }
+        let saved = self.pos;
+        self.advance("plan".len());
+        self.skip_ws();
+        let name = match self.parse_ident() {
+            Some(n) => n,
+            None    => { self.pos = saved; return None; }
+        };
+        self.skip_ws();
+        let fields = if self.eat("{") {
+            let mut fields = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                if let Some(f) = self.try_parse_inst_field() {
+                    fields.push(f);
+                } else {
+                    self.push_error(self.pos, format!(
+                        "unexpected token in plan body: {:?}", self.peek()
+                    ));
+                    self.skip_past_line();
+                }
+            }
+            self.eat("}");
+            fields
+        } else {
+            vec![]
+        };
+        Some(self.node(start, AstPlan { name, fields }))
+    }
+
+    // -- new unified def forms ------------------------------------------
+
+    /// `ident "=" type_expr` — a single named field def.
+    /// Returns None (backtracking fully) when not followed by `=`.
+    fn parse_named_field_def(&mut self) -> Option<AstNode<AstFieldDef>> {
+        let start = self.pos;
+        let saved = self.pos;
+        let name = self.parse_ident()?;
+        self.skip_ws();
+        if !self.eat("=") { self.pos = saved; return None; }
+        self.skip_ws();
+        let ty = match self.parse_type_expr() {
+            Some(t) => t,
+            None => {
+                self.push_error(self.pos, format!(
+                    "expected type expression for field '{}'", name.inner
+                ));
+                return None;
+            }
+        };
+        Some(self.node(start, AstFieldDef { name: Some(name), ty }))
+    }
+
+    /// `"{" (ident "=" type_expr)* "}"` — input field block in `def name { … } = …`
+    fn parse_field_block(&mut self) -> Vec<AstNode<AstFieldDef>> {
+        if !self.eat("{") { return vec![]; }
+        let mut fields = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+            if let Some(f) = self.parse_named_field_def() {
+                fields.push(f);
+            } else {
+                self.push_error(self.pos, format!(
+                    "unexpected token in def input block: {:?}", self.peek()
+                ));
+                self.skip_past_line();
+            }
+        }
+        self.eat("}");
+        fields
+    }
+
+    /// After consuming `=`, parse the output:
+    ///   - `{` struct body → `Struct`
+    ///   - `ident {` hook + struct body → `Struct` (with hook name)
+    ///   - anything else → `TypeExpr`
+    fn parse_after_eq(&mut self) -> (Option<AstNode<String>>, AstNode<AstTopDefOutput>) {
+        let start = self.pos;
+
+        // Direct struct body
+        if self.rest().starts_with('{') {
+            let items = self.parse_struct_body().unwrap_or_default();
+            return (None, self.node(start, AstTopDefOutput::Struct(items)));
+        }
+
+        // Try hook name: ident immediately followed (with optional ws) by `{`
+        let saved = self.pos;
+        if let Some(hook_name) = self.parse_ident() {
+            self.skip_ws();
+            if self.rest().starts_with('{') {
+                let items = self.parse_struct_body().unwrap_or_default();
+                return (Some(hook_name), self.node(start, AstTopDefOutput::Struct(items)));
+            }
+            self.pos = saved; // not a hook — backtrack
+        }
+
+        // Type expression (ref, enum, list, primitive)
+        if let Some(te) = self.parse_type_expr() {
+            return (None, self.node(start, AstTopDefOutput::TypeExpr(te)));
+        }
+
+        self.push_error(self.pos, "expected type expression or struct body after '='");
+        (None, self.node(start, AstTopDefOutput::Unit))
+    }
+
+    /// `"def" ident input? ("=" hook? output)?`
+    fn parse_top_def_with_keyword(&mut self) -> Option<AstNode<AstTopDef>> {
+        let start = self.pos;
+        if !self.at_keyword("def") { return None; }
+        let saved = self.pos;
+        self.advance("def".len());
+        self.skip_ws();
+        let name = match self.parse_ident() {
+            Some(n) => n,
+            None    => { self.pos = saved; return None; }
+        };
+        self.skip_ws();
+
+        // Optional input block: `{ field* }` before `=`
+        let input = if self.rest().starts_with('{') {
+            self.parse_field_block()
+        } else {
+            vec![]
+        };
+        self.skip_ws();
+
+        let output_start = self.pos;
+        let (hook, output) = if self.eat("=") {
+            self.skip_ws();
+            self.parse_after_eq()
+        } else {
+            (None, self.node(output_start, AstTopDefOutput::Unit))
+        };
+
+        Some(self.node(start, AstTopDef { name, input, hook, output }))
+    }
+
+    /// `ident "=" (type_expr | "{" struct_items "}")` — keyword-free type def.
+    /// Returns None (backtracking fully) when not followed by `=`, deferring to `parse_inst`.
+    fn parse_top_def_no_keyword(&mut self) -> Option<AstNode<AstTopDef>> {
+        let start = self.pos;
+        let saved = self.pos;
+
+        // Skip if this looks like a keyword
+        if self.at_keyword("type")   || self.at_keyword("link")
+        || self.at_keyword("use")    || self.at_keyword("pack")   || self.at_keyword("plan")
+        || self.at_keyword("def") {
+            return None;
+        }
+
+        let name = match self.parse_ident() {
+            Some(n) => n,
+            None    => return None,
+        };
+        self.skip_ws();
+
+        if !self.eat("=") { self.pos = saved; return None; }
+        self.skip_ws();
+
+        let (hook, output) = self.parse_after_eq();
+        Some(self.node(start, AstTopDef { name, input: vec![], hook, output }))
+    }
+
     fn parse_def(&mut self) -> Option<AstDef> {
-        if self.at_keyword("use")    { return self.parse_use().map(AstDef::Use);         }
-        if self.at_keyword("type")   { return self.parse_type_def().map(AstDef::Type);   }
-        if self.at_keyword("link")   { return self.parse_link_def().map(AstDef::Link);   }
-        if self.at_keyword("deploy") { return self.parse_deploy().map(AstDef::Deploy);   }
+        if self.at_keyword("pack") {
+            if let Some(p) = self.parse_pack() { return Some(AstDef::Pack(p)); }
+        }
+        if self.at_keyword("use")    { return self.parse_use().map(AstDef::Use);       }
+        if self.at_keyword("plan") {
+            if let Some(p) = self.parse_plan() { return Some(AstDef::Plan(p)); }
+        }
+        if self.at_keyword("def") {
+            if let Some(td) = self.parse_top_def_with_keyword() { return Some(AstDef::Def(td)); }
+        }
+        if self.at_keyword("type")   { return self.parse_type_def().map(AstDef::Type); }
+        if self.at_keyword("link")   { return self.parse_link_def().map(AstDef::Link); }
+        if let Some(td) = self.parse_top_def_no_keyword() { return Some(AstDef::Def(td)); }
         self.parse_inst().map(AstDef::Inst)
     }
 
@@ -784,7 +1006,9 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_ws();
             if self.pos >= self.src.len() { break; }
-            if self.at_keyword("use") || self.at_keyword("type") || self.at_keyword("link") || self.at_keyword("deploy") {
+            if self.at_keyword("use")  || self.at_keyword("type")  || self.at_keyword("link")
+            || self.at_keyword("pack") || self.at_keyword("plan")
+            || self.at_keyword("def") {
                 break;
             }
             if self.peek().map_or(false, |c| c.is_ascii_alphabetic()) { break; }
@@ -858,6 +1082,8 @@ fn hoist_struct_scopes(
         match item.inner {
             AstStructItem::TypeDef(sub_td) => hoisted.push(sub_td),
             AstStructItem::LinkDef(_)      => keep.push(item),
+            // New-syntax items are not hoisted into type scopes by this legacy pass.
+            AstStructItem::Field(_) | AstStructItem::Def(_) => keep.push(item),
         }
     }
 

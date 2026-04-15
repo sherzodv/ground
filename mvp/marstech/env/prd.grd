@@ -1,67 +1,66 @@
-use std
+use std:*
 use marstech:*
+use app:*
+use poc:*
+use ops:*
+use routing:*
 
-space prd {
-    host: prd.internal
-
-    use app:*
-    use poc:*
-    use ops:*
-    use routing:*
-
-    space app {
-        host:     app
-        services: [
-            service:media
-            service:pay
-            service:core
-            service:hubspot
-            service:notify
-        ]
-    }
-
-    space poc {
-        host:     poc
-        services: [ service:product-wf ]
-    }
-
-    space api {
-        host:     api
-        services: [
-            service:api-gen
-            service:hub
-            service:metrics
-        ]
-    }
-
-    stack marstech {
-        service:api-gen
-        service:hub
-        service:product-wf
-        service:metrics
+space app {
+    host:     app
+    services: [
         service:media
         service:pay
         service:core
         service:hubspot
         service:notify
-        database:main
-        bucket:media
-        secret:datadog
-        secret:media
-        secret:pay
-        secret:core
-        secret:hubspot
-        secret:notify
-        domain:marstech-co
-        domain:influencer-ae
-        space:app
-        space:poc
-        space:api
-        edge:edge-api
-        edge:edge-hub
-        edge:edge-workflows
-        edge:edge-metrics
-    }
+    ]
+}
+
+space poc {
+    host:     poc
+    services: [ service:product-wf ]
+}
+
+space api {
+    host:     api
+    services: [
+        service:api-gen
+        service:hub
+        service:metrics
+    ]
+}
+
+stack marstech {
+    service:api-gen
+    service:hub
+    service:product-wf
+    service:metrics
+    service:media
+    service:pay
+    service:core
+    service:hubspot
+    service:notify
+    database:main
+    bucket:media
+    secret:datadog
+    secret:media
+    secret:pay
+    secret:core
+    secret:hubspot
+    secret:notify
+    domain:marstech-co
+    domain:influencer-ae
+    space:app
+    space:poc
+    space:api
+    edge:edge-api
+    edge:edge-hub
+    edge:edge-workflows
+    edge:edge-metrics
+}
+
+space prd {
+    host: prd.internal
 }
 
 # HACK 3: two plan statements, same stack — independent materializations with
@@ -69,8 +68,7 @@ space prd {
 # architecture definition. plan is a typed execution trigger, not a template call.
 
 deploy prd-eu {
-    stack:  marstech
-    region: [ eu-central:1  eu-central:2  eu-central:3 ]
+    stack: marstech
 
     databases: [
         { database: main  size: medium  storage: 20 }
@@ -90,8 +88,7 @@ deploy prd-eu {
 }
 
 deploy prd-me {
-    stack:  marstech
-    region: [ me-central:1 ]
+    stack: marstech
 
     databases: [
         { database: main  size: small  storage: 20 }
@@ -110,5 +107,5 @@ deploy prd-me {
     ]
 }
 
-plan prd-eu
-plan prd-me
+plan prd-eu { region: [ eu-central:1  eu-central:2  eu-central:3 ] }
+plan prd-me { region: [ me-central:1 ] }

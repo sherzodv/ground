@@ -37,7 +37,7 @@ service = {
     observe = observe
 }
 
-secret
+def secret
 
 # HACK 2: stack uses an anonymous field — a typed heterogeneous bag with no field names,
 # just typed slots. The membership list has no keys, only types.

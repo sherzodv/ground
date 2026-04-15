@@ -46,11 +46,17 @@ mod files {
         let input = extract_block(testable, "ground")
             .ok_or_else(|| format!("{}: missing ```ground block", path.display()))?;
 
+        // Load the co-located .ts file if present (same stem, .ts extension).
+        let ts_src = path.with_extension("ts")
+            .to_str()
+            .and_then(|p| std::fs::read_to_string(p).ok());
+
         let res = compile(CompileReq {
             units: vec![Unit {
-                name: path.to_str().unwrap().to_string(),
-                path: vec![],
-                src:  input.to_string(),
+                name:   path.to_str().unwrap().to_string(),
+                path:   vec![],
+                src:    input.to_string(),
+                ts_src,
             }],
         });
         if !res.errors.is_empty() {

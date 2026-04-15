@@ -70,6 +70,58 @@ pub struct AstRef {
 pub enum AstPrimitive { String, Integer, Reference }
 
 // ---------------------------------------------------------------------------
+// New unified def node (replaces AstDef::Type + AstDef::Link at top level)
+// ---------------------------------------------------------------------------
+
+/// A named def — covers simple type defs, bare unit types, and hook transformations.
+///
+/// Forms:
+///   `name = type_expr`                       — simple def (input empty, hook None, output TypeExpr)
+///   `name`                                   — unit def   (input empty, hook None, output Unit)
+///   `def name { input } = { output }`        — def with input body
+///   `def name { input } = hookname { output }` — def with hook + output struct
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstTopDef {
+    pub name:   AstNode<String>,
+    pub input:  Vec<AstNode<AstFieldDef>>,     // fields before `=`; empty for simple defs
+    pub hook:   Option<AstNode<String>>,        // TS function name between `=` and output body
+    pub output: AstNode<AstTopDefOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AstTopDefOutput {
+    Unit,                                       // bare `def name` or `name` with no `=`
+    TypeExpr(AstNode<AstTypeDef>),              // `= type_expr`
+    Struct(Vec<AstNode<AstStructItem>>),        // `= hook? { struct_items }`
+}
+
+/// A named or anonymous field declaration inside a struct/output body.
+/// Replaces `AstLinkDef` in struct item context.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstFieldDef {
+    pub name: Option<AstNode<String>>,          // None for anonymous `= type_expr`
+    pub ty:   AstNode<AstTypeDef>,
+}
+
+// ---------------------------------------------------------------------------
+// Pack and Plan declarations
+// ---------------------------------------------------------------------------
+
+/// `pack ref` or `pack ref { defs... }` — namespace declaration (like Scala packages).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstPack {
+    pub path: AstNode<AstRef>,
+    pub defs: Vec<AstDef>,                      // empty for bare file-level `pack std:aws`
+}
+
+/// `plan name` or `plan name { fields }` — resolution trigger.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstPlan {
+    pub name:   AstNode<String>,
+    pub fields: Vec<AstNode<AstField>>,
+}
+
+// ---------------------------------------------------------------------------
 // Type function parameters & entries
 // ---------------------------------------------------------------------------
 
@@ -93,13 +145,15 @@ pub struct AstTypeFnEntry {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstTypeDefBody {
+    /// Unit: bare `def name` or `name` with no rhs
+    Unit,
     /// Built-in scalar: `string` | `integer` | `reference`
     Primitive(AstPrimitive),
     /// Single reference to an existing type: `postgresql`, `type:region:type:zone`
     Ref(AstRef),
     /// Union of refs: `self | provider | cloud`
     Enum(Vec<AstNode<AstRef>>),
-    /// Struct body: `{ link … type … }`
+    /// Struct body: `{ field … }` — new-syntax field items or legacy `link`/`type` items
     Struct(Vec<AstNode<AstStructItem>>),
     /// List whose element type is described by the inner `AstTypeDef`: `[ … ]`
     List(Box<AstNode<AstTypeDef>>),
@@ -124,7 +178,13 @@ pub struct AstTypeDef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstStructItem {
+    /// New syntax: `name = type_expr` or `= type_expr` (anonymous)
+    Field(AstNode<AstFieldDef>),
+    /// New syntax: `def name = type_expr` — nested named type inside a struct body
+    Def(AstNode<AstTopDef>),
+    /// Legacy (kept for backward compat while resolver migrates): `type name = …`
     TypeDef(AstNode<AstTypeDef>),
+    /// Legacy (kept for backward compat while resolver migrates): `link name = …`
     LinkDef(AstNode<AstLinkDef>),
 }
 
@@ -153,7 +213,7 @@ pub enum AstValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstField {
-    Named { name: AstNode<String>, value: AstNode<AstValue> },
+    Named { name: AstNode<String>, value: AstNode<AstValue>, via: bool },
     /// Anonymous value (only valid inside `inst`, not `deploy`)
     Anon(AstNode<AstValue>),
 }
@@ -163,14 +223,6 @@ pub struct AstInst {
     pub type_name: AstNode<AstRef>,
     pub inst_name: AstNode<String>,
     pub fields:    Vec<AstNode<AstField>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AstDeploy {
-    pub what:   AstNode<AstRef>,
-    pub target: AstNode<AstRef>,
-    pub name:   AstNode<AstRef>,
-    pub fields: Vec<AstNode<AstField>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -205,10 +257,17 @@ pub struct AstUse {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstDef {
+    /// New syntax: `name = type_expr`, `def name …`, bare `name` / `def name`
+    Def(AstNode<AstTopDef>),
+    /// New syntax: `pack ref { … }` namespace declaration
+    Pack(AstNode<AstPack>),
+    /// New syntax: `plan name { … }` resolution trigger
+    Plan(AstNode<AstPlan>),
+    /// Legacy (kept for resolver backward compat): `type name = …`
     Type(AstNode<AstTypeDef>),
+    /// Legacy (kept for resolver backward compat): `link name = …`
     Link(AstNode<AstLinkDef>),
     Inst(AstNode<AstInst>),
-    Deploy(AstNode<AstDeploy>),
     Scope(AstNode<AstScope>),
     Use(AstNode<AstUse>),
 }

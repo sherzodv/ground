@@ -1,617 +1,68 @@
-/// Golden tests for the gen lowering pass (`ground_compile::asm`).
+/// Golden tests for the ASM lowering pass (`ground_compile::asm`).
 ///
 /// Each test calls `show(input)` which parses + resolves + lowers the source
 /// and returns a compact, position-free string of the resulting AsmRes.
-///
-/// Conventions:
-///   Symbol
-///     Inst[type, name, ...]         — named instances (one per line, all in program)
-///
-///   Deploy[target, name]            — deploy with target path and name
-///     inst: Inst[type, name, ...]   — the deploy instance (with overrides applied)
-///     fields: k=v, ...              — deploy-specific fields
-///
-///   Str("x")                      — string value
-///   Int(n)                        — integer value
-///   Ref("x")                      — reference primitive
-///   Variant(type, "x")            — resolved enum variant
-///   InstRef(type, name)           — reference to a named instance (full data in Symbol)
-///   Inst[type, name, ...]         — anonymous inline instance
-///   val1:val2                     — typed path
-///   List[val1, val2]              — list
 #[path = "helpers/golden_asm_helpers.rs"] mod golden_asm_helpers;
-use golden_asm_helpers::{norm, show, show_multi};
+use golden_asm_helpers::{norm, show, show_multi, show_with_ts};
 
 // ---------------------------------------------------------------------------
-// Basic deploys
+// Hook execution tests
 // ---------------------------------------------------------------------------
 
+/// Coarse hook: hook owns the complete output subtree (Case 2 from the book).
+///   def node { name = string } = make_node { ep = endpoint }
+/// The hook returns { host, port } which become the ep fields.
 #[test]
-fn deploy_no_inst() {
-    // `what` doesn't resolve to a known instance — deploy emitted with empty inst.
-    assert_eq!(
-        show("deploy ghost to aws as prod {}"),
-        norm(r#"
-            Scope[pack:test]
-            Deploy[aws, prod]
-              inst: Inst[, ]
-        "#),
-    );
+fn hook_coarse_output() {
+    let grd = r#"
+        endpoint = { host = string  port = integer }
+        def node { name = string } = make_node { ep = endpoint }
+        node api { name: "api" }
+    "#;
+    let ts = r#"
+        function make_node(i) {
+            return { ep: { host: i.name + ".internal", port: 8080 } };
+        }
+    "#;
+    let out = show_with_ts(grd, ts);
+    assert!(out.contains("ep=Inst"), "hook output ep field must be present");
+    assert!(out.contains("host=Str(\"api.internal\")"), "hook must compute host");
+    assert!(out.contains("port=Int(8080)"), "hook must compute port");
 }
 
+/// Hook with no inputs: output-only hook fires with empty input object.
 #[test]
-fn deploy_simple_inst() {
-    assert_eq!(
-        show(r#"
-            type stack = { link name = string }
-            stack my-stack { name: "prod" }
-            deploy my-stack to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[stack, my-stack, name=Str("prod")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[stack, my-stack, name=Str("prod")]
-        "#),
-    );
+fn hook_no_inputs() {
+    let grd = r#"
+        def tag = make_tag { name = string  value = string }
+        tag ground-managed {}
+    "#;
+    let ts = r#"
+        function make_tag(_i) {
+            return { name: "ground-managed", value: "true" };
+        }
+    "#;
+    let out = show_with_ts(grd, ts);
+    assert!(out.contains("name=Str(\"ground-managed\")"), "hook must produce name");
+    assert!(out.contains("value=Str(\"true\")"), "hook must produce value");
 }
 
+/// Hook with input fields that produce a list output.
 #[test]
-fn deploy_multiple_deploys() {
-    assert_eq!(
-        show(r#"
-            type svc = { link image = reference }
-            svc a { image: "nginx" }
-            svc b { image: "redis" }
-            deploy a to aws as prod {}
-            deploy b to aws as staging {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, a, image=Ref("nginx")],
-              Inst[svc, b, image=Ref("redis")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, a, image=Ref("nginx")]
-            Deploy[aws, staging]
-              inst: Inst[svc, b, image=Ref("redis")]
-        "#),
-    );
+fn hook_list_output() {
+    // prefix and count are INPUT fields (before =); items is the OUTPUT (returned by hook).
+    let grd = r#"
+        def tags { prefix = string  count = integer } = make_tags { items = string }
+        tags my-tags { prefix: "svc"  count: 3 }
+    "#;
+    let ts = r#"
+        function make_tags(i) {
+            const items = [];
+            for (let k = 0; k < i.count; k++) items.push(i.prefix + "-" + k);
+            return { items };
+        }
+    "#;
+    let out = show_with_ts(grd, ts);
+    assert!(out.contains("items=List"), "hook list output must appear");
+    assert!(out.contains("Str(\"svc-0\")"), "first list element must be present");
 }
-
-// ---------------------------------------------------------------------------
-// Field value types
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_integer_field() {
-    assert_eq!(
-        show(r#"
-            type counter = { link count = integer }
-            counter c { count: 42 }
-            deploy c to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[counter, c, count=Int(42)],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[counter, c, count=Int(42)]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_reference_field() {
-    assert_eq!(
-        show(r#"
-            type svc = { link image = reference }
-            svc s { image: "nginx:latest" }
-            deploy s to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, s, image=Ref("nginx:latest")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, s, image=Ref("nginx:latest")]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_enum_variant_field() {
-    assert_eq!(
-        show(r#"
-            type zone = eu-central | eu-west
-            type host = { link zone = zone }
-            host h { zone: eu-west }
-            deploy h to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[host, h, zone=Variant(zone, "eu-west")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[host, h, zone=Variant(zone, "eu-west")]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_typed_path_field() {
-    assert_eq!(
-        show(r#"
-            type zone   = 1 | 2 | 3
-            type region = eu-central | eu-west
-            type svc    = { link location = type:region:type:zone }
-            svc s { location: eu-central:2 }
-            deploy s to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, s, location=Variant(region, "eu-central"):Variant(zone, "2")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, s, location=Variant(region, "eu-central"):Variant(zone, "2")]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Typed enum variants
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_typed_enum_variant_named_ref() {
-    assert_eq!(
-        show(r#"
-            type num  = { link val = integer }
-            type expr = type:num
-            type host = { link e = type:expr }
-            num  my-num { val: 5 }
-            host h      { e: my-num }
-            deploy h to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[num, my-num, val=Int(5)],
-              Inst[host, h, e=Variant(expr, "num", InstRef(num, my-num))],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[host, h, e=Variant(expr, "num", InstRef(num, my-num))]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_typed_enum_variant_inline_struct() {
-    assert_eq!(
-        show(r#"
-            type num  = { link val = integer }
-            type expr = type:num
-            type host = { link e = type:expr }
-            host h { e: type:num { val: 42 } }
-            deploy h to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[host, h, e=Variant(expr, "num", Inst[num, _, hint=num, val=Int(42)])],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[host, h, e=Variant(expr, "num", Inst[num, _, hint=num, val=Int(42)])]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Symbol — named instances
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_collects_named_inst_as_member() {
-    assert_eq!(
-        show(r#"
-            type db  = { link engine = string }
-            type svc = { link db = db }
-            db  my-db  { engine: "pg" }
-            svc my-svc { db: my-db }
-            deploy my-svc to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[db, my-db, engine=Str("pg")],
-              Inst[svc, my-svc, db=InstRef(db, my-db)],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, my-svc, db=InstRef(db, my-db)]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_deduplicates_members() {
-    // The same instance appears twice in the list — appears once in Symbol.
-    assert_eq!(
-        show(r#"
-            type db    = { link engine = string }
-            type stack = { link = [ type:db | type:db ] }
-            db    my-db    { engine: "pg" }
-            stack my-stack { my-db  my-db }
-            deploy my-stack to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[db, my-db, engine=Str("pg")],
-              Inst[stack, my-stack, _=List[InstRef(db, my-db), InstRef(db, my-db)]],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[stack, my-stack, _=List[InstRef(db, my-db), InstRef(db, my-db)]]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_list_of_members() {
-    // The main terra backend pattern: stack with service and database members.
-    assert_eq!(
-        show(r#"
-            type service  = { link image  = reference }
-            type database = { link engine = string    }
-            type stack    = { link = [ type:service | type:database ] }
-            service  svc-a    { image:  "nginx" }
-            database db-a     { engine: "pg"    }
-            stack    my-stack { svc-a  db-a }
-            deploy my-stack to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[service, svc-a, image=Ref("nginx")],
-              Inst[database, db-a, engine=Str("pg")],
-              Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(database, db-a)]],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[stack, my-stack, _=List[InstRef(service, svc-a), InstRef(database, db-a)]]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Anonymous inline instances
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_anonymous_inst_inlined() {
-    assert_eq!(
-        show(r#"
-            type scaling = {
-                link min = integer
-                link max = integer
-            }
-            type svc = { link scaling = scaling }
-            svc my-svc {
-                scaling: {
-                    min: 1
-                    max: 10
-                }
-            }
-            deploy my-svc to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, my-svc, scaling=Inst[scaling, _, min=Int(1), max=Int(10)]]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_named_inst_not_inlined() {
-    // Named scaling instance → InstRef, not Inst[...].
-    assert_eq!(
-        show(r#"
-            type scaling = {
-                link min = integer
-                link max = integer
-            }
-            type svc = { link scaling = scaling }
-            scaling my-scaling { min: 1  max: 10 }
-            svc     my-svc     { scaling: my-scaling }
-            deploy my-svc to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[scaling, my-scaling, min=Int(1), max=Int(10)],
-              Inst[svc, my-svc, scaling=InstRef(scaling, my-scaling)],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, my-svc, scaling=InstRef(scaling, my-scaling)]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Deploy-specific fields
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_fields_are_separate_from_inst() {
-    // Deploy fields (top-level links) appear under `fields:`, not in `inst:`.
-    assert_eq!(
-        show(r#"
-            link prefix = string
-            type svc = { link image = reference }
-            svc my-svc { image: "nginx" }
-            deploy my-svc to aws as prod { prefix: "acme" }
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, my-svc, image=Ref("nginx")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, my-svc, image=Ref("nginx")]
-              fields: prefix=Str("acme")
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Multi-segment target
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_multi_segment_target() {
-    assert_eq!(
-        show(r#"
-            type stack = { link name = string }
-            stack s { name: "x" }
-            deploy s to aws:eu-central as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[stack, s, name=Str("x")],
-            ]
-            Deploy[aws:eu-central, prod]
-              inst: Inst[stack, s, name=Str("x")]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Cross-references (access)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn deploy_access_list_of_inst_refs() {
-    // InstRef values inside a List field — services reference each other.
-    assert_eq!(
-        show(r#"
-            type service = { link access = [ type:service ] }
-            service a { access: [ b ] }
-            service b { access: [ a ] }
-            deploy a to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[service, a, access=List[InstRef(service, b)]],
-              Inst[service, b, access=List[InstRef(service, a)]],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[service, a, access=List[InstRef(service, b)]]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Use / pack imports — ASM layer
-// ---------------------------------------------------------------------------
-
-#[test]
-fn use_imported_type_deploy() {
-    // Instance of a type imported from another pack resolves correctly through lowering.
-    assert_eq!(
-        show_multi(vec![
-            ("std",  vec![],  "type service = { link image = reference }"),
-            ("app",  vec![],  r#"
-                use pack:std:type:service
-                service my-svc { image: "nginx" }
-                deploy my-svc to aws as prod {}
-            "#),
-        ]),
-        norm(r#"
-            Scope[pack:std]
-            Scope[pack:app,
-              Inst[service, my-svc, image=Ref("nginx")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[service, my-svc, image=Ref("nginx")]
-        "#),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Type hints on struct values
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Type function definitions
-// ---------------------------------------------------------------------------
-
-#[test]
-fn type_fn_static_field_in_asm() {
-    assert_eq!(
-        show(r#"
-            type aws_sg    = { link name    = string }
-            type stack     = { link sg_name = string }
-            type stack_gen(s: stack) = { sg: aws_sg { name: "static-sg" } }
-            stack my-stack { sg_name: "prod" }
-            deploy my-stack to stack_gen as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[stack, my-stack, sg_name=Str("prod")],
-            ]
-            Deploy[stack_gen, prod]
-              inst: Inst[stack, my-stack, sg_name=Str("prod")]
-              type_fn: stack_gen
-              expansion:
-                Inst[stack, my-stack, sg_name=Str("prod")]
-                Output[sg:aws_sg name=Str("static-sg")]
-            TypeFn[stack_gen(s: stack) scope=[test], sg:aws_sg[name=Str("static-sg")]]
-        "#),
-    );
-}
-
-#[test]
-fn type_fn_interp_field_in_asm() {
-    // Param ref `{s:name}` is kept as an opaque Ref string for ASM-time substitution.
-    assert_eq!(
-        show(r#"
-            type aws_sg  = { link name = string }
-            type service = { link port = integer }
-            type svc_gen(s: service) = { sg: aws_sg { name: {s:name}-sg } }
-            service my-svc { port: 8080 }
-            deploy my-svc to svc_gen as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[service, my-svc, port=Int(8080)],
-            ]
-            Deploy[svc_gen, prod]
-              inst: Inst[service, my-svc, port=Int(8080)]
-              type_fn: svc_gen
-              expansion:
-                Inst[service, my-svc, port=Int(8080)]
-                Output[sg:aws_sg name=Str("my-svc-sg")]
-            TypeFn[svc_gen(s: service) scope=[test], sg:aws_sg[name=Ref("{s:name}-sg")]]
-        "#),
-    );
-}
-
-#[test]
-fn type_fn_named_deploy_no_match() {
-    // Deploy target `aws` has no matching type fn — `type_fn:` line absent.
-    assert_eq!(
-        show(r#"
-            type aws_sg    = { link name    = string }
-            type stack     = { link sg_name = string }
-            type stack_gen(s: stack) = { sg: aws_sg { name: "x" } }
-            stack my-stack { sg_name: "prod" }
-            deploy my-stack to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[stack, my-stack, sg_name=Str("prod")],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[stack, my-stack, sg_name=Str("prod")]
-            TypeFn[stack_gen(s: stack) scope=[test], sg:aws_sg[name=Str("x")]]
-        "#),
-    );
-}
-
-#[test]
-fn type_fn_deploy_to_type_not_fn() {
-    // Deploy target `stack` is a type, not a type fn — no `type_fn:` line.
-    assert_eq!(
-        show(r#"
-            type stack = { link name = string }
-            stack my-stack { name: "test" }
-            deploy my-stack to stack as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[stack, my-stack, name=Str("test")],
-            ]
-            Deploy[stack, prod]
-              inst: Inst[stack, my-stack, name=Str("test")]
-        "#),
-    );
-}
-
-#[test]
-fn type_fn_multi_entry_in_asm() {
-    // Type fn with two entries; sibling alias ref kept as opaque Ref.
-    assert_eq!(
-        show(r#"
-            type aws_role = { link arn      = string }
-            type aws_task = { link role_arn = string }
-            type service  = { link name     = string }
-            type svc_gen(s: service) = {
-                role: aws_role { arn:      {s:name}-role }
-                task: aws_task { role_arn: {role:arn}    }
-            }
-            service my-svc { name: "api" }
-            deploy my-svc to svc_gen as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[service, my-svc, name=Str("api")],
-            ]
-            Deploy[svc_gen, prod]
-              inst: Inst[service, my-svc, name=Str("api")]
-              type_fn: svc_gen
-              expansion:
-                Inst[service, my-svc, name=Str("api")]
-                Output[role:aws_role arn=Str("my-svc-role")]
-                Output[task:aws_task role_arn=Ref("{role:arn}")]
-            TypeFn[svc_gen(s: service) scope=[test], role:aws_role[arn=Ref("{s:name}-role")], task:aws_task[role_arn=Ref("{role:arn}")]]
-        "#),
-    );
-}
-
-#[test]
-fn type_fn_in_subpack_scope() {
-    // Type fn and type both in `aws` pack; app imports the type and deploys.
-    // `scope=` in the TypeFn def reflects the pack path [aws].
-    assert_eq!(
-        show_multi(vec![
-            ("aws", vec![], r#"
-                type aws_sg    = { link name    = string }
-                type stack     = { link sg_name = string }
-                type stack_gen(s: stack) = { sg: aws_sg { name: {s:name}-sg } }
-            "#),
-            ("app", vec![], r#"
-                use pack:aws:type:stack
-                stack my-stack { sg_name: "prod" }
-                deploy my-stack to aws:stack_gen as prod {}
-            "#),
-        ]),
-        norm(r#"
-            Scope[pack:aws]
-            Scope[pack:app,
-              Inst[stack, my-stack, sg_name=Str("prod")],
-            ]
-            Deploy[aws:stack_gen, prod]
-              inst: Inst[stack, my-stack, sg_name=Str("prod")]
-              type_fn: stack_gen
-              expansion:
-                Inst[stack, my-stack, sg_name=Str("prod")]
-                Output[sg:aws_sg name=Str("my-stack-sg")]
-            TypeFn[stack_gen(s: stack) scope=[aws], sg:aws_sg[name=Ref("{s:name}-sg")]]
-        "#),
-    );
-}
-
-#[test]
-fn deploy_inline_struct_with_type_hint() {
-    assert_eq!(
-        show(r#"
-            type scaling = { link min = integer  link max = integer }
-            type svc = { link scaling = scaling }
-            svc my-svc { scaling: type:scaling { min: 2  max: 10 } }
-            deploy my-svc to aws as prod {}
-        "#),
-        norm(r#"
-            Scope[pack:test,
-              Inst[svc, my-svc, scaling=Inst[scaling, _, hint=scaling, min=Int(2), max=Int(10)]],
-            ]
-            Deploy[aws, prod]
-              inst: Inst[svc, my-svc, scaling=Inst[scaling, _, hint=scaling, min=Int(2), max=Int(10)]]
-        "#),
-    );
-}
-

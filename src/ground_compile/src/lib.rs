@@ -4,9 +4,28 @@ pub mod parse;
 pub mod resolve;
 pub mod asm;
 
-pub use asm::{AsmInst, AsmField, AsmValue, AsmVariant, AsmInstRef, AsmExpansion, AsmOutput, AsmLinkOutput, AsmOverrides};
+pub use asm::{AsmInst, AsmField, AsmValue, AsmVariant, AsmInstRef, asm_value_to_json};
 
-const STDLIB: &str = include_str!("stdlib.grd");
+// ---------------------------------------------------------------------------
+// Embedded stdlib
+// ---------------------------------------------------------------------------
+
+const STD_GRD:               &str = include_str!("stdlib/std.grd");
+const STD_AWS_PACK_GRD:      &str = include_str!("stdlib/aws/pack.grd");
+const STD_AWS_TRANSFORM_GRD: &str = include_str!("stdlib/aws/transform.grd");
+const STD_AWS_TRANSFORM_TS:  &str = include_str!("stdlib/aws/transform.ts");
+
+/// Number of units prepended by the compiler as stdlib.
+/// Callers can use this to offset unit indices in error locations.
+pub const STDLIB_UNIT_COUNT: usize = 3;
+
+fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
+    vec![
+        ast::ParseUnit { name: "std".into(),      path: vec![],                                        src: STD_GRD.into() },
+        ast::ParseUnit { name: "".into(),          path: vec!["std".into(), "aws".into()],             src: STD_AWS_PACK_GRD.into() },
+        ast::ParseUnit { name: "transform".into(), path: vec!["std".into(), "aws".into()],             src: STD_AWS_TRANSFORM_GRD.into() },
+    ]
+}
 
 // ---------------------------------------------------------------------------
 // Public input types
@@ -17,9 +36,12 @@ pub struct CompileReq {
 }
 
 pub struct Unit {
-    pub name: String,
-    pub path: Vec<String>,
-    pub src:  String,
+    pub name:   String,
+    pub path:   Vec<String>,
+    pub src:    String,
+    /// Optional TypeScript source co-located with this unit.
+    /// Hook functions defined in `src` are implemented here.
+    pub ts_src: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -48,19 +70,17 @@ impl Symbol {
     }
 }
 
-/// A fully resolved, self-contained deployment context.
-pub struct Deploy {
-    pub target:    Vec<String>,
+/// A fully resolved plan context created from a `plan name` declaration.
+pub struct Plan {
     pub name:      String,
-    pub inst:      AsmInst,
+    pub root:      AsmInst,
     pub fields:    Vec<AsmField>,
-    pub expansion: Option<AsmExpansion>,
-    pub overrides: AsmOverrides,
+    pub reachable: Vec<AsmInst>,
 }
 
 pub struct CompileRes {
     pub symbol:  Symbol,
-    pub deploys: Vec<Deploy>,
+    pub plans:   Vec<Plan>,
     pub errors:  Vec<CompileError>,
 }
 
@@ -69,9 +89,17 @@ pub struct CompileRes {
 // ---------------------------------------------------------------------------
 
 pub fn compile(req: CompileReq) -> CompileRes {
-    let mut units = vec![
-        ast::ParseUnit { name: "std".into(), path: vec![], src: STDLIB.to_string() },
-    ];
+    // Concatenate TypeScript: stdlib first, then user units.
+    // All hook functions share one blob — names must be globally unique by convention.
+    let mut ts_parts: Vec<&str> = vec![STD_AWS_TRANSFORM_TS];
+    let user_ts: Vec<&str> = req.units.iter()
+        .filter_map(|u| u.ts_src.as_deref())
+        .collect();
+    ts_parts.extend(user_ts);
+    let ts_src = ts_parts.join("\n\n");
+
+    // Prepend stdlib units before user units.
+    let mut units: Vec<ast::ParseUnit> = make_stdlib_parse_units();
     units.extend(req.units.into_iter().map(|u| ast::ParseUnit {
         name: u.name, path: u.path, src: u.src,
     }));
@@ -92,20 +120,23 @@ pub fn compile(req: CompileReq) -> CompileRes {
         })
         .collect();
 
-    let ctx = asm::lower(&ir);
+    // Don't lower if the IR has errors — it may be in an invalid state.
+    if !errors.is_empty() {
+        return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors };
+    }
+
+    let ctx = asm::lower(&ir, &ts_src);
 
     let symbol = Symbol { instances: ctx.symbol.insts };
 
-    let deploys = ctx.deploys.into_iter().map(|d| Deploy {
-        target:    d.target,
-        name:      d.name,
-        inst:      d.inst,
-        fields:    d.fields,
-        expansion: d.expansion,
-        overrides: d.overrides,
+    let plans = ctx.plans.into_iter().map(|p| Plan {
+        name:      p.name,
+        root:      p.root,
+        fields:    p.fields,
+        reachable: p.reachable,
     }).collect();
 
-    CompileRes { symbol, deploys, errors }
+    CompileRes { symbol, plans, errors }
 }
 
 // ---------------------------------------------------------------------------

@@ -2,3 +2,7 @@
 name = "ground_compile"
 version = "0.0.0"
 edition = "2021"
+
+[dependencies]
+ground_ts  = { path = "../ground_ts" }
+serde_json = "1"

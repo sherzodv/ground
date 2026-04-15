@@ -10,9 +10,7 @@ Ground is an architecture definition language. Infrastructure is derived.
 
 ## Current focus
 
-Our main focus currently is the Ground Book. It was written to sketch the foundational concepts and usage patterns of the Ground language. Our goal is to make it strict, consistent and complete, while keeping it's current incremental explanational approach. In the `mvp` folder there is a full real world example defined in an old, yet inconsistent Ground syntax. We need to fully rewrite mvp in a consistent and complete way, connecting all the dots. Mvp should not loose any current information.
-
-We are doing this with perspective to work on the actual implementation of the compiler, resolver and other phases in the project.
+Our main focus currently is the Ground Book. It was written to sketch the foundational concepts and usage patterns of the Ground language. There is some real infra defined in the `mvp` folder in the Ground language. Both are not yet strict, because we don't have implementation yet in compiler and generation layers. Now our main focus is implementing things fixing the Ground Book & mvp along the way.
 
 ## Default behavior
 

@@ -1,9 +1,11 @@
-use std
+use std:*
 use std:aws
 
 # ── Deploy infra ─────────────────────────────────────────────────────────────────
-# HACK 4: final ensures ground-managed tag cannot be overridden by any hook —
-# a safety invariant expressed at the type level, not enforced by convention
+# HACK 4: ground-managed tag is enforced in the Tera template (root.json.tera)
+# on every generated resource. The `final` keyword (a type-level safety invariant
+# that prevents hooks from overriding the tag) and quoted struct keys are not yet
+# supported in the Ground language — tracked for future implementation.
 
 def make_aws_deploy {
     d = deploy
@@ -20,7 +22,7 @@ def make_aws_deploy {
     private_rt_assoc = [ aws_route_table_association ]
     lb               = aws_lb
 
-    tags = { final ground-managed: true }
+
 }
 
 # ── Per-domain lb listener ────────────────────────────────────────────────────────

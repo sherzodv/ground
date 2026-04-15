@@ -22,6 +22,9 @@ pub struct TypeId(pub u32);
 pub struct LinkId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HookId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InstId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,7 +90,7 @@ pub struct IrScope {
     pub parent:    Option<ScopeId>,
     pub types:     HashMap<String, TypeId>,
     pub links:     HashMap<String, LinkId>,
-    pub insts:     HashMap<String, InstId>,
+    pub insts:     HashMap<String, Vec<InstId>>,
     pub packs:     HashMap<String, ScopeId>,
     /// Named type functions in this scope (1-param or N-param), keyed by function name.
     pub type_fns:      HashMap<String, TypeFnId>,
@@ -207,6 +210,7 @@ pub struct IrField {
     pub link_id: LinkId,
     pub name:    String,
     pub loc:     IrLoc,
+    pub via:     bool,   // true → pass pre-resolved (post-hook) value to enclosing hook
     pub value:   IrValue,
 }
 
@@ -220,15 +224,38 @@ pub struct IrInstDef {
     pub fields:    Vec<IrField>,
 }
 
+// ---------------------------------------------------------------------------
+// Plan declarations (new: `plan name`)
+// ---------------------------------------------------------------------------
+
+/// A `plan name` declaration — triggers Terraform generation for instance `name`.
 #[derive(Debug, Clone)]
-pub struct IrDeployDef {
-    pub what:       IrRef,
-    pub target:     IrRef,
-    pub name:       IrRef,
-    pub loc:        IrLoc,
-    pub fields:     Vec<IrField>,
-    /// Named type function resolved from the deploy `to` ref tail, if any.
-    pub to_type_fn: Option<TypeFnId>,
+pub struct IrPlanDef {
+    pub name:   String,
+    pub loc:    IrLoc,
+    /// Fields provided directly on the `plan` declaration (e.g. `plan prd-eu { region: [...] }`).
+    /// These supplement or override the named deploy instance's own fields at generation time.
+    pub fields: Vec<IrField>,
+}
+
+// ---------------------------------------------------------------------------
+// Hook definitions  (def name { inputs } = hook_fn { outputs })
+// ---------------------------------------------------------------------------
+
+/// A resolved hook def: a named transformation function backed by TypeScript.
+///
+/// `hook_fn` is the TypeScript function name:
+///   - explicit → `def name { } = hook_fn { }` → `hook_fn`
+///   - implicit → `def name { } = { }`          → `name`  (def name is the hook)
+#[derive(Debug, Clone)]
+pub struct IrHookDef {
+    pub name:    String,
+    pub hook_fn: String,
+    pub type_id: TypeId,     // type registered for this def (output shape)
+    pub scope:   ScopeId,
+    pub loc:     IrLoc,
+    pub inputs:  Vec<LinkId>,  // input field links (before =)
+    pub outputs: Vec<LinkId>,  // output field links (after =)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +273,9 @@ pub struct IrRes {
     pub types:    Vec<IrTypeDef>,
     pub links:    Vec<IrLinkDef>,
     pub insts:    Vec<IrInstDef>,
-    pub deploys:  Vec<IrDeployDef>,
+    pub plans:    Vec<IrPlanDef>,
     pub type_fns: Vec<IrTypeFnDef>,
+    pub hooks:    Vec<IrHookDef>,
     pub scopes:   Vec<IrScope>,
     pub errors:   Vec<IrError>,
 }

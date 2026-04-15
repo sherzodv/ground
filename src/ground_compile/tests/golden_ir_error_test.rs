@@ -284,7 +284,8 @@ fn error_use_pack_not_found() {
 
 #[test]
 fn error_use_ambiguous_local_vs_import() {
-    // Local type `service` + imported type `service` from std — must disambiguate.
+    // Local type `service` wins over imported type `service` from std — no error.
+    // The instance should resolve against the local definition (Type with link `name`).
     let out = show_multi(vec![
         ("std", vec![], "type service = { link image = reference }"),
         ("app", vec![], r##"
@@ -293,8 +294,8 @@ fn error_use_ambiguous_local_vs_import() {
             service my-svc { name: "x" }
         "##),
     ]);
-    assert!(out.contains("ERR:"), "expected error, got: {out}");
-    assert!(out.contains("ambiguous"), "error should mention ambiguity: {out}");
+    assert!(!out.contains("ERR:"), "local def should win over import silently, got: {out}");
+    assert!(out.contains("my-svc"), "instance should resolve: {out}");
 }
 
 #[test]

@@ -1,38 +1,36 @@
-use std
+use std:*
 use marstech:*
+use app:*
+use routing:*
+
+space app {
+    host:     app
+    services: [ service:api-gen ]
+}
+
+space api {
+    host:     api
+    services: [ service:api-gen ]
+}
+
+stack marstech {
+    service:api-gen
+    database:main
+    secret:core
+    secret:pay
+    secret:media
+    domain:influencer-ae
+    edge:edge-api
+    space:app
+    space:api
+}
 
 space stg {
     host: stg.internal
-
-    use app:*
-    use routing:*
-
-    space app {
-        host:     app
-        services: [ service:api-gen ]
-    }
-
-    space api {
-        host:     api
-        services: [ service:api-gen ]
-    }
-
-    stack marstech {
-        service:api-gen
-        database:main
-        secret:core
-        secret:pay
-        secret:media
-        domain:influencer-ae
-        edge:edge-api
-        space:app
-        space:api
-    }
 }
 
 deploy stg-eu {
-    stack:  marstech
-    region: [ eu-central:1 ]
+    stack: marstech
 
     databases: [
         { database: main  size: small  storage: 20 }
@@ -43,4 +41,4 @@ deploy stg-eu {
     ]
 }
 
-plan stg-eu
+plan stg-eu { region: [ eu-central:1 ] }
