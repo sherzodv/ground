@@ -19,19 +19,12 @@ pub fn show_primitive(p: &IrPrimitive) -> &'static str {
 // Refs
 // ---------------------------------------------------------------------------
 
-pub fn show_ref(r: &IrRef) -> String {
-    r.segments.iter().map(|seg| {
-        let val = show_ref_seg_value(&seg.value);
-        if seg.is_opt { format!("({})", val) } else { val }
-    }).collect::<Vec<_>>().join(":")
-}
-
 pub fn show_ref_seg_value(v: &IrRefSegValue) -> String {
     match v {
         IrRefSegValue::Pack(id)  => format!("Pack#{}", id.0),
         IrRefSegValue::Type(id)  => format!("Type#{}", id.0),
         IrRefSegValue::Link(id)  => format!("Link#{}", id.0),
-        IrRefSegValue::Inst(id)  => format!("Inst#{}", id.0),
+        IrRefSegValue::Inst(id)  => format!("Fun#{}", id.0),
         IrRefSegValue::Plain(s)  => s.clone(),
     }
 }
@@ -131,7 +124,7 @@ pub fn show_value(v: &IrValue, ir: &IrRes) -> String {
             }
         }
 
-        IrValue::Inst(iid) => format!("Inst(Inst#{})", iid.0),
+        IrValue::Inst(fid) => format!("Inst(Fun#{})", fid.0),
 
         IrValue::Path(segs) => {
             segs.iter().map(|v| show_value(v, ir)).collect::<Vec<_>>().join(":")
@@ -164,14 +157,14 @@ pub fn show_link_entry(idx: usize, ir: &IrRes) -> String {
     format!("Link#{}[{}, {}]", idx, name, show_link_type(&ld.link_type, ir))
 }
 
-pub fn show_inst_entry(idx: usize, ir: &IrRes) -> String {
-    let inst = &ir.insts[idx];
-    let mut parts = vec![format!("Type#{}", inst.type_id.0), inst.name.clone()];
-    if let Some(hint) = &inst.type_hint {
+pub fn show_fun_entry(idx: usize, ir: &IrRes) -> String {
+    let fun = &ir.funs[idx];
+    let mut parts = vec![format!("Type#{}", fun.type_id.0), fun.name.clone()];
+    if let Some(hint) = &fun.type_hint {
         parts.push(format!("hint={}", hint));
     }
-    parts.extend(inst.fields.iter().map(|f| show_field(f, ir)));
-    format!("Inst#{}[{}]", idx, parts.join(", "))
+    parts.extend(fun.fields.iter().map(|f| show_field(f, ir)));
+    format!("Fun#{}[{}]", idx, parts.join(", "))
 }
 
 // ---------------------------------------------------------------------------
@@ -237,10 +230,10 @@ fn show_scope_ir(scope_id: ScopeId, ir: &IrRes) -> String {
         }
     }
 
-    // Instances belonging to this scope (arena order)
-    for (i, inst) in ir.insts.iter().enumerate() {
-        if inst.scope == scope_id {
-            parts.push(show_inst_entry(i, ir));
+    // Funs belonging to this scope (arena order)
+    for (i, fun) in ir.funs.iter().enumerate() {
+        if fun.scope == scope_id {
+            parts.push(show_fun_entry(i, ir));
         }
     }
 

@@ -80,20 +80,23 @@ pub struct AsmInstRef {
 // ---------------------------------------------------------------------------
 
 pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
-    // Build hook lookup: TypeId.0 → index into ir.hooks.
-    let hook_map: HashMap<u32, usize> = ir.hooks.iter().enumerate()
-        .map(|(idx, h)| (h.type_id.0, idx))
+    // Build hook lookup: type_id.0 → FunId of the def fun (parent=None) that carries the hook.
+    // Hooks are defined on `def name { inputs } = hook_fn { outputs }` root funs and apply
+    // to all instance funs of the same type at lowering time.
+    let hook_map: HashMap<u32, FunId> = ir.funs.iter().enumerate()
+        .filter(|(_, f)| f.parent.is_none() && f.hook_fn.is_some())
+        .map(|(idx, f)| (f.type_id.0, FunId(idx as u32)))
         .collect();
 
     // Shared resolution cache — populated bottom-up as plans are resolved.
-    let mut cache: HashMap<InstId, AsmInst> = HashMap::new();
+    let mut cache: HashMap<FunId, AsmInst> = HashMap::new();
 
     // Resolve each plan: topo-sort reachable instances, resolve leaves first.
     let plans: Vec<AsmPlan> = ir.plans.iter().filter_map(|plan| {
-        // Find the root instance by name.
-        let root_id = ir.insts.iter().enumerate()
-            .find(|(_, i)| i.name == plan.name)
-            .map(|(idx, _)| InstId(idx as u32))?;
+        // Find the root fun by name.
+        let root_id = ir.funs.iter().enumerate()
+            .find(|(_, f)| f.name == plan.name)
+            .map(|(idx, _)| FunId(idx as u32))?;
 
         // Collect all named instances reachable from root_id.
         let reachable_ids = collect_reachable(root_id, ir);
@@ -102,10 +105,10 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
         let ordered = topo_sort(&reachable_ids, ir);
 
         // Resolve bottom-up, caching results so via fields can look up post-hook values.
-        for &iid in &ordered {
-            if !cache.contains_key(&iid) {
-                let inst = lower_inst(iid, ir, &hook_map, ts_src, &cache);
-                cache.insert(iid, inst);
+        for &fid in &ordered {
+            if !cache.contains_key(&fid) {
+                let inst = lower_fun(fid, ir, &hook_map, ts_src, &cache);
+                cache.insert(fid, inst);
             }
         }
 
@@ -122,14 +125,14 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
         }
 
         let reachable: Vec<AsmInst> = ordered.iter()
-            .filter_map(|iid| cache.get(iid))
+            .filter_map(|fid| cache.get(fid))
             .cloned()
             .collect();
 
         Some(AsmPlan { name: plan.name.clone(), root, fields, reachable })
     }).collect();
 
-    // Build symbol table from all named instances; use cache where already resolved.
+    // Build symbol table from all named funs; use cache where already resolved.
     let symbol = build_symbol(ir, &hook_map, ts_src, &cache);
 
     AsmRes { plans, symbol }
@@ -140,51 +143,51 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
 // ---------------------------------------------------------------------------
 
 /// Collect all named instance IDs reachable from `root` via `IrValue::Inst` references.
-/// Anonymous instances (name == "_") are traversed but not collected.
-fn collect_reachable(root: InstId, ir: &IrRes) -> HashSet<InstId> {
-    let mut visited: HashSet<InstId> = HashSet::new();
-    let mut queue: VecDeque<InstId> = VecDeque::new();
+/// Anonymous funs (name == "_") are traversed but not collected.
+fn collect_reachable(root: FunId, ir: &IrRes) -> HashSet<FunId> {
+    let mut visited: HashSet<FunId> = HashSet::new();
+    let mut queue: VecDeque<FunId> = VecDeque::new();
     queue.push_back(root);
     while let Some(id) = queue.pop_front() {
         if !visited.insert(id) { continue; }
-        let inst = &ir.insts[id.0 as usize];
-        for f in &inst.fields {
-            enqueue_named_inst_refs(&f.value, ir, &mut queue);
+        let fun = &ir.funs[id.0 as usize];
+        for f in &fun.fields {
+            enqueue_named_fun_refs(&f.value, ir, &mut queue);
         }
     }
     visited
 }
 
-fn enqueue_named_inst_refs(v: &IrValue, ir: &IrRes, queue: &mut VecDeque<InstId>) {
+fn enqueue_named_fun_refs(v: &IrValue, ir: &IrRes, queue: &mut VecDeque<FunId>) {
     match v {
-        IrValue::Inst(iid) => {
-            let child = &ir.insts[iid.0 as usize];
+        IrValue::Inst(fid) => {
+            let child = &ir.funs[fid.0 as usize];
             if child.name != "_" {
-                queue.push_back(*iid);
+                queue.push_back(*fid);
             } else {
                 // Anonymous: traverse its fields to find named refs within.
                 for f in &child.fields {
-                    enqueue_named_inst_refs(&f.value, ir, queue);
+                    enqueue_named_fun_refs(&f.value, ir, queue);
                 }
             }
         }
-        IrValue::List(items) => { for i in items { enqueue_named_inst_refs(i, ir, queue); } }
-        IrValue::Path(segs)  => { for s in segs  { enqueue_named_inst_refs(s, ir, queue); } }
+        IrValue::List(items) => { for i in items { enqueue_named_fun_refs(i, ir, queue); } }
+        IrValue::Path(segs)  => { for s in segs  { enqueue_named_fun_refs(s, ir, queue); } }
         _ => {}
     }
 }
 
 /// Kahn's topo-sort over a set of named instance IDs.
 /// Returns them in dependency order — leaves (no deps) first, root last.
-fn topo_sort(ids: &HashSet<InstId>, ir: &IrRes) -> Vec<InstId> {
-    // For each id, compute its direct named-instance deps (within ids).
-    let mut deps_of: HashMap<InstId, HashSet<InstId>> = HashMap::new();
-    let mut dependents_of: HashMap<InstId, Vec<InstId>> = HashMap::new();
+fn topo_sort(ids: &HashSet<FunId>, ir: &IrRes) -> Vec<FunId> {
+    // For each id, compute its direct named-fun deps (within ids).
+    let mut deps_of: HashMap<FunId, HashSet<FunId>> = HashMap::new();
+    let mut dependents_of: HashMap<FunId, Vec<FunId>> = HashMap::new();
 
     for &id in ids {
-        let mut deps: HashSet<InstId> = HashSet::new();
-        let inst = &ir.insts[id.0 as usize];
-        for f in &inst.fields {
+        let mut deps: HashSet<FunId> = HashSet::new();
+        let fun = &ir.funs[id.0 as usize];
+        for f in &fun.fields {
             collect_named_deps_in_value(&f.value, ids, ir, &mut deps);
         }
         // Remove self-loops (can arise from self-referential field values in the source).
@@ -195,11 +198,11 @@ fn topo_sort(ids: &HashSet<InstId>, ir: &IrRes) -> Vec<InstId> {
         deps_of.insert(id, deps);
     }
 
-    let mut in_degree: HashMap<InstId, usize> = deps_of.iter()
+    let mut in_degree: HashMap<FunId, usize> = deps_of.iter()
         .map(|(&id, deps)| (id, deps.len()))
         .collect();
 
-    let mut queue: VecDeque<InstId> = in_degree.iter()
+    let mut queue: VecDeque<FunId> = in_degree.iter()
         .filter(|(_, &d)| d == 0)
         .map(|(&id, _)| id)
         .collect();
@@ -223,15 +226,15 @@ fn topo_sort(ids: &HashSet<InstId>, ir: &IrRes) -> Vec<InstId> {
 
 fn collect_named_deps_in_value(
     v:   &IrValue,
-    ids: &HashSet<InstId>,
+    ids: &HashSet<FunId>,
     ir:  &IrRes,
-    out: &mut HashSet<InstId>,
+    out: &mut HashSet<FunId>,
 ) {
     match v {
-        IrValue::Inst(iid) => {
-            let child = &ir.insts[iid.0 as usize];
+        IrValue::Inst(fid) => {
+            let child = &ir.funs[fid.0 as usize];
             if child.name != "_" {
-                if ids.contains(iid) { out.insert(*iid); }
+                if ids.contains(fid) { out.insert(*fid); }
             } else {
                 // Anonymous: look through its fields for named deps.
                 for f in &child.fields {
@@ -249,21 +252,21 @@ fn collect_named_deps_in_value(
 // Symbol building
 // ---------------------------------------------------------------------------
 
-/// Build the global symbol table from all named instances.
-/// Uses the cache for instances already resolved during plan walks;
+/// Build the global symbol table from all named funs.
+/// Uses the cache for funs already resolved during plan walks;
 /// resolves fresh (with empty cache context) for any remaining.
 fn build_symbol(
     ir:       &IrRes,
-    hook_map: &HashMap<u32, usize>,
+    hook_map: &HashMap<u32, FunId>,
     ts_src:   &str,
-    cache:    &HashMap<InstId, AsmInst>,
+    cache:    &HashMap<FunId, AsmInst>,
 ) -> AsmSymbol {
-    let insts = ir.insts.iter().enumerate()
-        .filter(|(_, i)| i.name != "_")
+    let insts = ir.funs.iter().enumerate()
+        .filter(|(_, f)| f.name != "_")
         .map(|(idx, _)| {
-            let iid = InstId(idx as u32);
-            cache.get(&iid).cloned()
-                .unwrap_or_else(|| lower_inst(iid, ir, hook_map, ts_src, cache))
+            let fid = FunId(idx as u32);
+            cache.get(&fid).cloned()
+                .unwrap_or_else(|| lower_fun(fid, ir, hook_map, ts_src, cache))
         })
         .collect();
     AsmSymbol { insts }
@@ -273,30 +276,32 @@ fn build_symbol(
 // Instance / field / value lowering
 // ---------------------------------------------------------------------------
 
-fn lower_inst(
-    id:       InstId,
+fn lower_fun(
+    id:       FunId,
     ir:       &IrRes,
-    hook_map: &HashMap<u32, usize>,
+    hook_map: &HashMap<u32, FunId>,
     ts_src:   &str,
-    cache:    &HashMap<InstId, AsmInst>,
+    cache:    &HashMap<FunId, AsmInst>,
 ) -> AsmInst {
-    let inst      = &ir.insts[id.0 as usize];
-    let type_name = ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
-    let name      = inst.name.clone();
-    let type_hint = inst.type_hint.clone();
+    let fun       = &ir.funs[id.0 as usize];
+    let type_name = ir.types[fun.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
+    let name      = fun.name.clone();
+    let type_hint = fun.type_hint.clone();
 
     // Lower all user-provided fields to AsmValue (raw, for ASM output).
-    let mut fields: Vec<AsmField> = inst.fields.iter().map(|f| lower_field(f, ir)).collect();
+    let mut fields: Vec<AsmField> = fun.fields.iter().map(|f| lower_field(f, ir)).collect();
 
-    // If this type has a hook def and we have TypeScript source, execute the hook.
+    // If this fun's type has a hook def and we have TypeScript source, execute the hook.
+    // The hook is stored on the def fun (parent=None); look it up via hook_map.
     if !ts_src.is_empty() {
-        if let Some(&hook_idx) = hook_map.get(&inst.type_id.0) {
-            let hook_def = &ir.hooks[hook_idx];
+        if let Some(&def_fid) = hook_map.get(&fun.type_id.0) {
+            let def_fun = &ir.funs[def_fid.0 as usize];
+            let hook_fn = def_fun.hook_fn.as_ref().unwrap();
 
-            // Build input JSON from the instance's user-provided fields (the input links).
+            // Build input JSON from the fun's user-provided fields (the input links).
             // Fields marked `via` use the pre-resolved (post-hook) cached AsmInst as their value.
-            let input_link_set: HashSet<u32> = hook_def.inputs.iter().map(|l| l.0).collect();
-            let input_map: serde_json::Map<String, serde_json::Value> = inst.fields.iter()
+            let input_link_set: HashSet<u32> = def_fun.inputs.iter().map(|l| l.0).collect();
+            let input_map: serde_json::Map<String, serde_json::Value> = fun.fields.iter()
                 .filter(|f| input_link_set.contains(&f.link_id.0))
                 .map(|f| {
                     let json_val = if f.via {
@@ -309,8 +314,8 @@ fn lower_inst(
                 .collect();
             let input_json = serde_json::Value::Object(input_map).to_string();
 
-            // Call the TypeScript hook and merge output fields into the instance.
-            match call_hook(ts_src, &hook_def.hook_fn, &input_json) {
+            // Call the TypeScript hook and merge output fields into the fun.
+            match call_hook(ts_src, hook_fn, &input_json) {
                 Ok(output_json) => {
                     if let Ok(serde_json::Value::Object(map)) =
                         serde_json::from_str::<serde_json::Value>(&output_json)
@@ -322,7 +327,7 @@ fn lower_inst(
                 }
                 Err(_) => {
                     // Hook execution errors surface at generation time when expected
-                    // fields are missing. Silently continue so other instances resolve.
+                    // fields are missing. Silently continue so other funs resolve.
                 }
             }
         }
@@ -361,22 +366,22 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
             AsmValue::Variant(AsmVariant { type_name, value, payload: asm_payload })
         }
 
-        IrValue::Inst(iid) => {
-            let inst = &ir.insts[iid.0 as usize];
-            if inst.name == "_" {
-                // Anonymous inline instance — embed fully (no hook execution for inline insts).
-                let fields    = inst.fields.iter().map(|f| lower_field(f, ir)).collect();
-                let type_hint = inst.type_hint.clone();
+        IrValue::Inst(fid) => {
+            let fun = &ir.funs[fid.0 as usize];
+            if fun.name == "_" {
+                // Anonymous inline fun — embed fully (no hook execution for inline funs).
+                let fields    = fun.fields.iter().map(|f| lower_field(f, ir)).collect();
+                let type_hint = fun.type_hint.clone();
                 AsmValue::Inst(Box::new(AsmInst {
-                    type_name: ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
+                    type_name: ir.types[fun.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
                     name: "_".into(),
                     type_hint,
                     fields,
                 }))
             } else {
-                // Named instance — emit a ref; full data lives in AsmSymbol.
-                let type_name = ir.types[inst.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
-                AsmValue::InstRef(AsmInstRef { type_name, name: inst.name.clone() })
+                // Named fun — emit a ref; full data lives in AsmSymbol.
+                let type_name = ir.types[fun.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
+                AsmValue::InstRef(AsmInstRef { type_name, name: fun.name.clone() })
             }
         }
 
@@ -421,10 +426,10 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
             }
         }
 
-        IrValue::Inst(iid) => {
-            let child = &ir.insts[iid.0 as usize];
+        IrValue::Inst(fid) => {
+            let child = &ir.funs[fid.0 as usize];
             let mut map = serde_json::Map::new();
-            // Expose the instance name as "_name" so hooks can use it.
+            // Expose the fun name as "_name" so hooks can use it.
             map.insert("_name".into(), serde_json::Value::String(child.name.clone()));
             for f in &child.fields {
                 map.insert(f.name.clone(), ir_value_to_json(&f.value, ir));
@@ -442,10 +447,10 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
 
 /// Like `ir_value_to_json` but for `IrValue::Inst` uses the post-hook cached `AsmInst`.
 /// Used for fields marked `via` — the hook receives the already-resolved child value.
-fn ir_value_to_json_via(v: &IrValue, ir: &IrRes, cache: &HashMap<InstId, AsmInst>) -> serde_json::Value {
+fn ir_value_to_json_via(v: &IrValue, ir: &IrRes, cache: &HashMap<FunId, AsmInst>) -> serde_json::Value {
     match v {
-        IrValue::Inst(iid) => {
-            if let Some(asm_inst) = cache.get(iid) {
+        IrValue::Inst(fid) => {
+            if let Some(asm_inst) = cache.get(fid) {
                 asm_inst_to_json(asm_inst)
             } else {
                 // Not yet cached (shouldn't happen in bottom-up walk) — fall back to raw.

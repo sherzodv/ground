@@ -35,7 +35,7 @@
 ///   Int(N)                    — integer literal
 ///   Ref("…")                  — reference-typed field value (incl. gen-time brace-group passthrough)
 ///   Variant(Type#N, "name")   — resolved enum variant
-///   Inst(Inst#N)              — resolved instance reference
+///   Inst(Fun#N)              — resolved instance reference
 ///   val:val                   — colon-separated path value (typed-path field)
 ///   List[val, val]            — list field value
 ///   Field[Link#N, value]      — field entry resolved to a specific link
@@ -288,7 +288,7 @@ fn inst_integer_field() {
         norm(r##"
             Scope[pack:test,
                 Type#0[counter, Struct[Link#0[count, Prim(integer)]]],
-                Inst#0[Type#0, c, Field[Link#0, Int(42)]],
+                Fun#0[Type#0, c, Field[Link#0, Int(42)]],
             ]
         "##),
     );
@@ -304,7 +304,7 @@ fn inst_string_field() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[label, Prim(string)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Str("hello")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Str("hello")]],
             ]
         "##),
     );
@@ -321,7 +321,7 @@ fn inst_reference_field() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[image, Prim(reference)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
             ]
         "##),
     );
@@ -339,7 +339,7 @@ fn inst_enum_field() {
             Scope[pack:test,
                 Type#0[zone, Enum[1|2|3]],
                 Type#1[host, Struct[Link#0[zone, IrRef[Enum(Type#0)]]]],
-                Inst#0[Type#1, my-host, Field[Link#0, Variant(Type#0, "2")]],
+                Fun#0[Type#1, my-host, Field[Link#0, Variant(Type#0, "2")]],
             ]
         "##),
     );
@@ -358,8 +358,8 @@ fn inst_struct_ref_field() {
             Scope[pack:test,
                 Type#0[db, Struct[Link#0[engine, Prim(string)]]],
                 Type#1[svc, Struct[Link#1[db, IrRef[Struct(Type#0)]]]],
-                Inst#0[Type#0, my-db, Field[Link#0, Str("pg")]],
-                Inst#1[Type#1, my-svc, Field[Link#1, Inst(Inst#0)]],
+                Fun#0[Type#0, my-db, Field[Link#0, Str("pg")]],
+                Fun#1[Type#1, my-svc, Field[Link#1, Inst(Fun#0)]],
             ]
         "##),
     );
@@ -378,8 +378,8 @@ fn inst_forward_reference() {
             Scope[pack:test,
                 Type#0[db, Struct[Link#0[engine, Prim(string)]]],
                 Type#1[svc, Struct[Link#1[db, IrRef[Struct(Type#0)]]]],
-                Inst#0[Type#1, my-svc, Field[Link#1, Inst(Inst#1)]],
-                Inst#1[Type#0, my-db, Field[Link#0, Str("pg")]],
+                Fun#0[Type#1, my-svc, Field[Link#1, Inst(Fun#1)]],
+                Fun#1[Type#0, my-db, Field[Link#0, Str("pg")]],
             ]
         "##),
     );
@@ -399,7 +399,7 @@ fn inst_typed_path_field() {
                 Type#0[zone, Enum[1|2|3]],
                 Type#1[region, Enum[eu-central|eu-west]],
                 Type#2[svc, Struct[Link#0[location, IrRef[Enum(Type#1):Enum(Type#0)]]]],
-                Inst#0[Type#2, s, Field[Link#0, Variant(Type#1, "eu-central"):Variant(Type#0, "2")]],
+                Fun#0[Type#2, s, Field[Link#0, Variant(Type#1, "eu-central"):Variant(Type#0, "2")]],
             ]
         "##),
     );
@@ -423,9 +423,9 @@ fn inst_list_field() {
                 Type#1[service, Struct[Link#0[port, IrRef[Enum(Type#0)]]]],
                 Type#2[database, Struct[Link#1[engine, Prim(string)]]],
                 Type#3[stack, Struct[Link#2[access, List[IrRef[Struct(Type#1):(Enum(Type#0))] | IrRef[Struct(Type#2)]]]]],
-                Inst#0[Type#1, svc-a, Field[Link#0, Variant(Type#0, "grpc")]],
-                Inst#1[Type#2, db-a, Field[Link#1, Str("pg")]],
-                Inst#2[Type#3, my-stack, Field[Link#2, List[Inst(Inst#0):Variant(Type#0, "grpc"), Inst(Inst#1)]]],
+                Fun#0[Type#1, svc-a, Field[Link#0, Variant(Type#0, "grpc")]],
+                Fun#1[Type#2, db-a, Field[Link#1, Str("pg")]],
+                Fun#2[Type#3, my-stack, Field[Link#2, List[Inst(Fun#0):Variant(Type#0, "grpc"), Inst(Fun#1)]]],
             ]
         "##),
     );
@@ -451,8 +451,8 @@ fn inst_typed_enum_variant_named_ref() {
                 Type#0[num, Struct[Link#0[val, Prim(integer)]]],
                 Type#1[expr, Enum[Struct(Type#0)]],
                 Type#2[host, Struct[Link#1[e, IrRef[Enum(Type#1)]]]],
-                Inst#0[Type#0, my-num, Field[Link#0, Int(5)]],
-                Inst#1[Type#2, h, Field[Link#1, Variant(Type#1, Inst(Inst#0))]],
+                Fun#0[Type#0, my-num, Field[Link#0, Int(5)]],
+                Fun#1[Type#2, h, Field[Link#1, Variant(Type#1, Inst(Fun#0))]],
             ]
         "##),
     );
@@ -473,8 +473,8 @@ fn inst_typed_enum_variant_struct_with_hint() {
                 Type#0[num, Struct[Link#0[val, Prim(integer)]]],
                 Type#1[expr, Enum[Struct(Type#0)]],
                 Type#2[host, Struct[Link#1[e, IrRef[Enum(Type#1)]]]],
-                Inst#0[Type#2, h, Field[Link#1, Variant(Type#1, Inst(Inst#1))]],
-                Inst#1[Type#0, _, hint=num, Field[Link#0, Int(5)]],
+                Fun#0[Type#2, h, Field[Link#1, Variant(Type#1, Inst(Fun#1))]],
+                Fun#1[Type#0, _, hint=num, Field[Link#0, Int(5)]],
             ]
         "##),
     );
@@ -498,8 +498,8 @@ fn inst_typed_enum_variant_disambiguates_by_inst_type() {
                 Type#1[add, Struct[Link#1[lhs, Prim(string)], Link#2[rhs, Prim(string)]]],
                 Type#2[expr, Enum[Struct(Type#0)|Struct(Type#1)]],
                 Type#3[host, Struct[Link#3[e, IrRef[Enum(Type#2)]]]],
-                Inst#0[Type#0, my-num, Field[Link#0, Int(5)]],
-                Inst#1[Type#3, h, Field[Link#3, Variant(Type#2, Inst(Inst#0))]],
+                Fun#0[Type#0, my-num, Field[Link#0, Int(5)]],
+                Fun#1[Type#3, h, Field[Link#3, Variant(Type#2, Inst(Fun#0))]],
             ]
         "##),
     );
@@ -520,7 +520,7 @@ fn inst_plain_variant_in_mixed_enum_unchanged() {
                 Type#0[num, Struct[Link#0[val, Prim(integer)]]],
                 Type#1[status, Enum[active|Struct(Type#0)]],
                 Type#2[host, Struct[Link#1[s, IrRef[Enum(Type#1)]]]],
-                Inst#0[Type#2, h, Field[Link#1, Variant(Type#1, "active")]],
+                Fun#0[Type#2, h, Field[Link#1, Variant(Type#1, "active")]],
             ]
         "##),
     );
@@ -547,8 +547,8 @@ fn inst_inline_struct_value() {
             Scope[pack:test,
                 Type#0[scaling, Struct[Link#0[min, Prim(integer)], Link#1[max, Prim(integer)]]],
                 Type#1[svc, Struct[Link#2[scaling, IrRef[Struct(Type#0)]]]],
-                Inst#0[Type#1, my-svc, Field[Link#2, Inst(Inst#1)]],
-                Inst#1[Type#0, _, Field[Link#0, Int(1)], Field[Link#1, Int(10)]],
+                Fun#0[Type#1, my-svc, Field[Link#2, Inst(Fun#1)]],
+                Fun#1[Type#0, _, Field[Link#0, Int(1)], Field[Link#1, Int(10)]],
             ]
         "##),
     );
@@ -567,8 +567,8 @@ fn inst_struct_as_field_value() {
             Scope[pack:test,
                 Type#0[scaling, Struct[Link#0[min, Prim(integer)], Link#1[max, Prim(integer)]]],
                 Type#1[svc, Struct[Link#2[scaling, IrRef[Struct(Type#0)]]]],
-                Inst#0[Type#0, my-scaling, Field[Link#0, Int(1)], Field[Link#1, Int(10)]],
-                Inst#1[Type#1, my-svc, Field[Link#2, Inst(Inst#0)]],
+                Fun#0[Type#0, my-scaling, Field[Link#0, Int(1)], Field[Link#1, Int(10)]],
+                Fun#1[Type#1, my-svc, Field[Link#2, Inst(Fun#0)]],
             ]
         "##),
     );
@@ -588,8 +588,8 @@ fn inst_inline_struct_with_type_hint() {
             Scope[pack:test,
                 Type#0[scaling, Struct[Link#0[min, Prim(integer)], Link#1[max, Prim(integer)]]],
                 Type#1[svc, Struct[Link#2[scaling, IrRef[Struct(Type#0)]]]],
-                Inst#0[Type#1, my-svc, Field[Link#2, Inst(Inst#1)]],
-                Inst#1[Type#0, _, hint=scaling, Field[Link#0, Int(2)], Field[Link#1, Int(10)]],
+                Fun#0[Type#1, my-svc, Field[Link#2, Inst(Fun#1)]],
+                Fun#1[Type#0, _, hint=scaling, Field[Link#0, Int(2)], Field[Link#1, Int(10)]],
             ]
         "##),
     );
@@ -610,8 +610,8 @@ fn inst_inline_struct_bare_hint() {
             Scope[pack:test,
                 Type#0[scaling, Struct[Link#0[min, Prim(integer)], Link#1[max, Prim(integer)]]],
                 Type#1[svc, Struct[Link#2[scaling, IrRef[Struct(Type#0)]]]],
-                Inst#0[Type#1, my-svc, Field[Link#2, Inst(Inst#1)]],
-                Inst#1[Type#0, _, hint=scaling, Field[Link#0, Int(2)], Field[Link#1, Int(10)]],
+                Fun#0[Type#1, my-svc, Field[Link#2, Inst(Fun#1)]],
+                Fun#1[Type#0, _, hint=scaling, Field[Link#0, Int(2)], Field[Link#1, Int(10)]],
             ]
         "##),
     );
@@ -637,9 +637,9 @@ fn struct_anonymous_link_list_inst() {
                 Type#0[service, Struct[Link#0[image, Prim(reference)]]],
                 Type#1[database, Struct[Link#1[engine, Prim(string)]]],
                 Type#2[stack, Struct[Link#2[_, List[IrRef[Struct(Type#0)] | IrRef[Struct(Type#1)]]]]],
-                Inst#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
-                Inst#1[Type#1, db-a, Field[Link#1, Str("pg")]],
-                Inst#2[Type#2, my-stack, Field[Link#2, List[Inst(Inst#0), Inst(Inst#1)]]],
+                Fun#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
+                Fun#1[Type#1, db-a, Field[Link#1, Str("pg")]],
+                Fun#2[Type#2, my-stack, Field[Link#2, List[Inst(Fun#0), Inst(Fun#1)]]],
             ]
         "##),
     );
@@ -663,9 +663,9 @@ fn anon_list_field_multiple_values_gathered() {
             Scope[pack:test,
                 Type#0[service, Struct[Link#0[image, Prim(reference)]]],
                 Type#1[stack, Struct[Link#1[_, List[IrRef[Struct(Type#0)]]]]],
-                Inst#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
-                Inst#1[Type#0, svc-b, Field[Link#0, Ref("apache")]],
-                Inst#2[Type#1, my-stack, Field[Link#1, List[Inst(Inst#0), Inst(Inst#1)]]],
+                Fun#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
+                Fun#1[Type#0, svc-b, Field[Link#0, Ref("apache")]],
+                Fun#2[Type#1, my-stack, Field[Link#1, List[Inst(Fun#0), Inst(Fun#1)]]],
             ]
         "##),
     );
@@ -685,9 +685,9 @@ fn named_list_field_multiple_values_gathered() {
             Scope[pack:test,
                 Type#0[service, Struct[Link#0[image, Prim(reference)]]],
                 Type#1[stack, Struct[Link#1[services, List[IrRef[Struct(Type#0)]]]]],
-                Inst#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
-                Inst#1[Type#0, svc-b, Field[Link#0, Ref("apache")]],
-                Inst#2[Type#1, my-stack, Field[Link#1, List[Inst(Inst#0), Inst(Inst#1)]]],
+                Fun#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
+                Fun#1[Type#0, svc-b, Field[Link#0, Ref("apache")]],
+                Fun#2[Type#1, my-stack, Field[Link#1, List[Inst(Fun#0), Inst(Fun#1)]]],
             ]
         "##),
     );
@@ -708,7 +708,7 @@ fn this_ref_reduces_string_field() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[id, Prim(string)], Link#1[image, Prim(reference)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Str("api")], Field[Link#1, Ref("api:latest")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Str("api")], Field[Link#1, Ref("api:latest")]],
             ]
         "##),
     );
@@ -725,7 +725,7 @@ fn this_ref_reduces_reference_field() {
         norm(r##"
             Scope[pack:test,
                 Type#0[service, Struct[Link#0[name, Prim(reference)], Link#1[image, Prim(reference)]]],
-                Inst#0[Type#0, api, Field[Link#0, Ref("boo:foo")], Field[Link#1, Ref("boo:foo:latest")]],
+                Fun#0[Type#0, api, Field[Link#0, Ref("boo:foo")], Field[Link#1, Ref("boo:foo:latest")]],
             ]
         "##),
     );
@@ -742,7 +742,7 @@ fn this_ref_trailing_atom_concatenated() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[id, Prim(string)], Link#1[sg, Prim(reference)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Str("api")], Field[Link#1, Ref("api-sg")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Str("api")], Field[Link#1, Ref("api-sg")]],
             ]
         "##),
     );
@@ -761,7 +761,7 @@ fn this_ref_reduces_enum_field() {
             Scope[pack:test,
                 Type#0[zone, Enum[1|2|3]],
                 Type#1[svc, Struct[Link#0[zone, IrRef[Enum(Type#0)]], Link#1[image, Prim(reference)]]],
-                Inst#0[Type#1, my-svc, Field[Link#0, Variant(Type#0, "2")], Field[Link#1, Ref("2:latest")]],
+                Fun#0[Type#1, my-svc, Field[Link#0, Variant(Type#0, "2")], Field[Link#1, Ref("2:latest")]],
             ]
         "##),
     );
@@ -780,7 +780,7 @@ fn this_ref_reduction_then_symbol_resolve() {
             Scope[pack:test,
                 Type#0[region, Enum[eu-central|eu-west]],
                 Type#1[service, Struct[Link#0[region, IrRef[Enum(Type#0)]], Link#1[location, IrRef[Enum(Type#0)]]]],
-                Inst#0[Type#1, api, Field[Link#0, Variant(Type#0, "eu-central")], Field[Link#1, Variant(Type#0, "eu-central")]],
+                Fun#0[Type#1, api, Field[Link#0, Variant(Type#0, "eu-central")], Field[Link#1, Variant(Type#0, "eu-central")]],
             ]
         "##),
     );
@@ -797,7 +797,7 @@ fn this_ref_reduces_integer_field() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[count, Prim(integer)], Link#1[image, Prim(reference)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Int(42)], Field[Link#1, Ref("42:latest")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Int(42)], Field[Link#1, Ref("42:latest")]],
             ]
         "##),
     );
@@ -814,7 +814,7 @@ fn this_ref_forward_ref_resolves() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[image, Prim(reference)], Link#1[id, Prim(string)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Ref("api:latest")], Field[Link#1, Str("api")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Ref("api:latest")], Field[Link#1, Str("api")]],
             ]
         "##),
     );
@@ -831,7 +831,7 @@ fn group_passthrough_unresolvable() {
         norm(r##"
             Scope[pack:test,
                 Type#0[svc, Struct[Link#0[arn, Prim(reference)]]],
-                Inst#0[Type#0, my-svc, Field[Link#0, Ref("{role:arn}")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Ref("{role:arn}")]],
             ]
         "##),
     );
@@ -850,7 +850,7 @@ fn group_passthrough_on_enum_link() {
             Scope[pack:test,
                 Type#0[zone, Enum[1|2|3]],
                 Type#1[svc, Struct[Link#0[location, IrRef[Enum(Type#0)]], Link#1[image, Prim(reference)]]],
-                Inst#0[Type#1, my-svc, Field[Link#0, Ref("{this:zone}")], Field[Link#1, Ref("nginx")]],
+                Fun#0[Type#1, my-svc, Field[Link#0, Ref("{this:zone}")], Field[Link#1, Ref("nginx")]],
             ]
         "##),
     );
@@ -893,7 +893,7 @@ fn use_type_specific_import() {
                 Type#0[service, Struct[Link#0[image, Prim(reference)]]],
             ]
             Scope[pack:app,
-                Inst#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
             ]
         "##),
     );
@@ -920,8 +920,8 @@ fn use_wildcard_type_import() {
                 Type#1[database, Struct[Link#1[engine, Prim(string)]]],
             ]
             Scope[pack:app,
-                Inst#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
-                Inst#1[Type#1, my-db, Field[Link#1, Str("pg")]],
+                Fun#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
+                Fun#1[Type#1, my-db, Field[Link#1, Str("pg")]],
             ]
         "##),
     );
@@ -945,11 +945,11 @@ fn use_wildcard_all_import() {
         norm(r##"
             Scope[pack:std,
                 Type#0[service, Struct[Link#0[image, Prim(reference)]]],
-                Inst#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
+                Fun#0[Type#0, svc-a, Field[Link#0, Ref("nginx")]],
             ]
             Scope[pack:app,
                 Type#1[stack, Struct[Link#1[svc, IrRef[Struct(Type#0)]]]],
-                Inst#1[Type#1, my-stack, Field[Link#1, Inst(Inst#0)]],
+                Fun#1[Type#1, my-stack, Field[Link#1, Inst(Fun#0)]],
             ]
         "##),
     );
@@ -979,7 +979,7 @@ fn type_and_link_same_name_no_ambiguity() {
             ]
             Scope[pack:app,
                 Type#1[place, Struct[Link#1[region, Prim(string)]]],
-                Inst#0[Type#1, home, Field[Link#1, Str("x")]],
+                Fun#0[Type#1, home, Field[Link#1, Str("x")]],
             ]
         "##),
     );
@@ -1006,7 +1006,7 @@ fn use_qualified_import_bypasses_shadowed_name() {
                 Scope[pack:inner,
                     Type#1[service, Struct[Link#1[name, Prim(string)]]],
                     Scope[pack:app,
-                        Inst#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
+                        Fun#0[Type#0, my-svc, Field[Link#0, Ref("nginx")]],
                     ],
                 ],
             ]
@@ -1149,9 +1149,9 @@ fn inline_named_type_with_typed_path_ref() {
         norm(r##"
             Scope[pack:test,
                 Type#0[service, Struct[Link#1[sidecar, IrRef[Struct(Type#2)]]]],
-                Inst#0[Type#0, upstream],
-                Inst#1[Type#0, my-svc, Field[Link#1, Inst(Inst#2)]],
-                Inst#2[Type#2, _, Field[Link#0, Inst(Inst#0):Variant(Type#1, "grpc")]],
+                Fun#0[Type#0, upstream],
+                Fun#1[Type#0, my-svc, Field[Link#1, Inst(Fun#2)]],
+                Fun#2[Type#2, _, Field[Link#0, Inst(Fun#0):Variant(Type#1, "grpc")]],
                 Scope[type:service,
                     Type#1[port, Enum[grpc|http]],
                     Scope[type:sidecar,

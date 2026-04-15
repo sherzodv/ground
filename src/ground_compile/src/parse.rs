@@ -928,10 +928,10 @@ impl<'a> Parser<'a> {
             (None, self.node(output_start, AstTopDefOutput::Unit))
         };
 
-        Some(self.node(start, AstTopDef { name, input, hook, output }))
+        Some(self.node(start, AstTopDef { name, has_def: true, input, hook, output }))
     }
 
-    /// `ident "=" (type_expr | "{" struct_items "}")` — keyword-free type def.
+    /// `ident "=" (type_expr | "{" struct_items "}")` — keyword-free type alias.
     /// Returns None (backtracking fully) when not followed by `=`, deferring to `parse_inst`.
     fn parse_top_def_no_keyword(&mut self) -> Option<AstNode<AstTopDef>> {
         let start = self.pos;
@@ -954,7 +954,7 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         let (hook, output) = self.parse_after_eq();
-        Some(self.node(start, AstTopDef { name, input: vec![], hook, output }))
+        Some(self.node(start, AstTopDef { name, has_def: false, input: vec![], hook, output }))
     }
 
     fn parse_def(&mut self) -> Option<AstDef> {

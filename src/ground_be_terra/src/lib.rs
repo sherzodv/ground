@@ -6,18 +6,7 @@ use serde_json::{json, Map, Value};
 
 pub use ground_gen::GenError;
 
-const ROOT_TPL:          &str = include_str!("templates/root.json.tera");
-const IAM_ROLE_TPL:      &str = include_str!("templates/aws_iam_role.json.tera");
-const IAM_ATTACH_TPL:    &str = include_str!("templates/aws_iam_role_policy_attachment.json.tera");
-const SG_TPL:            &str = include_str!("templates/aws_security_group.json.tera");
-const SG_EGRESS_TPL:     &str = include_str!("templates/aws_vpc_security_group_egress_rule.json.tera");
-const SG_INGRESS_TPL:    &str = include_str!("templates/aws_vpc_security_group_ingress_rule.json.tera");
-const LOG_GROUP_TPL:     &str = include_str!("templates/aws_cloudwatch_log_group.json.tera");
-const ECS_TD_TPL:        &str = include_str!("templates/aws_ecs_task_definition.json.tera");
-const ECS_SVC_TPL:       &str = include_str!("templates/aws_ecs_service.json.tera");
-const RAND_PW_TPL:       &str = include_str!("templates/random_password.json.tera");
-const DB_SNG_TPL:        &str = include_str!("templates/aws_db_subnet_group.json.tera");
-const DB_INST_TPL:       &str = include_str!("templates/aws_db_instance.json.tera");
+const ROOT_TPL: &str = include_str!("templates/root.json.tera");
 
 pub fn generate(res: &CompileRes) -> Result<String, GenError> {
     let mut frags: Vec<String> = Vec::new();

@@ -1,5 +1,5 @@
-use ground_compile::ast::{ParseReq, ParseUnit};
 use ground_compile::asm::*;
+use ground_compile::ast::{ParseReq, ParseUnit};
 use ground_compile::ir::{IrRes, ScopeId, ScopeKind};
 use ground_compile::parse::parse;
 use ground_compile::resolve::resolve;
@@ -56,14 +56,6 @@ pub fn show_plan(p: &AsmPlan) -> String {
     parts.join("\n")
 }
 
-pub fn show_symbol(s: &AsmSymbol) -> String {
-    if s.insts.is_empty() {
-        return String::new();
-    }
-    let insts: Vec<_> = s.insts.iter().map(|i| format!("  {}", show_inst(i))).collect();
-    format!("Symbol\n{}", insts.join("\n"))
-}
-
 // ---------------------------------------------------------------------------
 // Scope tree
 // ---------------------------------------------------------------------------
@@ -108,30 +100,7 @@ pub fn norm(s: &str) -> String {
         .join("\n")
 }
 
-/// Parse + resolve + lower multiple units, format as compact string.
-pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
-    let req = ParseReq {
-        units: units.into_iter().map(|(name, path, src)| ParseUnit {
-            name: name.into(),
-            path: path.into_iter().map(|s| s.to_string()).collect(),
-            src:  src.to_string(),
-        }).collect(),
-    };
-    let res = parse(req);
-    let ir  = resolve(res);
-    show_asm(lower(&ir, ""), ir)
-}
-
-/// Parse + resolve + lower `input`, format as compact string.
-pub fn show(input: &str) -> String {
-    let res = parse(ParseReq {
-        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string() }],
-    });
-    let ir  = resolve(res);
-    show_asm(lower(&ir, ""), ir)
-}
-
-/// Like `show` but also supplies TypeScript source for hook execution.
+/// Parse + resolve + lower `input` with TypeScript source for hook execution.
 pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
     let res = parse(ParseReq {
         units: vec![ParseUnit { name: "test".into(), path: vec![], src: grd_src.to_string() }],
@@ -143,10 +112,10 @@ pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
 fn show_asm(asm: AsmRes, ir: IrRes) -> String {
     let mut lines: Vec<String> = Vec::new();
 
-    // Pair each named IR inst's scope with its lowered AsmInst (order preserved by lower)
-    let ir_named_scopes: Vec<ScopeId> = ir.insts.iter()
-        .filter(|i| i.name != "_")
-        .map(|i| i.scope)
+    // Pair each named IR fun's scope with its lowered AsmInst (order preserved by lower)
+    let ir_named_scopes: Vec<ScopeId> = ir.funs.iter()
+        .filter(|f| f.name != "_")
+        .map(|f| f.scope)
         .collect();
     let scoped_insts: Vec<(ScopeId, &AsmInst)> = ir_named_scopes.iter().copied()
         .zip(asm.symbol.insts.iter())

@@ -1,0 +1,3 @@
+def label { key = string } = make_label { value = string }
+label env { key: "environment" }
+plan env

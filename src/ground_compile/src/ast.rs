@@ -76,16 +76,17 @@ pub enum AstPrimitive { String, Integer, Reference }
 /// A named def — covers simple type defs, bare unit types, and hook transformations.
 ///
 /// Forms:
-///   `name = type_expr`                       — simple def (input empty, hook None, output TypeExpr)
-///   `name`                                   — unit def   (input empty, hook None, output Unit)
-///   `def name { input } = { output }`        — def with input body
-///   `def name { input } = hookname { output }` — def with hook + output struct
+///   `name = type_expr`                         — type alias (has_def=false, input empty, hook None)
+///   `def name`                                 — bare entity def (has_def=true, output Unit)
+///   `def name { input } = { output }`          — hook def (has_def=true, has input)
+///   `def name { input } = hookname { output }` — hook def with explicit TS name
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstTopDef {
-    pub name:   AstNode<String>,
-    pub input:  Vec<AstNode<AstFieldDef>>,     // fields before `=`; empty for simple defs
-    pub hook:   Option<AstNode<String>>,        // TS function name between `=` and output body
-    pub output: AstNode<AstTopDefOutput>,
+    pub name:    AstNode<String>,
+    pub has_def: bool,                           // true when the `def` keyword was written
+    pub input:   Vec<AstNode<AstFieldDef>>,      // fields before `=`; empty for simple defs
+    pub hook:    Option<AstNode<String>>,         // TS function name between `=` and output body
+    pub output:  AstNode<AstTopDefOutput>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

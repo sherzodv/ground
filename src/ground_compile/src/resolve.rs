@@ -21,9 +21,8 @@ use crate::ir::ScopeKind as IrScopeKind;
 struct Ctx {
     types:    Vec<IrTypeDef>,
     links:    Vec<IrLinkDef>,
-    insts:    Vec<IrInstDef>,
+    funs:     Vec<IrFunDef>,
     type_fns: Vec<IrTypeFnDef>,
-    hooks:    Vec<IrHookDef>,
     scopes:   Vec<IrScope>,
     errors:   Vec<IrError>,
 }
@@ -36,14 +35,14 @@ impl Ctx {
             parent:         None,
             types:          HashMap::new(),
             links:          HashMap::new(),
-            insts:          HashMap::new(),
+            funs:           HashMap::new(),
             packs:          HashMap::new(),
             type_fns:       HashMap::new(),
             anon_type_fns:  HashMap::new(),
             anon_pair_fns:  HashMap::new(),
             ambiguous:      HashSet::new(),
         };
-        Ctx { types: vec![], links: vec![], insts: vec![], type_fns: vec![], hooks: vec![], scopes: vec![root], errors: vec![] }
+        Ctx { types: vec![], links: vec![], funs: vec![], type_fns: vec![], scopes: vec![root], errors: vec![] }
     }
 
     fn alloc_type(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, body: IrTypeBody) -> TypeId {
@@ -83,13 +82,16 @@ impl Ctx {
         id
     }
 
-    fn alloc_inst(&mut self, name: String, scope: ScopeId, loc: IrLoc, type_id: TypeId) -> InstId {
-        let id = InstId(self.insts.len() as u32);
-        self.scopes[scope.0 as usize].insts
+    fn alloc_fun(&mut self, name: String, scope: ScopeId, loc: IrLoc, type_id: TypeId, parent: Option<TypeId>) -> FunId {
+        let id = FunId(self.funs.len() as u32);
+        self.scopes[scope.0 as usize].funs
             .entry(name.clone())
             .or_default()
             .push(id);
-        self.insts.push(IrInstDef { type_id, name, type_hint: None, scope, loc, fields: vec![] });
+        self.funs.push(IrFunDef {
+            type_id, parent, name, type_hint: None, scope, loc,
+            fields: vec![], hook_fn: None, inputs: vec![], outputs: vec![],
+        });
         id
     }
 
@@ -108,12 +110,6 @@ impl Ctx {
         id
     }
 
-    fn lookup_type_fn(&self, scope: ScopeId, name: &str) -> Option<TypeFnId> {
-        let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
-        if let Some(&id) = s.type_fns.get(name) { return Some(id); }
-        s.parent.and_then(|p| self.lookup_type_fn(p, name))
-    }
 
     fn push_error(&mut self, message: String) {
         self.errors.push(IrError { message, loc: IrLoc { unit: 0, start: 0, end: 0 } });
@@ -125,7 +121,7 @@ impl Ctx {
         let s = &mut self.scopes[scope.0 as usize];
         s.types.remove(name);
         s.links.remove(name);
-        s.insts.remove(name);
+        s.funs.remove(name);
         s.packs.remove(name);
         s.ambiguous.insert(name.to_string());
     }
@@ -144,25 +140,25 @@ impl Ctx {
         s.parent.and_then(|p| self.lookup_link(p, name))
     }
 
-    fn lookup_inst(&self, scope: ScopeId, name: &str) -> Option<InstId> {
+    fn lookup_fun(&self, scope: ScopeId, name: &str) -> Option<FunId> {
         let s = &self.scopes[scope.0 as usize];
         if s.ambiguous.contains(name) { return None; }
-        if let Some(ids) = s.insts.get(name) {
+        if let Some(ids) = s.funs.get(name) {
             if ids.len() == 1 { return Some(ids[0]); }
-            if !ids.is_empty() { return None; } // ambiguous type-wise — caller must use lookup_inst_typed
+            if !ids.is_empty() { return None; } // ambiguous type-wise — caller must use lookup_fun_typed
         }
-        s.parent.and_then(|p| self.lookup_inst(p, name))
+        s.parent.and_then(|p| self.lookup_fun(p, name))
     }
 
-    fn lookup_inst_typed(&self, scope: ScopeId, name: &str, type_id: TypeId) -> Option<InstId> {
+    fn lookup_fun_typed(&self, scope: ScopeId, name: &str, type_id: TypeId) -> Option<FunId> {
         let s = &self.scopes[scope.0 as usize];
         if s.ambiguous.contains(name) { return None; }
-        if let Some(ids) = s.insts.get(name) {
-            if let Some(&iid) = ids.iter().find(|&&iid| self.insts[iid.0 as usize].type_id == type_id) {
-                return Some(iid);
+        if let Some(ids) = s.funs.get(name) {
+            if let Some(&fid) = ids.iter().find(|&&fid| self.funs[fid.0 as usize].type_id == type_id) {
+                return Some(fid);
             }
         }
-        s.parent.and_then(|p| self.lookup_inst_typed(p, name, type_id))
+        s.parent.and_then(|p| self.lookup_fun_typed(p, name, type_id))
     }
 
     fn lookup_pack(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
@@ -323,10 +319,10 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
             _ => {
-                // No hint — try type, then inst, then link, then pack; else plain.
+                // No hint — try type, then fun, then link, then pack; else plain.
                 if let Some(id) = ctx.lookup_type(scope, val) {
                     IrRefSegValue::Type(id)
-                } else if let Some(id) = ctx.lookup_inst(scope, val) {
+                } else if let Some(id) = ctx.lookup_fun(scope, val) {
                     IrRefSegValue::Inst(id)
                 } else if let Some(id) = ctx.lookup_link(scope, val) {
                     IrRefSegValue::Link(id)
@@ -367,7 +363,7 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             parent:         Some(parent),
             types:          HashMap::new(),
             links:          HashMap::new(),
-            insts:          HashMap::new(),
+            funs:           HashMap::new(),
             packs:          HashMap::new(),
             type_fns:       HashMap::new(),
             anon_type_fns:  HashMap::new(),
@@ -510,9 +506,9 @@ fn do_wildcard_import(
     }
     if kind == ImportKind::Insts {
         if kind_hint.is_none() || kind_hint == Some("inst") {
-            for (name, iids) in &src_scope.insts {
-                for &iid in iids {
-                    try_import_inst(name, iid, into, ctx, loc);
+            for (name, fids) in &src_scope.funs {
+                for &fid in fids {
+                    try_import_fun(name, fid, into, ctx, loc);
                 }
             }
         }
@@ -561,9 +557,9 @@ fn do_specific_import(
     }
     if kind == ImportKind::Insts {
         if kind_hint.is_none() || kind_hint == Some("inst") {
-            if let Some(iids) = src_scope.insts.get(name) {
-                for &iid in iids {
-                    try_import_inst(name, iid, into, ctx, loc);
+            if let Some(fids) = src_scope.funs.get(name) {
+                for &fid in fids {
+                    try_import_fun(name, fid, into, ctx, loc);
                 }
                 found = true;
             }
@@ -666,15 +662,15 @@ fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: 
     }
 }
 
-fn try_import_inst(name: &str, iid: InstId, into: ScopeId, ctx: &mut Ctx, _loc: &IrLoc) {
+fn try_import_fun(name: &str, fid: FunId, into: ScopeId, ctx: &mut Ctx, _loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
-    let already = ctx.scopes[into.0 as usize].insts.get(name)
-        .map_or(false, |v| v.contains(&iid));
+    let already = ctx.scopes[into.0 as usize].funs.get(name)
+        .map_or(false, |v| v.contains(&fid));
     if !already {
-        ctx.scopes[into.0 as usize].insts
+        ctx.scopes[into.0 as usize].funs
             .entry(name.to_string())
             .or_default()
-            .push(iid);
+            .push(fid);
     }
 }
 
@@ -798,7 +794,7 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 
     for (type_id, td, scope) in hook_work {
         let name = td.inner.name.inner.clone();
-        let loc  = ir_loc(&td.loc);
+        let _loc = ir_loc(&td.loc);
 
         // Resolve input field links (the fields before "=").
         let inputs: Vec<LinkId> = td.inner.input.iter().map(|field| {
@@ -824,7 +820,14 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             .map(|h| h.inner.clone())
             .unwrap_or_else(|| name.clone());
 
-        ctx.hooks.push(IrHookDef { name, hook_fn, type_id, scope, loc, inputs, outputs });
+        // Find the fun registered for this def in pass4 and attach the hook fields.
+        let fids = ctx.scopes[scope.0 as usize].funs.get(&name).cloned().unwrap_or_default();
+        let fid = fids.iter().copied().find(|&fid| ctx.funs[fid.0 as usize].type_id == type_id);
+        if let Some(fid) = fid {
+            ctx.funs[fid.0 as usize].hook_fn  = Some(hook_fn);
+            ctx.funs[fid.0 as usize].inputs   = inputs;
+            ctx.funs[fid.0 as usize].outputs  = outputs;
+        }
     }
 }
 
@@ -1080,26 +1083,39 @@ fn lookup_type_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<TypeId
     }
 }
 
-fn pass4_register_insts(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+fn pass4_register_funs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
-            if let AstDef::Inst(inst) = def {
-                let type_ref = &inst.inner.type_name.inner;
-                let type_id  = match lookup_type_by_ref(type_ref, ctx, scope) {
-                    Some(tid) => tid,
-                    None => {
-                        let ref_name = type_ref.segments.iter()
-                            .map(|s| s.inner.as_plain().unwrap_or("{...}"))
-                            .collect::<Vec<_>>().join(":");
-                        ctx.errors.push(IrError {
-                            message: format!("unknown type '{}'", ref_name),
-                            loc: ir_loc(&inst.inner.type_name.loc),
-                        });
-                        continue;
+            match def {
+                AstDef::Inst(inst) => {
+                    let type_ref = &inst.inner.type_name.inner;
+                    let type_id  = match lookup_type_by_ref(type_ref, ctx, scope) {
+                        Some(tid) => tid,
+                        None => {
+                            let ref_name = type_ref.segments.iter()
+                                .map(|s| s.inner.as_plain().unwrap_or("{...}"))
+                                .collect::<Vec<_>>().join(":");
+                            ctx.errors.push(IrError {
+                                message: format!("unknown type '{}'", ref_name),
+                                loc: ir_loc(&inst.inner.type_name.loc),
+                            });
+                            continue;
+                        }
+                    };
+                    ctx.alloc_fun(inst.inner.inst_name.inner.clone(), scope, ir_loc(&inst.loc), type_id, Some(type_id));
+                }
+                // An explicit `def foo` declaration is both a type and a named entity.
+                // Register a fun named `foo` with parent=None (root def) of its own type
+                // so that `plan foo` (and field references) can resolve it directly.
+                // Type aliases (`foo = type_expr`, has_def=false) do NOT register a fun.
+                AstDef::Def(td) if td.inner.has_def => {
+                    let name = &td.inner.name.inner;
+                    if let Some(&type_id) = ctx.scopes[scope.0 as usize].types.get(name) {
+                        ctx.alloc_fun(name.clone(), scope, ir_loc(&td.loc), type_id, None);
                     }
-                };
-                ctx.alloc_inst(inst.inner.inst_name.inner.clone(), scope, ir_loc(&inst.loc), type_id);
+                }
+                _ => {}
             }
         }
     }
@@ -1109,8 +1125,8 @@ fn pass4_register_insts(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 // Pass 5 — resolve instance fields
 // ---------------------------------------------------------------------------
 
-fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
-    let mut work: Vec<(InstId, Vec<AstNode<AstField>>, ScopeId)> = vec![];
+fn pass5_resolve_fun_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    let mut work: Vec<(FunId, Vec<AstNode<AstField>>, ScopeId)> = vec![];
 
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
@@ -1120,21 +1136,21 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                 // Try typed lookup first (works for same-name multi-type instances),
                 // fall back to unambiguous single lookup.
                 let type_ref = &inst.inner.type_name.inner;
-                let iid = if let Some(type_id) = lookup_type_by_ref(type_ref, ctx, scope) {
-                    ctx.lookup_inst_typed(scope, name, type_id)
-                        .or_else(|| ctx.lookup_inst(scope, name))
+                let fid = if let Some(type_id) = lookup_type_by_ref(type_ref, ctx, scope) {
+                    ctx.lookup_fun_typed(scope, name, type_id)
+                        .or_else(|| ctx.lookup_fun(scope, name))
                 } else {
-                    ctx.lookup_inst(scope, name)
+                    ctx.lookup_fun(scope, name)
                 };
-                if let Some(iid) = iid {
-                    work.push((iid, inst.inner.fields.clone(), scope));
+                if let Some(fid) = fid {
+                    work.push((fid, inst.inner.fields.clone(), scope));
                 }
             }
         }
     }
 
-    for (iid, fields, scope) in work {
-        let type_id  = ctx.insts[iid.0 as usize].type_id;
+    for (fid, fields, scope) in work {
+        let type_id  = ctx.funs[fid.0 as usize].type_id;
         let link_ids = match ctx.types.get(type_id.0 as usize).map(|t| &t.body) {
             Some(IrTypeBody::Struct(ids)) => ids.clone(),
             _                             => vec![],
@@ -1173,7 +1189,7 @@ fn pass5_resolve_inst_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             }
         }
 
-        ctx.insts[iid.0 as usize].fields = resolved;
+        ctx.funs[fid.0 as usize].fields = resolved;
     }
 }
 
@@ -1363,18 +1379,16 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
                                 } else {
                                     None
                                 };
-                                let iid = InstId(ctx.insts.len() as u32);
-                                ctx.insts.push(IrInstDef {
-                                    type_id,
-                                    name: "_".into(),
-                                    type_hint: resolved_hint,
-                                    scope,
-                                    loc: loc.clone(),
-                                    fields: vec![],
+                                let fid = FunId(ctx.funs.len() as u32);
+                                ctx.funs.push(IrFunDef {
+                                    type_id, parent: Some(type_id),
+                                    name: "_".into(), type_hint: resolved_hint,
+                                    scope, loc: loc.clone(), fields: vec![],
+                                    hook_fn: None, inputs: vec![], outputs: vec![],
                                 });
                                 let fields = resolve_named_fields(ast_fields, &link_ids, ctx, scope);
-                                ctx.insts[iid.0 as usize].fields = fields;
-                                return IrValue::Inst(iid);
+                                ctx.funs[fid.0 as usize].fields = fields;
+                                return IrValue::Inst(fid);
                             }
                             Some(IrTypeBody::Enum(variants)) => {
                                 // Struct literal against an enum type — hint identifies the variant.
@@ -1429,18 +1443,16 @@ fn resolve_value(v: &AstValue, link_type: &IrLinkType, ctx: &mut Ctx, scope: Sco
                                         return IrValue::Ref(String::new());
                                     }
                                 };
-                                let iid = InstId(ctx.insts.len() as u32);
-                                ctx.insts.push(IrInstDef {
-                                    type_id: hint_tid,
-                                    name: "_".into(),
-                                    type_hint: Some(hint_name.to_string()),
-                                    scope,
-                                    loc: loc.clone(),
-                                    fields: vec![],
+                                let fid = FunId(ctx.funs.len() as u32);
+                                ctx.funs.push(IrFunDef {
+                                    type_id: hint_tid, parent: Some(hint_tid),
+                                    name: "_".into(), type_hint: Some(hint_name.to_string()),
+                                    scope, loc: loc.clone(), fields: vec![],
+                                    hook_fn: None, inputs: vec![], outputs: vec![],
                                 });
                                 let fields = resolve_named_fields(ast_fields, &inner_link_ids, ctx, scope);
-                                ctx.insts[iid.0 as usize].fields = fields;
-                                return IrValue::Variant(type_id, idx as u32, Some(Box::new(IrValue::Inst(iid))));
+                                ctx.funs[fid.0 as usize].fields = fields;
+                                return IrValue::Variant(type_id, idx as u32, Some(Box::new(IrValue::Inst(fid))));
                             }
                             _ => {
                                 ctx.push_error("inline struct value requires a struct-typed link".into());
@@ -1514,9 +1526,9 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                                 }
                                 IrRefSegValue::Type(inner_tid) => {
                                     // Use typed lookup to find instances of the inner type by name.
-                                    let iid = ctx.lookup_inst_typed(scope, raw, *inner_tid)
-                                        .or_else(|| ctx.lookup_inst(scope, raw)
-                                            .filter(|&i| ctx.insts[i.0 as usize].type_id == *inner_tid));
+                                    let iid = ctx.lookup_fun_typed(scope, raw, *inner_tid)
+                                        .or_else(|| ctx.lookup_fun(scope, raw)
+                                            .filter(|&i| ctx.funs[i.0 as usize].type_id == *inner_tid));
                                     if let Some(iid) = iid {
                                         return IrValue::Variant(*tid, idx as u32, Some(Box::new(IrValue::Inst(iid))));
                                     }
@@ -1525,9 +1537,9 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                             }
                         }
                     }
-                    // For unit/marker types (e.g. `def secret`), `raw` may be an instance name.
-                    if let Some(iid) = ctx.lookup_inst_typed(scope, raw, *tid) {
-                        return IrValue::Inst(iid);
+                    // For unit/marker types (e.g. `def secret`), `raw` may be a fun name.
+                    if let Some(fid) = ctx.lookup_fun_typed(scope, raw, *tid) {
+                        return IrValue::Inst(fid);
                     }
                     let type_name = ctx.types[tid.0 as usize].name.as_deref().unwrap_or("?");
                     ctx.errors.push(IrError {
@@ -1537,11 +1549,11 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                     IrValue::Variant(*tid, 0, None)
                 }
                 Some(IrTypeBody::Struct(_)) => {
-                    // Use typed lookup first — handles multi-type same-name instances.
-                    let iid = ctx.lookup_inst_typed(scope, raw, *tid)
-                        .or_else(|| ctx.lookup_inst(scope, raw));
-                    match iid {
-                        Some(iid) => IrValue::Inst(iid),
+                    // Use typed lookup first — handles multi-type same-name funs.
+                    let fid = ctx.lookup_fun_typed(scope, raw, *tid)
+                        .or_else(|| ctx.lookup_fun(scope, raw));
+                    match fid {
+                        Some(fid) => IrValue::Inst(fid),
                         None => {
                             ctx.errors.push(IrError {
                                 message: format!("'{}' is not a known instance of Type#{}", raw, tid.0),
@@ -1595,8 +1607,8 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
         let inst_name_seg = r.segments.get(2);
         if let Some(type_id) = ctx.lookup_type(scope, type_name) {
             let name = inst_name_seg.and_then(|s| s.inner.as_plain()).unwrap_or(type_name);
-            if let Some(iid) = ctx.lookup_inst_typed(scope, name, type_id) {
-                return IrValue::Inst(iid);
+            if let Some(fid) = ctx.lookup_fun_typed(scope, name, type_id) {
+                return IrValue::Inst(fid);
             }
             ctx.errors.push(IrError {
                 message: format!("no instance '{}' of type '{}' in scope", name, type_name),
@@ -1625,7 +1637,7 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     let matched_pattern = patterns.iter().find(|pattern| {
         if let Some(base_seg) = pattern.segments.first() {
             if let IrRefSegValue::Type(tid) = &base_seg.value {
-                return ctx.lookup_inst_typed(scope, inst_name, *tid).is_some();
+                return ctx.lookup_fun_typed(scope, inst_name, *tid).is_some();
             }
         }
         false
@@ -1813,9 +1825,9 @@ fn pass6_resolve_plans(parse_scopes: &[AstScope], ctx: &mut Ctx) -> Vec<IrPlanDe
         let fields = if ast_fields.is_empty() {
             vec![]
         } else {
-            let link_ids = ctx.lookup_inst(scope, &name)
-                .and_then(|iid| {
-                    let type_id = ctx.insts[iid.0 as usize].type_id;
+            let link_ids = ctx.lookup_fun(scope, &name)
+                .and_then(|fid| {
+                    let type_id = ctx.funs[fid.0 as usize].type_id;
                     match ctx.types.get(type_id.0 as usize).map(|t| t.body.clone()) {
                         Some(IrTypeBody::Struct(ids)) => Some(ids),
                         _ => None,
@@ -1839,11 +1851,11 @@ pub fn resolve(res: ParseRes) -> IrRes {
     pass1_mirror_scopes(&res.scopes, &mut ctx);
     pass2_register_names(&res.scopes, &mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::TypesLinksAndPacks);
-    pass4_register_insts(&res.scopes, &mut ctx);
+    pass4_register_funs(&res.scopes, &mut ctx);
     pass3_resolve_types_and_links(&res.scopes, &mut ctx);
     pass3b_flatten_alias_types(&mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::Insts);
-    pass5_resolve_inst_fields(&res.scopes, &mut ctx);
+    pass5_resolve_fun_fields(&res.scopes, &mut ctx);
     pass7_resolve_type_fns(&res.scopes, &mut ctx);
 
     let plans = pass6_resolve_plans(&res.scopes, &mut ctx);
@@ -1857,10 +1869,9 @@ pub fn resolve(res: ParseRes) -> IrRes {
     IrRes {
         types:    ctx.types,
         links:    ctx.links,
-        insts:    ctx.insts,
+        funs:     ctx.funs,
         plans,
         type_fns: ctx.type_fns,
-        hooks:    ctx.hooks,
         scopes:   ctx.scopes,
         errors,
     }

@@ -5,7 +5,7 @@
 ///
 ///   `TypeId`   → `IrRes::types[id.0]`
 ///   `LinkId`   → `IrRes::links[id.0]`
-///   `InstId`   → `IrRes::insts[id.0]`
+///   `FunId`    → `IrRes::funs[id.0]`
 ///   `ScopeId`  → `IrRes::scopes[id.0]`  (`ScopeId(0)` is always the root)
 ///   `TypeFnId` → `IrRes::type_fns[id.0]`
 
@@ -22,10 +22,7 @@ pub struct TypeId(pub u32);
 pub struct LinkId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HookId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstId(pub u32);
+pub struct FunId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
@@ -66,7 +63,7 @@ pub enum IrRefSegValue {
     Pack(ScopeId),
     Type(TypeId),
     Link(LinkId),
-    Inst(InstId),
+    Inst(FunId),
     /// Could not be resolved in lexical scope — kept verbatim.
     Plain(String),
 }
@@ -90,7 +87,7 @@ pub struct IrScope {
     pub parent:    Option<ScopeId>,
     pub types:     HashMap<String, TypeId>,
     pub links:     HashMap<String, LinkId>,
-    pub insts:     HashMap<String, Vec<InstId>>,
+    pub funs:      HashMap<String, Vec<FunId>>,
     pub packs:     HashMap<String, ScopeId>,
     /// Named type functions in this scope (1-param or N-param), keyed by function name.
     pub type_fns:      HashMap<String, TypeFnId>,
@@ -196,7 +193,7 @@ pub enum IrValue {
     Int(i64),
     Ref(String),               // reference primitive (opaque) OR unresolved param ref like "{this:name}-sg"
     Variant(TypeId, u32, Option<Box<IrValue>>), // enum type + variant index + optional typed payload
-    Inst(InstId),
+    Inst(FunId),
     Path(Vec<IrValue>),        // multi-segment typed path
     List(Vec<IrValue>),        // list of validated values
 }
@@ -214,14 +211,26 @@ pub struct IrField {
     pub value:   IrValue,
 }
 
+/// A named program entity — unified representation for both root definitions and instances.
+///
+/// `def boo`  → `parent: None`,          `type_id`: boo's own TypeId
+/// `boo b`    → `parent: Some(boo_id)`,  `type_id`: boo's TypeId
+/// `{ ... }`  → `parent: Some(type_id)`, `type_id`: the struct TypeId, `name`: "_"
+///
+/// Hook fields are only populated for root definitions (`parent.is_none()`) that
+/// carry a TypeScript transformation: `def name { inputs } = hook_fn { outputs }`.
 #[derive(Debug, Clone)]
-pub struct IrInstDef {
+pub struct IrFunDef {
     pub type_id:   TypeId,
+    pub parent:    Option<TypeId>,       // None → root def; Some → instance/anonymous
     pub name:      String,
-    pub type_hint: Option<String>, // explicit type annotation from source, if present
+    pub type_hint: Option<String>,       // explicit type annotation from source, if present
     pub scope:     ScopeId,
     pub loc:       IrLoc,
     pub fields:    Vec<IrField>,
+    pub hook_fn:   Option<String>,       // TS function name; None for non-hook funs
+    pub inputs:    Vec<LinkId>,          // input links (before `=` in hook def)
+    pub outputs:   Vec<LinkId>,          // output links (after `=` in hook def)
 }
 
 // ---------------------------------------------------------------------------
@@ -239,26 +248,6 @@ pub struct IrPlanDef {
 }
 
 // ---------------------------------------------------------------------------
-// Hook definitions  (def name { inputs } = hook_fn { outputs })
-// ---------------------------------------------------------------------------
-
-/// A resolved hook def: a named transformation function backed by TypeScript.
-///
-/// `hook_fn` is the TypeScript function name:
-///   - explicit → `def name { } = hook_fn { }` → `hook_fn`
-///   - implicit → `def name { } = { }`          → `name`  (def name is the hook)
-#[derive(Debug, Clone)]
-pub struct IrHookDef {
-    pub name:    String,
-    pub hook_fn: String,
-    pub type_id: TypeId,     // type registered for this def (output shape)
-    pub scope:   ScopeId,
-    pub loc:     IrLoc,
-    pub inputs:  Vec<LinkId>,  // input field links (before =)
-    pub outputs: Vec<LinkId>,  // output field links (after =)
-}
-
-// ---------------------------------------------------------------------------
 // Errors & result
 // ---------------------------------------------------------------------------
 
@@ -272,10 +261,9 @@ pub struct IrError {
 pub struct IrRes {
     pub types:    Vec<IrTypeDef>,
     pub links:    Vec<IrLinkDef>,
-    pub insts:    Vec<IrInstDef>,
+    pub funs:     Vec<IrFunDef>,
     pub plans:    Vec<IrPlanDef>,
     pub type_fns: Vec<IrTypeFnDef>,
-    pub hooks:    Vec<IrHookDef>,
     pub scopes:   Vec<IrScope>,
     pub errors:   Vec<IrError>,
 }

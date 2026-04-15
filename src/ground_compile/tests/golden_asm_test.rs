@@ -3,7 +3,7 @@
 /// Each test calls `show(input)` which parses + resolves + lowers the source
 /// and returns a compact, position-free string of the resulting AsmRes.
 #[path = "helpers/golden_asm_helpers.rs"] mod golden_asm_helpers;
-use golden_asm_helpers::{norm, show, show_multi, show_with_ts};
+use golden_asm_helpers::show_with_ts;
 
 // ---------------------------------------------------------------------------
 // Hook execution tests
