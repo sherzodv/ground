@@ -946,6 +946,7 @@ dependencies = [
  "ground_be_terra",
  "ground_compile",
  "serde_json",
+ "tera",
 ]
 
 [[package]]

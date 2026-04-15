@@ -1,0 +1,6 @@
+{% for plan in plans -%}
+plan {{ plan.name }}
+{% for inst in plan.reachable -%}
+  {{ inst.type_name }} {{ inst.name }}
+{% endfor %}
+{%- endfor %}

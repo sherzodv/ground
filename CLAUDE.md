@@ -2,15 +2,52 @@ Ground is an architecture definition language. Infrastructure is derived.
 
 ## Agents
 
-**Tassadar** (Ground Compiler Expert) — delegate all exploration and questions about ground syntax:
-- Root: `ground_compile/` crate
-- Ground language syntax, grammar, parsing, IR, type system
-- Compiler passes, codegen pipeline, error reporting
-- Ask: "How does X work in ground_compile?" → spawn Tassadar to explore and report back
+### Ground Compiler
 
-## Current focus
+**Tassadar** (Ground Compiler Orchestrator) — coordinates compiler sub-agents; owns the overall compilation pipeline and cross-cutting concerns:
+- Root: `src/ground_compile/` (`lib.rs`, `resolve.rs`, `stdlib/`)
+- Delegates parser/IR/asm questions to sub-agents below
+- Ask: anything spanning multiple compiler stages, or when you're unsure which stage owns an issue
 
-Our main focus currently is the Ground Book. It was written to sketch the foundational concepts and usage patterns of the Ground language. There is some real infra defined in the `mvp` folder in the Ground language. Both are not yet strict, because we don't have implementation yet in compiler and generation layers. Now our main focus is implementing things fixing the Ground Book & mvp along the way.
+**Zeratul** (Ground Compiler — Parser) — expert on parsing and AST:
+- Root: `src/ground_compile/src/parse.rs`, `ast.rs`
+- Lexing, grammar rules, syntax error reporting, CST→AST lowering
+- Ask: "How is X parsed?", "Why does this syntax fail?", "Where is token Y handled?"
+
+**Artanis** (Ground Compiler — IR) — expert on intermediate representation:
+- Root: `src/ground_compile/src/ir.rs`, `resolve.rs`
+- IR data structures, name resolution, type system, semantic passes
+- Ask: "What does the IR look like for X?", "Where does resolution happen?", "How are types represented?"
+
+**Fenix** (Ground Compiler — Codegen) — expert on code generation:
+- Root: `src/ground_compile/src/asm.rs`
+- Lowering IR to backend instructions, codegen passes, output format
+- Ask: "How is X lowered?", "What does codegen emit for Y?", "Where is the asm output structured?"
+
+### Ground language authority
+
+**Aldaris** (Ground Book) — the canonical authority on Ground language syntax, semantics, and design intent:
+- Root: `GROUND-BOOK.md`, `syntax.md`, `mvp/`
+- Covers: defs, expressions, composition patterns, built-in primitives, idioms, design rationale
+- Ask: "Is this valid Ground syntax?", "What's the idiomatic way to express X?", "What did the language designers intend for Y?"
+- Treat Aldaris as the source of truth when compiler behavior and book description diverge
+
+### Other domains
+
+**Swann** (Ground TypeScript Engine) — expert on the TypeScript runtime/engine:
+- Root: `src/ground_ts/` (`exec.rs`, `lib.rs`)
+- TypeScript execution, TS↔Rust bridge, hooks, runtime behavior
+- Ask: "How does the TS engine execute X?", "Where does the Rust/TS boundary live?"
+
+**Valerian** (Ground BE Terra) — expert on the Terraform backend:
+- Root: `src/ground_be_terra/` (`lib.rs`, `templates/`, `terra_ops/`)
+- Terraform codegen, resource naming, tagging, provider wiring
+- Ask: "How is resource X generated?", "Where does the naming/tagging rule apply?"
+
+**Izsha** (Ground CLI) — expert on the main command-line entry point:
+- Root: `src/ground/` (`main.rs`, `ops_display.rs`)
+- CLI commands, argument parsing, orchestration of compile→run pipeline, user-facing output
+- Ask: "How does CLI command X work?", "Where is the top-level pipeline wired?"
 
 ## Default behavior
 
