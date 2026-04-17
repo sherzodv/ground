@@ -104,3 +104,32 @@ fn call_hook_array_output() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v, serde_json::json!(["svc-0", "svc-1", "svc-2"]));
 }
+
+#[test]
+fn typecheck_simple_hook() {
+    use ground_ts::typecheck::typecheck;
+    // Declarations: only interfaces, no `declare function` (that would clash with the
+    // non-ambient function definition in user.ts and trigger TS2384).
+    let declarations = "interface MakeLabelInput { key: string; }\ninterface MakeLabelOutput { value: string; }";
+    let user_ts = r#"function make_label(i: MakeLabelInput): MakeLabelOutput {
+    return { value: i.key + "=prod" };
+}"#;
+    let diags = typecheck(declarations, user_ts).expect("typecheck engine error");
+    let errors: Vec<_> = diags.iter().filter(|d| d.category == 1).collect();
+    assert!(errors.is_empty(), "unexpected TS errors: {errors:?}");
+}
+
+#[test]
+fn typecheck_catches_type_error() {
+    use ground_ts::typecheck::typecheck;
+    let declarations = "interface MakeLabelInput { key: string; }\ninterface MakeLabelOutput { value: string; }";
+    // Return type mismatch: returns { value: number } but MakeLabelOutput needs string
+    let user_ts = r#"function make_label(i: MakeLabelInput): MakeLabelOutput {
+    return { value: 42 };
+}"#;
+    let diags = typecheck(declarations, user_ts).expect("typecheck engine error");
+    let errors: Vec<_> = diags.iter().filter(|d| d.category == 1).collect();
+    assert!(!errors.is_empty(), "expected a type error but got none");
+    assert!(errors.iter().any(|d| d.message.contains("not assignable")),
+        "expected 'not assignable' error, got: {errors:?}");
+}

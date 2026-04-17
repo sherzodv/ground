@@ -103,7 +103,12 @@ pub fn norm(s: &str) -> String {
 /// Parse + resolve + lower `input` with TypeScript source for hook execution.
 pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
     let res = parse(ParseReq {
-        units: vec![ParseUnit { name: "test".into(), path: vec![], src: grd_src.to_string() }],
+        units: vec![ParseUnit {
+            name:   "test".into(),
+            path:   vec![],
+            src:    grd_src.to_string(),
+            ts_src: Some(ts_src.to_string()),
+        }],
     });
     let ir  = resolve(res);
     show_asm(lower(&ir, ts_src), ir)

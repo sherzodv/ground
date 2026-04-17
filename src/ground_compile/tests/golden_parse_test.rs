@@ -85,6 +85,54 @@ fn type_enum_mixed_plain_and_typed_ref() {
 }
 
 #[test]
+fn struct_1() {
+    assert_eq!(
+        show("def database"),
+        norm(r##"
+            Scope[pack:test,
+                Def[database, Unit],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn struct_2() {
+    assert_eq!(
+        show("def database = {}"),
+        norm(r##"
+            Scope[pack:test,
+                Def[database, Struct[]],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn struct_3() {
+    assert_eq!(
+        show("def database = unit"),
+        norm(r##"
+            Scope[pack:test,
+                Def[database, Ref(unit)],
+            ]
+        "##),
+    );
+}
+
+#[test]
+fn struct_4() {
+    assert_eq!(
+        show("def database unit = unit"),
+        norm(r##"
+            Scope[pack:test,
+                Def[database, Ref(unit)],
+            ]
+        "##),
+    );
+}
+
+#[test]
 fn struct_type_primitive_link() {
     assert_eq!(
         show("database = { engine = string }"),
@@ -735,8 +783,8 @@ fn multi_unit_shared_path() {
 
     let req = ParseReq {
         units: vec![
-            ParseUnit { name: "web".into(), path: vec!["infra".into()], src: "image = reference".into() },
-            ParseUnit { name: "db".into(),  path: vec!["infra".into()], src: "engine = string".into() },
+            ParseUnit { name: "web".into(), path: vec!["infra".into()], src: "image = reference".into(), ts_src: None },
+            ParseUnit { name: "db".into(),  path: vec!["infra".into()], src: "engine = string".into(),   ts_src: None },
         ],
     };
     let res = parse(req);

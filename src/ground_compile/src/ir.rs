@@ -9,7 +9,7 @@
 ///   `ScopeId`  → `IrRes::scopes[id.0]`  (`ScopeId(0)` is always the root)
 ///   `TypeFnId` → `IrRes::type_fns[id.0]`
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Typed indices
@@ -95,7 +95,11 @@ pub struct IrScope {
     pub anon_type_fns: HashMap<TypeId, TypeFnId>,
     /// Anonymous 2-param pair functions, keyed by (from TypeId, to TypeId).
     pub anon_pair_fns: HashMap<(TypeId, TypeId), TypeFnId>,
-    pub ambiguous: std::collections::HashSet<String>,
+    pub ambiguous:     HashSet<String>,
+    /// TypeScript function names exported from the co-located `.ts` file
+    /// (same pack scope). Cross-pack imports via `use pack:fn` or `use pack:*`
+    /// copy names here.
+    pub ts_fns:        HashSet<String>,
 }
 
 // ---------------------------------------------------------------------------

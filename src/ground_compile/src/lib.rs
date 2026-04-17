@@ -3,6 +3,7 @@ pub mod ir;
 pub mod parse;
 pub mod resolve;
 pub mod asm;
+mod ts_gen;
 
 pub use asm::{AsmInst, AsmField, AsmValue, AsmVariant, AsmInstRef, asm_value_to_json};
 
@@ -21,9 +22,9 @@ pub const STDLIB_UNIT_COUNT: usize = 3;
 
 fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
     vec![
-        ast::ParseUnit { name: "std".into(),      path: vec![],                                        src: STD_GRD.into() },
-        ast::ParseUnit { name: "".into(),          path: vec!["std".into(), "aws".into()],             src: STD_AWS_PACK_GRD.into() },
-        ast::ParseUnit { name: "transform".into(), path: vec!["std".into(), "aws".into()],             src: STD_AWS_TRANSFORM_GRD.into() },
+        ast::ParseUnit { name: "std".into(),       path: vec![],                                    src: STD_GRD.into(),               ts_src: None },
+        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into()],         src: STD_AWS_PACK_GRD.into(),      ts_src: None },
+        ast::ParseUnit { name: "transform".into(),  path: vec!["std".into(), "aws".into()],         src: STD_AWS_TRANSFORM_GRD.into(), ts_src: Some(STD_AWS_TRANSFORM_TS.into()) },
     ]
 }
 
@@ -89,25 +90,38 @@ pub struct CompileRes {
 // ---------------------------------------------------------------------------
 
 pub fn compile(req: CompileReq) -> CompileRes {
-    // Concatenate TypeScript: stdlib first, then user units.
-    // All hook functions share one blob — names must be globally unique by convention.
-    let mut ts_parts: Vec<&str> = vec![STD_AWS_TRANSFORM_TS];
-    let user_ts: Vec<&str> = req.units.iter()
-        .filter_map(|u| u.ts_src.as_deref())
-        .collect();
-    ts_parts.extend(user_ts);
-    let ts_src = ts_parts.join("\n\n");
-
-    // Prepend stdlib units before user units.
+    // Prepend stdlib units before user units, carrying ts_src with each unit.
     let mut units: Vec<ast::ParseUnit> = make_stdlib_parse_units();
     units.extend(req.units.into_iter().map(|u| ast::ParseUnit {
-        name: u.name, path: u.path, src: u.src,
+        name: u.name, path: u.path, src: u.src, ts_src: u.ts_src,
     }));
 
     // Keep sources for error location resolution before moving units into parse.
     let srcs: Vec<String> = units.iter().map(|u| u.src.clone()).collect();
 
-    let parse_res = parse::parse(ast::ParseReq { units });
+    let parse_req = ast::ParseReq { units };
+
+    // Collect TS source blobs — stdlib and user are kept separate.
+    // Stdlib TS is trusted internal code; only user TS is type-checked.
+    let stdlib_ts: String = parse_req.units.iter()
+        .take(STDLIB_UNIT_COUNT)
+        .filter_map(|u| u.ts_src.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let user_ts: String = parse_req.units.iter()
+        .skip(STDLIB_UNIT_COUNT)
+        .filter_map(|u| u.ts_src.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    // Full blob used for execution (stdlib + user, no generated declarations needed at runtime).
+    let ts_src: String = [stdlib_ts.as_str(), user_ts.as_str()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let parse_res = parse::parse(parse_req);
     let ir        = resolve::resolve(parse_res);
 
     let errors: Vec<CompileError> = ir.errors.iter()
@@ -125,7 +139,45 @@ pub fn compile(req: CompileReq) -> CompileRes {
         return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors };
     }
 
-    let ctx = asm::lower(&ir, &ts_src);
+    // Generate TypeScript interface declarations and type-compatibility assertions.
+    let generated_dts    = ts_gen::gen_hook_interfaces(&ir);
+    let tc_assertions    = ts_gen::gen_typecheck_assertions(&ir, &user_ts);
+
+    // Append assertions to user_ts so TypeScript verifies each hook implementation
+    // is assignable to its declared I/O signature, even without explicit annotations.
+    let user_ts_for_check = if tc_assertions.is_empty() {
+        user_ts.clone()
+    } else {
+        format!("{user_ts}\n{tc_assertions}")
+    };
+
+    // Type-check user TypeScript against the generated declarations.
+    // Only user TS is checked — stdlib is trusted internal code.
+    if !user_ts.is_empty() {
+        match ground_ts::typecheck::typecheck(&generated_dts, &user_ts_for_check) {
+            Ok(diags) => {
+                let ts_errors: Vec<CompileError> = diags.iter()
+                    .filter(|d| d.category == 1) // 1 = error
+                    .map(|d| CompileError { message: d.message.clone(), loc: None })
+                    .collect();
+                if !ts_errors.is_empty() {
+                    return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors: ts_errors };
+                }
+            }
+            Err(e) => {
+                let msg = format!("TypeScript type-check engine error: {e}");
+                return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors: vec![CompileError { message: msg, loc: None }] };
+            }
+        }
+    }
+
+    let full_ts = if generated_dts.is_empty() {
+        ts_src
+    } else {
+        format!("{}\n\n{}", generated_dts, ts_src)
+    };
+
+    let ctx = asm::lower(&ir, &full_ts);
 
     let symbol = Symbol { instances: ctx.symbol.insts };
 

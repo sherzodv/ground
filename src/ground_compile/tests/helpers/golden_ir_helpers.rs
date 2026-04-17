@@ -276,9 +276,10 @@ pub fn norm(s: &str) -> String {
 pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     let req = ParseReq {
         units: units.into_iter().map(|(name, path, src)| ParseUnit {
-            name: name.into(),
-            path: path.into_iter().map(|s| s.to_string()).collect(),
-            src:  src.to_string(),
+            name:   name.into(),
+            path:   path.into_iter().map(|s| s.to_string()).collect(),
+            src:    src.to_string(),
+            ts_src: None,
         }).collect(),
     };
     let res = parse(req);
@@ -288,8 +289,38 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
 /// Parse + resolve `input`, format as compact multi-line string.
 pub fn show(input: &str) -> String {
     let res = parse(ParseReq {
-        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string() }],
+        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string(), ts_src: None }],
     });
+    show_ir(resolve(res))
+}
+
+/// Like `show` but also supplies TypeScript source co-located with the Ground source.
+#[allow(dead_code)]
+pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
+    let res = parse(ParseReq {
+        units: vec![ParseUnit {
+            name:   "test".into(),
+            path:   vec![],
+            src:    grd_src.to_string(),
+            ts_src: Some(ts_src.to_string()),
+        }],
+    });
+    show_ir(resolve(res))
+}
+
+/// Like `show_multi` but each entry includes an optional ts_src.
+/// Each unit is `(name, path, src, ts_src)`.
+#[allow(dead_code)]
+pub fn show_multi_ts(units: Vec<(&str, Vec<&str>, &str, Option<&str>)>) -> String {
+    let req = ParseReq {
+        units: units.into_iter().map(|(name, path, src, ts)| ParseUnit {
+            name:   name.into(),
+            path:   path.into_iter().map(|s| s.to_string()).collect(),
+            src:    src.to_string(),
+            ts_src: ts.map(|s| s.to_string()),
+        }).collect(),
+    };
+    let res = parse(req);
     show_ir(resolve(res))
 }
 

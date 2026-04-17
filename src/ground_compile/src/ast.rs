@@ -285,11 +285,13 @@ pub struct AstParseError {
 
 /// One source file. `path` is the chain of parent namespace names (from folder
 /// structure); `name` is the leaf namespace for this file's contents.
+/// `ts_src` is the co-located TypeScript source (same pack scope as `src`).
 #[derive(Debug)]
 pub struct ParseUnit {
-    pub name: String,
-    pub path: Vec<String>,
-    pub src:  String,
+    pub name:   String,
+    pub path:   Vec<String>,
+    pub src:    String,
+    pub ts_src: Option<String>,
 }
 
 #[derive(Debug)]
@@ -298,8 +300,13 @@ pub struct ParseReq {
 }
 
 /// Flat scope arena. `scopes[0]` is the synthetic root scope (unnamed, no parent).
+/// `unit_scope_ids[i]` is the leaf pack `AstScopeId` for `ParseReq::units[i]`.
+/// `unit_ts_srcs[i]` is the TypeScript source for `ParseReq::units[i]` (if any).
+/// Both vecs have the same length as `ParseReq::units`.
 #[derive(Debug)]
 pub struct ParseRes {
-    pub scopes: Vec<AstScope>,
-    pub errors: Vec<AstParseError>,
+    pub scopes:         Vec<AstScope>,
+    pub errors:         Vec<AstParseError>,
+    pub unit_scope_ids: Vec<AstScopeId>,
+    pub unit_ts_srcs:   Vec<Option<String>>,
 }

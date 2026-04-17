@@ -107,7 +107,11 @@ fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // Skip hidden directories (.ground, .git, .direnv …).
+        let is_hidden = path.file_name()
+            .and_then(|n| n.to_str())
+            .map_or(false, |n| n.starts_with('.'));
+        if path.is_dir() && !is_hidden {
             collect_grd_recursive(root, &path, units);
         } else if path.extension().map_or(false, |e| e == "grd") {
             let rel = path.strip_prefix(root).unwrap_or(&path);

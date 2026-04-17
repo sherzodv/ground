@@ -41,8 +41,15 @@ impl Ctx {
             anon_type_fns:  HashMap::new(),
             anon_pair_fns:  HashMap::new(),
             ambiguous:      HashSet::new(),
+            ts_fns:         HashSet::new(),
         };
         Ctx { types: vec![], links: vec![], funs: vec![], type_fns: vec![], scopes: vec![root], errors: vec![] }
+    }
+
+    fn scope_has_ts_fn(&self, scope: ScopeId, name: &str) -> bool {
+        let s = &self.scopes[scope.0 as usize];
+        if s.ts_fns.contains(name) { return true; }
+        s.parent.map_or(false, |p| self.scope_has_ts_fn(p, name))
     }
 
     fn alloc_type(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, body: IrTypeBody) -> TypeId {
@@ -369,6 +376,7 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             anon_type_fns:  HashMap::new(),
             anon_pair_fns:  HashMap::new(),
             ambiguous:      HashSet::new(),
+            ts_fns:         HashSet::new(),
         });
 
         // Only register Pack scopes by name — Type scopes are registered
@@ -376,6 +384,46 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         if kind == IrScopeKind::Pack {
             if let Some(n) = name {
                 ctx.scopes[parent.0 as usize].packs.insert(n, new_id);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TS function registration — associate ts_src function names with pack scopes
+// ---------------------------------------------------------------------------
+
+/// Extract top-level TypeScript function names from source text.
+/// Matches: `[export] [async] function name(` patterns.
+fn extract_ts_fn_names(ts_src: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut tokens = ts_src.split_ascii_whitespace().peekable();
+    while let Some(tok) = tokens.next() {
+        // Strip `export` / `async` prefixes, then check for `function`.
+        let tok = tok.trim_start_matches("export").trim();
+        let tok = tok.trim_start_matches("async").trim();
+        if tok == "function" {
+            if let Some(next) = tokens.peek() {
+                // Function name ends at `(` — trim it off.
+                let name = next.trim_end_matches('(')
+                    .split('(').next().unwrap_or("").trim();
+                if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Register TS function names from each unit's `ts_src` into the
+/// corresponding pack scope.
+fn pass_register_ts_fns(parse_res: &ParseRes, ctx: &mut Ctx) {
+    for (i, scope_id) in parse_res.unit_scope_ids.iter().enumerate() {
+        if let Some(Some(ts_src)) = parse_res.unit_ts_srcs.get(i) {
+            let ir_scope_id = ScopeId(scope_id.0);
+            for name in extract_ts_fn_names(ts_src) {
+                ctx.scopes[ir_scope_id.0 as usize].ts_fns.insert(name);
             }
         }
     }
@@ -454,6 +502,7 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
         Some("type") => { i += 1; Some("type") }
         Some("link") => { i += 1; Some("link") }
         Some("inst") => { i += 1; Some("inst") }
+        Some("fn")   => { i += 1; Some("fn")   }
         _ => None,
     };
 
@@ -503,6 +552,11 @@ fn do_wildcard_import(
                 try_import_pack(name, sid, into, ctx, loc);
             }
         }
+        if kind_hint.is_none() || kind_hint == Some("fn") {
+            for name in &src_scope.ts_fns {
+                ctx.scopes[into.0 as usize].ts_fns.insert(name.clone());
+            }
+        }
     }
     if kind == ImportKind::Insts {
         if kind_hint.is_none() || kind_hint == Some("inst") {
@@ -543,6 +597,12 @@ fn do_specific_import(
         if kind_hint.is_none() {
             if let Some(&sid) = src_scope.packs.get(name) {
                 try_import_pack(name, sid, into, ctx, loc);
+                found = true;
+            }
+        }
+        if kind_hint.is_none() || kind_hint == Some("fn") {
+            if src_scope.ts_fns.contains(name) {
+                ctx.scopes[into.0 as usize].ts_fns.insert(name.to_string());
                 found = true;
             }
         }
@@ -664,14 +724,16 @@ fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: 
 
 fn try_import_fun(name: &str, fid: FunId, into: ScopeId, ctx: &mut Ctx, _loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
-    let already = ctx.scopes[into.0 as usize].funs.get(name)
-        .map_or(false, |v| v.contains(&fid));
-    if !already {
-        ctx.scopes[into.0 as usize].funs
-            .entry(name.to_string())
-            .or_default()
-            .push(fid);
+    if let Some(existing) = ctx.scopes[into.0 as usize].funs.get(name) {
+        // Idempotent: same fun already present — skip.
+        if existing.contains(&fid) { return; }
+        // Local definition in this scope wins — skip the import silently.
+        if existing.iter().any(|&eid| ctx.funs[eid.0 as usize].scope == into) { return; }
     }
+    ctx.scopes[into.0 as usize].funs
+        .entry(name.to_string())
+        .or_default()
+        .push(fid);
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +881,18 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let hook_fn = td.inner.hook.as_ref()
             .map(|h| h.inner.clone())
             .unwrap_or_else(|| name.clone());
+
+        // Validate that the hook function is visible in scope.
+        if !ctx.scope_has_ts_fn(scope, &hook_fn) {
+            ctx.errors.push(IrError {
+                message: format!(
+                    "hook function '{}' not in scope; define it in a co-located \
+                     .ts file or import it with `use pack:fn_name`",
+                    hook_fn
+                ),
+                loc: _loc.clone(),
+            });
+        }
 
         // Find the fun registered for this def in pass4 and attach the hook fields.
         let fids = ctx.scopes[scope.0 as usize].funs.get(&name).cloned().unwrap_or_default();
@@ -1105,11 +1179,10 @@ fn pass4_register_funs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                     };
                     ctx.alloc_fun(inst.inner.inst_name.inner.clone(), scope, ir_loc(&inst.loc), type_id, Some(type_id));
                 }
-                // An explicit `def foo` declaration is both a type and a named entity.
-                // Register a fun named `foo` with parent=None (root def) of its own type
-                // so that `plan foo` (and field references) can resolve it directly.
-                // Type aliases (`foo = type_expr`, has_def=false) do NOT register a fun.
-                AstDef::Def(td) if td.inner.has_def => {
+                // Every named def — whether written as `def foo` or `foo = { ... }` — is
+                // both a type and a named entity (root fun, parent=None).  The `has_def`
+                // flag is purely syntactic; structurally the two forms are identical.
+                AstDef::Def(td) => {
                     let name = &td.inner.name.inner;
                     if let Some(&type_id) = ctx.scopes[scope.0 as usize].types.get(name) {
                         ctx.alloc_fun(name.clone(), scope, ir_loc(&td.loc), type_id, None);
@@ -1849,6 +1922,7 @@ pub fn resolve(res: ParseRes) -> IrRes {
     let mut ctx = Ctx::new();
 
     pass1_mirror_scopes(&res.scopes, &mut ctx);
+    pass_register_ts_fns(&res, &mut ctx);
     pass2_register_names(&res.scopes, &mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::TypesLinksAndPacks);
     pass4_register_funs(&res.scopes, &mut ctx);

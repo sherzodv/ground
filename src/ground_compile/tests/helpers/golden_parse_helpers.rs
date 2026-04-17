@@ -11,9 +11,10 @@ use ground_compile::parse::parse;
 pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     let req = ParseReq {
         units: units.into_iter().map(|(name, path, src)| ParseUnit {
-            name: name.into(),
-            path: path.into_iter().map(|s| s.to_string()).collect(),
-            src:  src.to_string(),
+            name:   name.into(),
+            path:   path.into_iter().map(|s| s.to_string()).collect(),
+            src:    src.to_string(),
+            ts_src: None,
         }).collect(),
     };
     let res = parse(req);
@@ -247,7 +248,7 @@ pub fn norm(s: &str) -> String {
 /// at the direct children of the synth root.
 pub fn show(input: &str) -> String {
     let req = ParseReq {
-        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string() }],
+        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string(), ts_src: None }],
     };
     let res = parse(req);
 

@@ -1126,6 +1126,8 @@ pub fn parse(req: ParseReq) -> ParseRes {
     let root = AstScope { kind: ScopeKind::Pack, name: None, parent: None, defs: vec![] };
     let mut scopes = vec![root];
     let mut errors = Vec::new();
+    let mut unit_scope_ids = Vec::with_capacity(req.units.len());
+    let mut unit_ts_srcs   = Vec::with_capacity(req.units.len());
 
     for (unit_idx, unit) in req.units.iter().enumerate() {
         let mut parent_id = AstScopeId(0);
@@ -1137,6 +1139,8 @@ pub fn parse(req: ParseReq) -> ParseRes {
         } else {
             find_or_create_scope(&mut scopes, &unit.name, parent_id)
         };
+        unit_scope_ids.push(leaf_id);
+        unit_ts_srcs.push(unit.ts_src.clone());
 
         let mut p = Parser::new(&unit.src, unit_idx as u32);
         let raw_defs = p.parse_system();
@@ -1155,5 +1159,5 @@ pub fn parse(req: ParseReq) -> ParseRes {
         scopes[leaf_id.0 as usize].defs.extend(defs);
     }
 
-    ParseRes { scopes, errors }
+    ParseRes { scopes, errors, unit_scope_ids, unit_ts_srcs }
 }
