@@ -2,6 +2,7 @@
 
 use crate::ast::*;
 
+
 struct Parser<'a> {
     src:    &'a str,
     pos:    usize,
@@ -10,6 +11,25 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    fn name_ref(&self, name: &AstNode<String>) -> AstNode<AstRef> {
+        AstNode::new(
+            self.unit,
+            name.loc.start,
+            name.loc.end,
+            AstRef {
+                segments: vec![AstNode::new(
+                    self.unit,
+                    name.loc.start,
+                    name.loc.end,
+                    AstRefSeg {
+                        value: AstRefSegVal::Plain(name.inner.clone()),
+                        is_opt: false,
+                    },
+                )],
+            },
+        )
+    }
+
     fn new(src: &'a str, unit: u32) -> Self {
         Parser { src, pos: 0, unit, errors: Vec::new() }
     }
@@ -232,19 +252,17 @@ impl<'a> Parser<'a> {
     fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeDef>> {
         let start = self.pos;
 
+        // `unit` is syntax sugar for the empty struct.
+        if self.at_keyword("unit") {
+            self.advance("unit".len());
+            let body = self.node(start, AstTypeDefBody::Struct(vec![]));
+            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
+        }
+
         // Primitive
         if let Some(prim) = self.parse_primitive() {
             let body = self.node(start, AstTypeDefBody::Primitive(prim.inner));
-            return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
-        }
-
-        // Explicit type-def: "type" ident? "=" body
-        if self.at_keyword("type") {
-            let saved = self.pos;
-            if let Some(td) = self.parse_type_def() {
-                return Some(td);
-            }
-            self.pos = saved;
+            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
         }
 
         // List: "[" type-expr "]"
@@ -257,14 +275,14 @@ impl<'a> Parser<'a> {
                 self.push_error(self.pos, "expected ']' after list type");
             }
             let body = self.node(start, AstTypeDefBody::List(Box::new(inner)));
-            return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
+            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
         }
 
         // Struct body: "{" struct_items "}" — used for anonymous inline struct types in fields
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
             let body = self.node(start, AstTypeDefBody::Struct(items));
-            return Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }));
+            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
         }
 
         // Ref or sugar enum: ref ("|" ref)*
@@ -287,38 +305,11 @@ impl<'a> Parser<'a> {
         if refs.len() == 1 {
             let r = refs.remove(0);
             let body = self.node(start, AstTypeDefBody::Ref(r.inner));
-            Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }))
+            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
         } else {
             let body = self.node(start, AstTypeDefBody::Enum(refs));
-            Some(self.node(start, AstTypeDef { name: None, params: vec![], body, scope: None }))
+            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
         }
-    }
-
-    // -- link definition -------------------------------------------------
-
-    /// `"link" ident? "=" type-expr`
-    fn parse_link_def(&mut self) -> Option<AstNode<AstLinkDef>> {
-        let start = self.pos;
-        if !self.at_keyword("link") { return None; }
-        self.advance("link".len());
-        self.skip_ws();
-
-        let name = if self.rest().starts_with('=') {
-            None
-        } else {
-            let id = self.parse_ident()?;
-            self.skip_ws();
-            Some(id)
-        };
-
-        if !self.eat("=") {
-            self.push_error(start, "expected '=' in link definition");
-            return None;
-        }
-        self.skip_ws();
-
-        let ty = self.parse_type_expr()?;
-        Some(self.node(start, AstLinkDef { name, ty }))
     }
 
     // -- type body -------------------------------------------------------
@@ -346,57 +337,74 @@ impl<'a> Parser<'a> {
     fn parse_struct_item(&mut self) -> Option<AstNode<AstStructItem>> {
         let start = self.pos;
 
-        // Legacy: type keyword
-        if self.at_keyword("type") {
-            let saved = self.pos;
-            if let Some(td) = self.parse_type_def() {
-                return Some(self.node(start, AstStructItem::TypeDef(td)));
-            }
-            self.pos = saved;
-        }
-
-        // Legacy: link keyword
-        if self.at_keyword("link") {
-            let saved = self.pos;
-            if let Some(ld) = self.parse_link_def() {
-                return Some(self.node(start, AstStructItem::LinkDef(ld)));
-            }
-            self.pos = saved;
-        }
-
-        // New: def keyword → nested named def inside struct body
+        // def keyword → nested named def inside struct body
         if self.at_keyword("def") {
             if let Some(td) = self.parse_top_def_with_keyword() {
                 return Some(self.node(start, AstStructItem::Def(td)));
             }
         }
 
-        // New: anonymous field `= type_expr`
+        // Anonymous field `= type_expr`
         if self.rest().starts_with('=') {
             let eq_pos = self.pos;
             self.advance(1); // consume `=`
             self.skip_ws();
             if let Some(ty) = self.parse_type_expr() {
-                let fd = self.node(eq_pos, AstFieldDef { name: None, ty });
+                let fd = self.node(eq_pos, AstStructField {
+                    name: None,
+                    kind: AstStructFieldKind::Def,
+                    body: AstStructFieldBody::Type(ty),
+                });
                 return Some(self.node(start, AstStructItem::Field(fd)));
             }
             self.pos = eq_pos;
             return None;
         }
 
-        // New: named field `ident = type_expr`
+        // Named field `ident = type_expr`
         let saved = self.pos;
         if let Some(name) = self.parse_ident() {
             self.skip_ws();
             if self.eat("=") {
                 self.skip_ws();
                 if let Some(ty) = self.parse_type_expr() {
-                    let fd = self.node(saved, AstFieldDef { name: Some(name), ty });
+                    let fd = self.node(saved, AstStructField {
+                        name: Some(name),
+                        kind: AstStructFieldKind::Def,
+                        body: AstStructFieldBody::Type(ty),
+                    });
                     return Some(self.node(start, AstStructItem::Field(fd)));
                 }
             }
         }
         self.pos = saved;
+
+        // Named field `ident : value`
+        let saved = self.pos;
+        if let Some(name) = self.parse_ident() {
+            if self.eat(":") {
+                let has_ws = self.peek().map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
+                if !has_ws {
+                    self.pos = saved;
+                } else {
+                    self.skip_ws();
+
+                    if let Some(value) = self.parse_inst_value() {
+                        let fd = self.node(saved, AstStructField {
+                            name: Some(name),
+                            kind: AstStructFieldKind::Set,
+                            body: AstStructFieldBody::Value(value),
+                        });
+                        return Some(self.node(start, AstStructItem::Field(fd)));
+                    }
+                }
+            }
+        }
+        self.pos = saved;
+
+        if let Some(value) = self.parse_inst_value() {
+            return Some(self.node(start, AstStructItem::Anon(value)));
+        }
 
         None
     }
@@ -419,150 +427,6 @@ impl<'a> Parser<'a> {
         }
         self.eat("}");
         Some(items)
-    }
-
-    // -- type function params & body -------------------------------------
-
-    /// Try to parse a parameter list `"(" ident ":" ref ("," ident ":" ref)* ")"`.
-    /// Returns empty vec and backtracks if the `(` is not followed by `ident :`.
-    fn try_parse_type_params(&mut self) -> Vec<AstNode<AstTypeParam>> {
-        if !self.rest().starts_with('(') { return vec![]; }
-        let saved = self.pos;
-        self.advance(1); // consume `(`
-        self.skip_ws();
-
-        let mut params = Vec::new();
-        loop {
-            let param_start = self.pos;
-            let name = match self.parse_ident() {
-                Some(n) => n,
-                None    => { self.pos = saved; return vec![]; }
-            };
-            self.skip_ws();
-            if !self.eat(":") { self.pos = saved; return vec![]; }
-            self.skip_ws();
-            let ty = match self.parse_ref() {
-                Some(r) => r,
-                None    => { self.pos = saved; return vec![]; }
-            };
-            params.push(self.node(param_start, AstTypeParam { name, ty }));
-            self.skip_ws();
-            if self.eat(",") { self.skip_ws(); continue; }
-            break;
-        }
-
-        if !self.eat(")") { self.pos = saved; return vec![]; }
-        self.skip_ws();
-        params
-    }
-
-    /// Parse a type function body: `"{" (ident ":" SP inst-value)* "}"`
-    /// Each entry is `alias: vendor-type { fields }`.
-    fn parse_typefn_body(&mut self) -> Option<Vec<AstNode<AstTypeFnEntry>>> {
-        if !self.eat("{") { return None; }
-        let mut entries = Vec::new();
-        loop {
-            self.skip_ws();
-            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
-            if let Some(entry) = self.try_parse_typefn_entry() {
-                entries.push(entry);
-            } else {
-                self.push_error(self.pos, format!(
-                    "unexpected token in type function body: {:?}", self.peek()
-                ));
-                self.skip_past_line();
-            }
-        }
-        self.eat("}");
-        Some(entries)
-    }
-
-    /// `ident ":" SP inst-value` — same disambiguation as `try_parse_inst_field`.
-    fn try_parse_typefn_entry(&mut self) -> Option<AstNode<AstTypeFnEntry>> {
-        let start = self.pos;
-        let saved = self.pos;
-
-        let alias = self.parse_ident()?;
-
-        if !self.eat(":") {
-            self.pos = saved;
-            return None;
-        }
-
-        let has_ws = self.peek().map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
-        if !has_ws {
-            self.pos = saved;
-            return None;
-        }
-        self.skip_ws();
-
-        let value = match self.parse_inst_value() {
-            Some(v) => v,
-            None => {
-                self.push_error(self.pos, format!("expected value for type fn entry '{}'", alias.inner));
-                self.pos = saved;
-                return None;
-            }
-        };
-
-        Some(self.node(start, AstTypeFnEntry { alias, value }))
-    }
-
-    // -- type def --------------------------------------------------------
-
-    /// `"type" (name | anonymous) (params)? "=" body`
-    ///
-    /// Forms:
-    ///   `type name = body`               — zero-param named type
-    ///   `type = body`                    — zero-param anonymous type
-    ///   `type name(p: T, ...) = { ... }` — named type function
-    ///   `type (p: T, ...) = { ... }`     — anonymous type function
-    ///
-    /// Returns `None` and backtracks fully if the pattern doesn't match.
-    fn parse_type_def(&mut self) -> Option<AstNode<AstTypeDef>> {
-        let start = self.pos;
-        if !self.at_keyword("type") { return None; }
-        self.advance("type".len());
-        self.skip_ws();
-
-        // Determine name: skip if next char is `=` (anonymous zero-param) or `(` (anonymous fn)
-        let name = if self.rest().starts_with('=') || self.rest().starts_with('(') {
-            None
-        } else {
-            let id = self.parse_ident();
-            if id.is_some() { self.skip_ws(); }
-            id
-        };
-
-        // Try to parse parameter list `(ident: ref, ...)`
-        let params = self.try_parse_type_params();
-
-        if !self.eat("=") {
-            // Not a type-def — backtrack so caller can try other alternatives.
-            self.pos = start;
-            return None;
-        }
-        self.skip_ws();
-
-        let body_start = self.pos;
-        let body = if !params.is_empty() {
-            // Type function: body must be `{ alias: vendor-type { ... } ... }`
-            if self.rest().starts_with('{') {
-                let entries = self.parse_typefn_body().unwrap_or_default();
-                self.node(body_start, AstTypeDefBody::TypeFn(entries))
-            } else {
-                self.push_error(self.pos, "expected '{' for type function body");
-                self.node(body_start, AstTypeDefBody::TypeFn(vec![]))
-            }
-        } else if self.rest().starts_with('{') {
-            let items = self.parse_struct_body().unwrap_or_default();
-            self.node(body_start, AstTypeDefBody::Struct(items))
-        } else {
-            let items = self.parse_enum_body().unwrap_or_default();
-            self.node(body_start, AstTypeDefBody::Enum(items))
-        };
-
-        Some(self.node(start, AstTypeDef { name, params, body, scope: None }))
     }
 
     // -- instance values & fields ----------------------------------------
@@ -697,50 +561,6 @@ impl<'a> Parser<'a> {
 
     // -- top-level defs --------------------------------------------------
 
-    /// `ident ident ("{" inst-item* "}")?`
-    fn parse_inst(&mut self) -> Option<AstNode<AstInst>> {
-        let start = self.pos;
-
-        // Inst must not start with reserved keywords
-        if self.at_keyword("type")   || self.at_keyword("link")
-        || self.at_keyword("use")    || self.at_keyword("pack")   || self.at_keyword("plan")
-        || self.at_keyword("def") {
-            return None;
-        }
-
-        let type_name = self.parse_ref()?;
-        self.skip_ws();
-
-        if self.at_keyword("type")   || self.at_keyword("link")
-        || self.at_keyword("use")    || self.at_keyword("pack")   || self.at_keyword("plan")
-        || self.at_keyword("def") {
-            self.pos = start;
-            return None;
-        }
-
-        let inst_name = self.parse_ident()?;
-        self.skip_ws();
-
-        let mut fields = Vec::new();
-        if self.eat("{") {
-            loop {
-                self.skip_ws();
-                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
-                if let Some(item) = self.parse_inst_item() {
-                    fields.push(item);
-                } else {
-                    self.push_error(self.pos, format!(
-                        "unexpected token in instance body: {:?}", self.peek()
-                    ));
-                    self.skip_past_line();
-                }
-            }
-            self.eat("}");
-        }
-
-        Some(self.node(start, AstInst { type_name, inst_name, fields }))
-    }
-
     fn parse_use(&mut self) -> Option<AstNode<AstUse>> {
         let start = self.pos;
         if !self.at_keyword("use") { return None; }
@@ -827,7 +647,7 @@ impl<'a> Parser<'a> {
 
     /// `ident "=" type_expr` — a single named field def.
     /// Returns None (backtracking fully) when not followed by `=`.
-    fn parse_named_field_def(&mut self) -> Option<AstNode<AstFieldDef>> {
+    fn parse_named_field_def(&mut self) -> Option<AstNode<AstDefI>> {
         let start = self.pos;
         let saved = self.pos;
         let name = self.parse_ident()?;
@@ -843,11 +663,11 @@ impl<'a> Parser<'a> {
                 return None;
             }
         };
-        Some(self.node(start, AstFieldDef { name: Some(name), ty }))
+        Some(self.node(start, AstDefI { name: Some(name), ty }))
     }
 
     /// `"{" (ident "=" type_expr)* "}"` — input field block in `def name { … } = …`
-    fn parse_field_block(&mut self) -> Vec<AstNode<AstFieldDef>> {
+    fn parse_field_block(&mut self) -> Vec<AstNode<AstDefI>> {
         if !self.eat("{") { return vec![]; }
         let mut fields = Vec::new();
         loop {
@@ -866,41 +686,61 @@ impl<'a> Parser<'a> {
         fields
     }
 
-    /// After consuming `=`, parse the output:
+    /// Parse `"{" (inst_item)* "}"` — a brace block of value fields (`:` syntax).
+    fn parse_value_body(&mut self) -> Vec<AstNode<AstField>> {
+        let mut fields = Vec::new();
+        if !self.eat("{") { return fields; }
+        loop {
+            self.skip_ws();
+            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+            if let Some(item) = self.parse_inst_item() {
+                fields.push(item);
+            } else {
+                self.push_error(self.pos, format!(
+                    "unexpected token in instance body: {:?}", self.peek()
+                ));
+                self.skip_past_line();
+            }
+        }
+        self.eat("}");
+        fields
+    }
+
+    /// After consuming `=` in a `def`-keyword form, parse the output:
     ///   - `{` struct body → `Struct`
-    ///   - `ident {` hook + struct body → `Struct` (with hook name)
+    ///   - `ref {` hook ref + struct body → `Struct` (with hook ref)
     ///   - anything else → `TypeExpr`
-    fn parse_after_eq(&mut self) -> (Option<AstNode<String>>, AstNode<AstTopDefOutput>) {
+    fn parse_after_eq(&mut self) -> (Option<AstNode<AstRef>>, AstNode<AstDefO>) {
         let start = self.pos;
 
         // Direct struct body
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            return (None, self.node(start, AstTopDefOutput::Struct(items)));
+            return (None, self.node(start, AstDefO::Struct(items)));
         }
 
-        // Try hook name: ident immediately followed (with optional ws) by `{`
+        // Try hook ref immediately followed (with optional ws) by `{`
         let saved = self.pos;
-        if let Some(hook_name) = self.parse_ident() {
+        if let Some(hook_ref) = self.parse_ref() {
             self.skip_ws();
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                return (Some(hook_name), self.node(start, AstTopDefOutput::Struct(items)));
+                return (Some(hook_ref), self.node(start, AstDefO::Struct(items)));
             }
             self.pos = saved; // not a hook — backtrack
         }
 
         // Type expression (ref, enum, list, primitive)
         if let Some(te) = self.parse_type_expr() {
-            return (None, self.node(start, AstTopDefOutput::TypeExpr(te)));
+            return (None, self.node(start, AstDefO::TypeExpr(te)));
         }
 
         self.push_error(self.pos, "expected type expression or struct body after '='");
-        (None, self.node(start, AstTopDefOutput::Unit))
+        (None, self.node(start, AstDefO::Struct(vec![])))
     }
 
     /// `"def" ident input? ("=" hook? output)?`
-    fn parse_top_def_with_keyword(&mut self) -> Option<AstNode<AstTopDef>> {
+    fn parse_top_def_with_keyword(&mut self) -> Option<AstNode<AstDef>> {
         let start = self.pos;
         if !self.at_keyword("def") { return None; }
         let saved = self.pos;
@@ -921,25 +761,40 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         let output_start = self.pos;
-        let (hook, output) = if self.eat("=") {
+        let (hook_opt, output) = if self.eat("=") {
             self.skip_ws();
             self.parse_after_eq()
         } else {
-            (None, self.node(output_start, AstTopDefOutput::Unit))
+            (None, self.node(output_start, AstDefO::Struct(vec![])))
         };
 
-        Some(self.node(start, AstTopDef { name, has_def: true, input, hook, output }))
+        let hook = hook_opt.unwrap_or_else(|| self.name_ref(&name));
+        Some(self.node(start, AstDef {
+            name,
+            input,
+            hook,
+            output,
+        }))
     }
 
-    /// `ident "=" (type_expr | "{" struct_items "}")` — keyword-free type alias.
-    /// Returns None (backtracking fully) when not followed by `=`, deferring to `parse_inst`.
-    fn parse_top_def_no_keyword(&mut self) -> Option<AstNode<AstTopDef>> {
+    /// Keyword-free def.
+    ///
+    /// `ident "=" rhs` forms:
+    ///   - `{` struct body `}` → `Struct` (type alias with inline struct)
+    ///   - `ref "{" struct-items "}"` → `Def[name, ref, unit, Struct[...]]`
+    ///   - type-expr (ref, enum, list, primitive) → `TypeExpr` (type alias)
+    ///
+    /// Shorthand explicit-hook def forms:
+    ///   - `ident hook "{" struct-items "}"` → `Def[name, hook, unit, Struct[...]]`
+    ///   - `ident hook` → `Def[name, hook, unit, unit]`
+    ///
+    /// Returns None (backtracking fully) when the input is not a keyword-free def.
+    fn parse_top_def_no_keyword(&mut self) -> Option<AstNode<AstDef>> {
         let start = self.pos;
         let saved = self.pos;
 
         // Skip if this looks like a keyword
-        if self.at_keyword("type")   || self.at_keyword("link")
-        || self.at_keyword("use")    || self.at_keyword("pack")   || self.at_keyword("plan")
+        if self.at_keyword("use")  || self.at_keyword("pack") || self.at_keyword("plan")
         || self.at_keyword("def") {
             return None;
         }
@@ -950,28 +805,98 @@ impl<'a> Parser<'a> {
         };
         self.skip_ws();
 
-        if !self.eat("=") { self.pos = saved; return None; }
+        let hook = self.name_ref(&name);
+
+        if !self.eat("=") {
+            let hook_saved = self.pos;
+            if let Some(hook_name) = self.parse_ref() {
+                self.skip_ws();
+                let out_start = self.pos;
+                let output = if self.rest().starts_with('{') {
+                    let items = self.parse_struct_body().unwrap_or_default();
+                    self.node(out_start, AstDefO::Struct(items))
+                } else {
+                    self.node(out_start, AstDefO::Struct(vec![]))
+                };
+                return Some(self.node(start, AstDef {
+                    name,
+                    input: vec![],
+                    hook: hook_name,
+                    output,
+                }));
+            }
+            self.pos = hook_saved;
+            self.pos = saved;
+            return None;
+        }
         self.skip_ws();
 
-        let (hook, output) = self.parse_after_eq();
-        Some(self.node(start, AstTopDef { name, has_def: false, input: vec![], hook, output }))
+        let out_start = self.pos;
+
+        // Direct struct body: `name = { field = type ... }` — type alias
+        if self.rest().starts_with('{') {
+            let items = self.parse_struct_body().unwrap_or_default();
+            let output = self.node(out_start, AstDefO::Struct(items));
+            return Some(self.node(start, AstDef {
+                name,
+                input: vec![],
+                hook,
+                output,
+            }));
+        }
+
+        // Try explicit hook ref: `name = ref_expr { ... }`
+        let ref_saved = self.pos;
+        if let Some(ref_node) = self.parse_ref() {
+            self.skip_ws();
+            // If followed by `{`, this is a def with explicit hook ref and struct body.
+            if self.rest().starts_with('{') {
+                let items = self.parse_struct_body().unwrap_or_default();
+                let output = self.node(out_start, AstDefO::Struct(items));
+                return Some(self.node(start, AstDef {
+                    name,
+                    input: vec![],
+                    hook: ref_node,
+                    output,
+                }));
+            }
+            self.pos = ref_saved; // backtrack — fall through to type expr
+        }
+
+        // Type expression (ref, enum, list, primitive): `name = type_expr`
+        if let Some(te) = self.parse_type_expr() {
+            let output = self.node(out_start, AstDefO::TypeExpr(te));
+            return Some(self.node(start, AstDef {
+                name,
+                input: vec![],
+                hook,
+                output,
+            }));
+        }
+
+        self.push_error(self.pos, "expected type expression or struct body after '='");
+        let output = self.node(out_start, AstDefO::Struct(vec![]));
+        Some(self.node(start, AstDef {
+            name,
+            input: vec![],
+            hook,
+            output,
+        }))
     }
 
-    fn parse_def(&mut self) -> Option<AstDef> {
+    fn parse_def(&mut self) -> Option<AstItem> {
         if self.at_keyword("pack") {
-            if let Some(p) = self.parse_pack() { return Some(AstDef::Pack(p)); }
+            if let Some(p) = self.parse_pack() { return Some(AstItem::Pack(p)); }
         }
-        if self.at_keyword("use")    { return self.parse_use().map(AstDef::Use);       }
+        if self.at_keyword("use")  { return self.parse_use().map(AstItem::Use); }
         if self.at_keyword("plan") {
-            if let Some(p) = self.parse_plan() { return Some(AstDef::Plan(p)); }
+            if let Some(p) = self.parse_plan() { return Some(AstItem::Plan(p)); }
         }
         if self.at_keyword("def") {
-            if let Some(td) = self.parse_top_def_with_keyword() { return Some(AstDef::Def(td)); }
+            if let Some(td) = self.parse_top_def_with_keyword() { return Some(AstItem::Def(td)); }
         }
-        if self.at_keyword("type")   { return self.parse_type_def().map(AstDef::Type); }
-        if self.at_keyword("link")   { return self.parse_link_def().map(AstDef::Link); }
-        if let Some(td) = self.parse_top_def_no_keyword() { return Some(AstDef::Def(td)); }
-        self.parse_inst().map(AstDef::Inst)
+        if let Some(td) = self.parse_top_def_no_keyword() { return Some(AstItem::Def(td)); }
+        None
     }
 
     // -- error recovery --------------------------------------------------
@@ -1018,7 +943,7 @@ impl<'a> Parser<'a> {
 
     // -- top-level -------------------------------------------------------
 
-    fn parse_system(&mut self) -> Vec<AstDef> {
+    fn parse_system(&mut self) -> Vec<AstItem> {
         let mut defs = Vec::new();
         loop {
             self.skip_ws();
@@ -1042,71 +967,6 @@ impl<'a> Parser<'a> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// For a named struct `AstTypeDef` (zero-param only): create a `ScopeKind::Type` scope under
-/// `parent_scope`, store its id in `td.inner.scope`, move `TypeDef` struct items into that
-/// scope (removing them from the struct body), then recurse into hoisted TypeDefs and
-/// remaining LinkDef types.
-///
-/// Type function defs (params non-empty) are skipped — their bodies are TypeFn, not Struct.
-fn hoist_struct_scopes(
-    td:           &mut AstNode<AstTypeDef>,
-    parent_scope: AstScopeId,
-    scopes:       &mut Vec<AstScope>,
-) {
-    let name = match td.inner.name.as_ref().map(|n| n.inner.clone()) {
-        Some(n) => n,
-        None    => return,
-    };
-    // Skip type function definitions — they have TypeFn bodies, not struct bodies.
-    if !td.inner.params.is_empty() { return; }
-
-    // Take items out first so we can freely mutate `td` below.
-    let all_items = match &mut td.inner.body.inner {
-        AstTypeDefBody::Struct(items) => std::mem::take(items),
-        _                             => return,
-    };
-
-    let type_scope_id = AstScopeId(scopes.len() as u32);
-    scopes.push(AstScope {
-        kind:   ScopeKind::Type,
-        name:   Some(AstNode::new(0, 0, 0, name)),
-        parent: Some(parent_scope),
-        defs:   vec![],
-    });
-    td.inner.scope = Some(type_scope_id);
-
-    // Partition: hoist TypeDef items; keep LinkDef items.
-    let mut keep:    Vec<AstNode<AstStructItem>> = Vec::new();
-    let mut hoisted: Vec<AstNode<AstTypeDef>>    = Vec::new();
-    for item in all_items {
-        match item.inner {
-            AstStructItem::TypeDef(sub_td) => hoisted.push(sub_td),
-            AstStructItem::LinkDef(_)      => keep.push(item),
-            // New-syntax items are not hoisted into type scopes by this legacy pass.
-            AstStructItem::Field(_) | AstStructItem::Def(_) => keep.push(item),
-        }
-    }
-
-    // Recurse into hoisted TypeDefs, then collect them as defs for the new scope.
-    let mut hoist_defs = Vec::new();
-    for mut sub_td in hoisted {
-        hoist_struct_scopes(&mut sub_td, type_scope_id, scopes);
-        hoist_defs.push(AstDef::Type(sub_td));
-    }
-    scopes[type_scope_id.0 as usize].defs.extend(hoist_defs);
-
-    // Recurse into LinkDef types that are named structs.
-    for item in keep.iter_mut() {
-        if let AstStructItem::LinkDef(ref mut ld) = item.inner {
-            hoist_struct_scopes(&mut ld.inner.ty, type_scope_id, scopes);
-        }
-    }
-
-    // Put the (now TypeDef-free) link items back into the struct body.
-    if let AstTypeDefBody::Struct(items) = &mut td.inner.body.inner {
-        *items = keep;
-    }
-}
 
 fn find_or_create_scope(scopes: &mut Vec<AstScope>, name: &str, parent: AstScopeId) -> AstScopeId {
     for (i, scope) in scopes.iter().enumerate() {
@@ -1143,19 +1003,8 @@ pub fn parse(req: ParseReq) -> ParseRes {
         unit_ts_srcs.push(unit.ts_src.clone());
 
         let mut p = Parser::new(&unit.src, unit_idx as u32);
-        let raw_defs = p.parse_system();
+        let defs = p.parse_system();
         errors.extend(p.errors);
-
-        let mut defs = Vec::new();
-        for def in raw_defs {
-            match def {
-                AstDef::Type(mut td) => {
-                    hoist_struct_scopes(&mut td, leaf_id, &mut scopes);
-                    defs.push(AstDef::Type(td));
-                }
-                other => defs.push(other),
-            }
-        }
         scopes[leaf_id.0 as usize].defs.extend(defs);
     }
 

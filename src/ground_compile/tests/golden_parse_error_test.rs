@@ -12,27 +12,27 @@ use golden_parse_helpers::show;
 // ---------------------------------------------------------------------------
 
 #[test]
-fn struct_type_bare_ref_is_error() {
-    let out = show("type foo { bar }");
+fn error_001() {
+    let out = show("type foo ?");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
 }
 
 #[test]
-fn error_unexpected_top_level() {
+fn error_002() {
     let out = show("??? garbage");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
 }
 
 #[test]
-fn error_collected_continue_parsing() {
+fn error_003() {
     // Parser emits an error for the bad token but continues and parses the
-    // valid type definition that follows.
+    // valid def that follows.
     let out = show(r##"
-        ??? garbage
-        type x = a | b
+        ???
+        x = a | b
     "##);
     assert!(out.contains("ERR:"), "expected error, got: {out}");
-    assert!(out.contains("Type[x,"), "expected recovery parse, got: {out}");
+    assert!(out.contains("Def[x,"), "expected recovery parse, got: {out}");
 }
 
 // ---------------------------------------------------------------------------
@@ -40,21 +40,21 @@ fn error_collected_continue_parsing() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn error_unclosed_list() {
+fn error_004() {
     // List opened but never closed; parser should surface an error.
     let out = show("service my-svc { access: [svc-b }");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
 }
 
 #[test]
-fn error_missing_field_value() {
+fn error_005() {
     // Field key present but no value; parser should surface an error.
     let out = show("service my-svc { image: }");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
 }
 
 #[test]
-fn error_deploy_missing_to() {
+fn error_006() {
     // `deploy` statement with no `to` keyword; parser should surface an error.
     let out = show("deploy svc aws as prod {}");
     assert!(out.contains("ERR:"), "expected error, got: {out}");

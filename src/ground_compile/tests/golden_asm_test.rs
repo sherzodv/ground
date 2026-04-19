@@ -17,7 +17,7 @@ fn hook_coarse_output() {
     let grd = r#"
         endpoint = { host = string  port = integer }
         def node { name = string } = make_node { ep = endpoint }
-        node api { name: "api" }
+        api = node { name: "api" }
     "#;
     let ts = r#"
         function make_node(i) {
@@ -35,7 +35,7 @@ fn hook_coarse_output() {
 fn hook_no_inputs() {
     let grd = r#"
         def tag = make_tag { name = string  value = string }
-        tag ground-managed {}
+        ground-managed = tag {}
     "#;
     let ts = r#"
         function make_tag(_i) {
@@ -53,7 +53,7 @@ fn hook_list_output() {
     // prefix and count are INPUT fields (before =); items is the OUTPUT (returned by hook).
     let grd = r#"
         def tags { prefix = string  count = integer } = make_tags { items = string }
-        tags my-tags { prefix: "svc"  count: 3 }
+        my-tags = tags { prefix: "svc"  count: 3 }
     "#;
     let ts = r#"
         function make_tags(i) {

@@ -180,6 +180,55 @@ fn ir_loc(loc: &AstNodeLoc) -> IrLoc {
     IrLoc { unit: loc.unit, start: loc.start, end: loc.end }
 }
 
+fn is_default_hook(td: &AstDef) -> bool {
+    td.hook.inner.segments.len() == 1
+        && td.hook.inner.segments[0].inner.as_plain() == Some(td.name.inner.as_str())
+}
+
+fn output_has_schema_items(output: &AstDefO) -> bool {
+    match output {
+        AstDefO::Struct(items) => items.iter().any(|item| match &item.inner {
+            AstStructItem::Field(fd) => fd.inner.kind == AstStructFieldKind::Def,
+            AstStructItem::Def(_) => true,
+            AstStructItem::Anon(_) => false,
+        }),
+        _ => false,
+    }
+}
+
+fn is_apply_def(td: &AstDef) -> bool {
+    td.input.is_empty() && !is_default_hook(td) && !output_has_schema_items(&td.output.inner)
+}
+
+fn collect_apply_fields(items: &[AstNode<AstStructItem>]) -> Vec<AstNode<AstField>> {
+    let mut out = Vec::new();
+    for item in items {
+        match &item.inner {
+            AstStructItem::Field(fd) => {
+                if fd.inner.kind != AstStructFieldKind::Set {
+                    continue;
+                }
+                let AstStructFieldBody::Value(value) = &fd.inner.body else { continue; };
+                if let Some(name) = &fd.inner.name {
+                    out.push(AstNode {
+                        loc: fd.loc.clone(),
+                        inner: AstField::Named {
+                            name: name.clone(),
+                            value: value.clone(),
+                            via: false,
+                        },
+                    });
+                }
+            }
+            AstStructItem::Anon(v) => {
+                out.push(AstNode { loc: v.loc.clone(), inner: AstField::Anon(v.clone()) });
+            }
+            AstStructItem::Def(_) => {}
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Group ref helpers
 // ---------------------------------------------------------------------------
@@ -448,7 +497,7 @@ fn pass_imports(parse_scopes: &[AstScope], ctx: &mut Ctx, kind: ImportKind) {
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
-            if let AstDef::Use(u) = def {
+            if let AstItem::Use(u) = def {
                 let loc = ir_loc(&u.loc);
                 resolve_use(&u.inner.path, scope, ctx, &loc, kind);
             }
@@ -744,46 +793,20 @@ fn pass2_register_names(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
-            match def {
-                AstDef::Type(td) => {
-                    if !td.inner.params.is_empty() { continue; } // type fns resolved in pass7
-                    if let Some(name_node) = &td.inner.name {
-                        let id = TypeId(ctx.types.len() as u32);
-                        ctx.scopes[scope.0 as usize].types.insert(name_node.inner.clone(), id);
-                        ctx.types.push(IrTypeDef {
-                            name:  Some(name_node.inner.clone()),
-                            scope,
-                            loc:   ir_loc(&td.loc),
-                            body:  IrTypeBody::Enum(vec![]),  // placeholder
-                        });
-                    }
-                }
-                AstDef::Link(ld) => {
-                    if let Some(name_node) = &ld.inner.name {
-                        let id = LinkId(ctx.links.len() as u32);
-                        ctx.scopes[scope.0 as usize].links.insert(name_node.inner.clone(), id);
-                        ctx.links.push(IrLinkDef {
-                            name:      Some(name_node.inner.clone()),
-                            scope,
-                            loc:       ir_loc(&ld.loc),
-                            link_type: IrLinkType::Primitive(IrPrimitive::Reference),  // placeholder
-                        });
-                    }
-                }
-                AstDef::Def(td) => {
-                    // Both plain defs (no input) and hook defs (with input) register a
-                    // named type so they can be referenced.  Hook defs with explicit input
-                    // fields are resolved in pass3; plain defs are resolved there too.
-                    let id = TypeId(ctx.types.len() as u32);
-                    ctx.scopes[scope.0 as usize].types.insert(td.inner.name.inner.clone(), id);
-                    ctx.types.push(IrTypeDef {
-                        name:  Some(td.inner.name.inner.clone()),
-                        scope,
-                        loc:   ir_loc(&td.loc),
-                        body:  IrTypeBody::Enum(vec![]),  // placeholder
-                    });
-                }
-                _ => {}
+            if let AstItem::Def(td) = def {
+                // Fun output defs (`name = type_ref { values }`) are instances, not type
+                // declarations — they don't register a new type, only a fun.
+                if is_apply_def(&td.inner) { continue; }
+                // Both plain defs (no input) and hook defs (with input) register a
+                // named type so they can be referenced.
+                let id = TypeId(ctx.types.len() as u32);
+                ctx.scopes[scope.0 as usize].types.insert(td.inner.name.inner.clone(), id);
+                ctx.types.push(IrTypeDef {
+                    name:  Some(td.inner.name.inner.clone()),
+                    scope,
+                    loc:   ir_loc(&td.loc),
+                    body:  IrTypeBody::Enum(vec![]),  // placeholder
+                });
             }
         }
     }
@@ -795,58 +818,28 @@ fn pass2_register_names(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 
 fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     // Collect all work upfront to avoid mid-iteration borrow issues.
-    let mut type_work: Vec<(TypeId, AstNode<AstTypeDef>, ScopeId)> = vec![];
-    let mut link_work: Vec<(LinkId, AstNode<AstLinkDef>, ScopeId)> = vec![];
-    let mut def_work:  Vec<(TypeId, AstNode<AstTopDef>,  ScopeId)> = vec![];
-    let mut hook_work: Vec<(TypeId, AstNode<AstTopDef>,  ScopeId)> = vec![];
+    let mut def_work:  Vec<(TypeId, AstNode<AstDef>, ScopeId)> = vec![];
+    let mut hook_work: Vec<(TypeId, AstNode<AstDef>, ScopeId)> = vec![];
 
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
-            match def {
-                AstDef::Type(td) => {
-                    if !td.inner.params.is_empty() { continue; } // type fns resolved in pass7
-                    if let Some(name_node) = &td.inner.name {
-                        if let Some(&tid) = ctx.scopes[scope.0 as usize].types.get(&name_node.inner) {
-                            type_work.push((tid, td.clone(), scope));
-                        }
+            if let AstItem::Def(td) = def {
+                // Fun output defs don't define a type body — skip.
+                if is_apply_def(&td.inner) { continue; }
+                if let Some(&tid) = ctx.scopes[scope.0 as usize].types.get(&td.inner.name.inner) {
+                    // Route to hook_work if the def has inputs or names a non-default hook.
+                    // Plain defs with canonical hook=name remain non-hook unless they carry inputs.
+                    let is_hook = !is_apply_def(&td.inner)
+                        && (!td.inner.input.is_empty() || !is_default_hook(&td.inner));
+                    if is_hook {
+                        hook_work.push((tid, td.clone(), scope));
+                    } else {
+                        def_work.push((tid, td.clone(), scope));
                     }
                 }
-                AstDef::Link(ld) => {
-                    if let Some(name_node) = &ld.inner.name {
-                        if let Some(&lid) = ctx.scopes[scope.0 as usize].links.get(&name_node.inner) {
-                            link_work.push((lid, ld.clone(), scope));
-                        }
-                    }
-                }
-                AstDef::Def(td) => {
-                    if let Some(&tid) = ctx.scopes[scope.0 as usize].types.get(&td.inner.name.inner) {
-                        // Route to hook_work if: has input fields OR has an explicit hook name.
-                        // Plain defs (no inputs, no hook name) go to def_work.
-                        let is_hook = !td.inner.input.is_empty() || td.inner.hook.is_some();
-                        if is_hook {
-                            hook_work.push((tid, td.clone(), scope));
-                        } else {
-                            def_work.push((tid, td.clone(), scope));
-                        }
-                    }
-                }
-                _ => {}
             }
         }
-    }
-
-    for (tid, td, scope) in type_work {
-        // Use the type's own scope for struct body resolution so that hoisted
-        // sub-types and struct links land in the right place.
-        let type_scope = td.inner.scope.map(|s| ScopeId(s.0)).unwrap_or(scope);
-        let body       = resolve_type_body(&td.inner.body, ctx, type_scope);
-        ctx.types[tid.0 as usize].body = body;
-    }
-
-    for (lid, ld, scope) in link_work {
-        let lt = resolve_link_type(&ld.inner.ty.inner, ctx, scope, &ir_loc(&ld.loc));
-        ctx.links[lid.0 as usize].link_type = lt;
     }
 
     for (tid, td, scope) in def_work {
@@ -868,7 +861,7 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 
         // Resolve output struct links (the fields after "=").
         let outputs = match &td.inner.output.inner {
-            AstTopDefOutput::Struct(items) => resolve_struct_links(items, ctx, scope),
+            AstDefO::Struct(items) => resolve_struct_links(items, ctx, scope),
             _                              => vec![],
         };
 
@@ -877,10 +870,8 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let all_links: Vec<LinkId> = inputs.iter().chain(outputs.iter()).copied().collect();
         ctx.types[type_id.0 as usize].body = IrTypeBody::Struct(all_links);
 
-        // Explicit hook function name between "=" and "{", or the def name by default.
-        let hook_fn = td.inner.hook.as_ref()
-            .map(|h| h.inner.clone())
-            .unwrap_or_else(|| name.clone());
+        // Explicit hook function ref between "=" and "{", or the def name by default.
+        let hook_fn = ref_to_repr(&td.inner.hook.inner);
 
         // Validate that the hook function is visible in scope.
         if !ctx.scope_has_ts_fn(scope, &hook_fn) {
@@ -952,12 +943,12 @@ fn pass3b_flatten_alias_types(ctx: &mut Ctx) {
     }
 }
 
-/// Resolve the body of an `AstTopDef` into an `IrTypeBody`.
+/// Resolve the body of an `AstDef` into an `IrTypeBody`.
 /// Called from pass3 (top-level defs) and `resolve_struct_links` (nested defs).
-fn resolve_top_def_body(td: &AstTopDef, ctx: &mut Ctx, scope: ScopeId) -> IrTypeBody {
+fn resolve_top_def_body(td: &AstDef, ctx: &mut Ctx, scope: ScopeId) -> IrTypeBody {
     match &td.output.inner {
-        AstTopDefOutput::Unit => IrTypeBody::Enum(vec![]),
-        AstTopDefOutput::TypeExpr(type_node) => {
+        AstDefO::Unit => IrTypeBody::Enum(vec![]),
+        AstDefO::TypeExpr(type_node) => {
             let effective_scope = type_node.inner.scope.map(|s| ScopeId(s.0)).unwrap_or(scope);
             match &type_node.inner.body.inner {
                 AstTypeDefBody::Ref(r) => {
@@ -967,7 +958,7 @@ fn resolve_top_def_body(td: &AstTopDef, ctx: &mut Ctx, scope: ScopeId) -> IrType
                 _ => resolve_type_body(&type_node.inner.body, ctx, effective_scope),
             }
         }
-        AstTopDefOutput::Struct(items) => {
+        AstDefO::Struct(items) => {
             IrTypeBody::Struct(resolve_struct_links(items, ctx, scope))
         }
     }
@@ -990,9 +981,9 @@ fn resolve_type_body(body: &AstNode<AstTypeDefBody>, ctx: &mut Ctx, scope: Scope
 
         AstTypeDefBody::Unit => IrTypeBody::Enum(vec![]),
 
-        AstTypeDefBody::Ref(_) | AstTypeDefBody::List(_) | AstTypeDefBody::TypeFn(_) => {
+        AstTypeDefBody::Ref(_) | AstTypeDefBody::List(_) => {
             ctx.errors.push(IrError {
-                message: "ref/list/typefn body not valid for a named type definition".into(),
+                message: "ref/list body not valid for a named type definition".into(),
                 loc: ir_loc(&body.loc),
             });
             IrTypeBody::Enum(vec![])
@@ -1005,24 +996,20 @@ fn resolve_struct_links(items: &[AstNode<AstStructItem>], ctx: &mut Ctx, scope: 
 
     for item in items {
         match &item.inner {
-            AstStructItem::LinkDef(ld) => {
-                let name = ld.inner.name.as_ref().map(|n| n.inner.clone());
-                let loc  = ir_loc(&ld.loc);
-                let lt   = resolve_link_type(&ld.inner.ty.inner, ctx, scope, &loc);
-                let lid  = ctx.alloc_link(name, scope, loc, lt);
-                link_ids.push(lid);
-            }
-            AstStructItem::TypeDef(_) => {
-                // Inline type-defs are hoisted to the type scope by parse;
-                // they are processed via pass2/pass3 on that scope's defs.
-            }
             AstStructItem::Field(fd) => {
+                let loc = ir_loc(&fd.loc);
+                if fd.inner.kind != AstStructFieldKind::Def {
+                    continue;
+                }
+                let AstStructFieldBody::Type(ty) = &fd.inner.body else {
+                    continue;
+                };
                 let name = fd.inner.name.as_ref().map(|n| n.inner.clone());
-                let loc  = ir_loc(&fd.loc);
-                let lt   = resolve_link_type(&fd.inner.ty.inner, ctx, scope, &loc);
+                let lt   = resolve_link_type(&ty.inner, ctx, scope, &loc);
                 let lid  = ctx.alloc_struct_link(name, scope, loc, lt);
                 link_ids.push(lid);
             }
+            AstStructItem::Anon(_) => {}
             AstStructItem::Def(inner_td) => {
                 // Named type nested in struct body — register inline in current scope.
                 let loc  = ir_loc(&inner_td.loc);
@@ -1120,13 +1107,6 @@ fn resolve_link_type(td: &AstTypeDef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc
             IrLinkType::Primitive(IrPrimitive::Reference)
         }
 
-        AstTypeDefBody::TypeFn(_) => {
-            ctx.errors.push(IrError {
-                message: "type fn body not valid as a link type".into(),
-                loc: loc.clone(),
-            });
-            IrLinkType::Primitive(IrPrimitive::Reference)
-        }
     }
 }
 
@@ -1162,30 +1142,28 @@ fn pass4_register_funs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
             match def {
-                AstDef::Inst(inst) => {
-                    let type_ref = &inst.inner.type_name.inner;
-                    let type_id  = match lookup_type_by_ref(type_ref, ctx, scope) {
-                        Some(tid) => tid,
-                        None => {
-                            let ref_name = type_ref.segments.iter()
-                                .map(|s| s.inner.as_plain().unwrap_or("{...}"))
-                                .collect::<Vec<_>>().join(":");
-                            ctx.errors.push(IrError {
-                                message: format!("unknown type '{}'", ref_name),
-                                loc: ir_loc(&inst.inner.type_name.loc),
-                            });
-                            continue;
-                        }
-                    };
-                    ctx.alloc_fun(inst.inner.inst_name.inner.clone(), scope, ir_loc(&inst.loc), type_id, Some(type_id));
-                }
-                // Every named def — whether written as `def foo` or `foo = { ... }` — is
-                // both a type and a named entity (root fun, parent=None).  The `has_def`
-                // flag is purely syntactic; structurally the two forms are identical.
-                AstDef::Def(td) => {
+                // Every named def is a named entity. Plain defs become root funs.
+                // Defs with a non-default hook ref and no inputs are treated as applications.
+                AstItem::Def(td) => {
                     let name = &td.inner.name.inner;
-                    if let Some(&type_id) = ctx.scopes[scope.0 as usize].types.get(name) {
-                        ctx.alloc_fun(name.clone(), scope, ir_loc(&td.loc), type_id, None);
+                    if is_apply_def(&td.inner) {
+                        let type_id = match lookup_type_by_ref(&td.inner.hook.inner, ctx, scope) {
+                            Some(tid) => tid,
+                            None => {
+                                let ref_name = ref_to_repr(&td.inner.hook.inner);
+                                ctx.errors.push(IrError {
+                                    message: format!("unknown type '{}'", ref_name),
+                                    loc: ir_loc(&td.inner.hook.loc),
+                                });
+                                continue;
+                            }
+                        };
+                        ctx.alloc_fun(name.clone(), scope, ir_loc(&td.loc), type_id, Some(type_id));
+                    } else {
+                        // Root fun (parent=None) for type defs and bare defs.
+                        if let Some(&type_id) = ctx.scopes[scope.0 as usize].types.get(name) {
+                            ctx.alloc_fun(name.clone(), scope, ir_loc(&td.loc), type_id, None);
+                        }
                     }
                 }
                 _ => {}
@@ -1204,19 +1182,24 @@ fn pass5_resolve_fun_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
-            if let AstDef::Inst(inst) = def {
-                let name = &inst.inner.inst_name.inner;
-                // Try typed lookup first (works for same-name multi-type instances),
-                // fall back to unambiguous single lookup.
-                let type_ref = &inst.inner.type_name.inner;
-                let fid = if let Some(type_id) = lookup_type_by_ref(type_ref, ctx, scope) {
-                    ctx.lookup_fun_typed(scope, name, type_id)
-                        .or_else(|| ctx.lookup_fun(scope, name))
-                } else {
-                    ctx.lookup_fun(scope, name)
-                };
-                if let Some(fid) = fid {
-                    work.push((fid, inst.inner.fields.clone(), scope));
+            if let AstItem::Def(td) = def {
+                if is_apply_def(&td.inner) {
+                    let name = &td.inner.name.inner;
+                    // Try typed lookup first, fall back to unambiguous single lookup.
+                    let fid = if let Some(type_id) = lookup_type_by_ref(&td.inner.hook.inner, ctx, scope) {
+                        ctx.lookup_fun_typed(scope, name, type_id)
+                            .or_else(|| ctx.lookup_fun(scope, name))
+                    } else {
+                        ctx.lookup_fun(scope, name)
+                    };
+                    if let Some(fid) = fid {
+                        let fields = match &td.inner.output.inner {
+                            AstDefO::Unit => vec![],
+                            AstDefO::Struct(items) => collect_apply_fields(items),
+                            AstDefO::TypeExpr(_) => vec![],
+                        };
+                        work.push((fid, fields, scope));
+                    }
                 }
             }
         }
@@ -1751,127 +1734,6 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
 // Pass 7 — resolve type function definitions
 // ---------------------------------------------------------------------------
 
-/// Convert a type fn body field value to IrValue.
-/// Param refs like `{this:name}-sg` are stored as opaque `IrValue::Ref` strings
-/// for ASM-time substitution.
-fn lower_type_fn_value(ast_val: &AstValue, field_name: &str, ctx: &mut Ctx, loc: &IrLoc) -> IrValue {
-    match ast_val {
-        AstValue::Str(s) => IrValue::Str(s.clone()),
-        AstValue::Ref(r) => IrValue::Ref(ref_to_repr(r)),
-        _ => {
-            ctx.errors.push(IrError {
-                message: format!("type fn field '{}': expected string or ref expression", field_name),
-                loc: loc.clone(),
-            });
-            IrValue::Str(String::new())
-        }
-    }
-}
-
-fn pass7_resolve_type_fns(parse_scopes: &[AstScope], ctx: &mut Ctx) {
-    let mut work: Vec<(ScopeId, AstNode<AstTypeDef>)> = vec![];
-
-    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
-        let scope = ScopeId(scope_idx as u32);
-        for def in &ast_scope.defs {
-            if let AstDef::Type(td) = def {
-                if !td.inner.params.is_empty() {
-                    work.push((scope, td.clone()));
-                }
-            }
-        }
-    }
-
-    for (scope, td) in work {
-        let loc = ir_loc(&td.loc);
-
-        // Resolve params.
-        let mut params: Vec<IrTypeFnParam> = Vec::new();
-        for param in &td.inner.params {
-            let param_name = param.inner.name.inner.clone();
-            let type_ref   = &param.inner.ty.inner;
-            let tid = match lookup_type_by_ref(type_ref, ctx, scope) {
-                Some(t) => t,
-                None => {
-                    let ref_str = type_ref.segments.iter()
-                        .filter_map(|s| s.inner.as_plain())
-                        .collect::<Vec<_>>().join(":");
-                    ctx.errors.push(IrError {
-                        message: format!("type fn param '{}': unknown type '{}'", param_name, ref_str),
-                        loc: ir_loc(&param.loc),
-                    });
-                    continue;
-                }
-            };
-            params.push(IrTypeFnParam { name: param_name, ty: tid });
-        }
-
-        let fn_name = td.inner.name.as_ref().map(|n| n.inner.clone());
-
-        let entries = match &td.inner.body.inner {
-            AstTypeDefBody::TypeFn(entries) => entries.clone(),
-            _ => {
-                ctx.errors.push(IrError {
-                    message: "type function definition must have a type fn body".into(),
-                    loc: ir_loc(&td.inner.body.loc),
-                });
-                continue;
-            }
-        };
-
-        let mut ir_entries: Vec<IrTypeFnEntry> = Vec::new();
-        for entry in &entries {
-            let alias      = entry.inner.alias.inner.clone();
-            let entry_loc  = ir_loc(&entry.loc);
-
-            let (vendor_type_id, ast_body_fields) = match &entry.inner.value.inner {
-                AstValue::Struct { type_hint: Some(hint), fields } => {
-                    let hint_name = hint.inner.segments.last()
-                        .and_then(|s| s.inner.as_plain())
-                        .unwrap_or("");
-                    let tid = match ctx.lookup_type(scope, hint_name) {
-                        Some(t) => t,
-                        None => {
-                            ctx.errors.push(IrError {
-                                message: format!("type fn entry '{}': unknown vendor type '{}'", alias, hint_name),
-                                loc: entry_loc.clone(),
-                            });
-                            continue;
-                        }
-                    };
-                    (tid, fields.as_slice())
-                }
-                AstValue::Struct { type_hint: None, .. } => {
-                    ctx.errors.push(IrError {
-                        message: format!("type fn entry '{}': missing vendor type annotation", alias),
-                        loc: entry_loc.clone(),
-                    });
-                    continue;
-                }
-                _ => {
-                    ctx.errors.push(IrError {
-                        message: format!("type fn entry '{}': expected a typed struct value", alias),
-                        loc: entry_loc.clone(),
-                    });
-                    continue;
-                }
-            };
-
-            let mut body: Vec<IrFnBodyField> = Vec::new();
-            for af in ast_body_fields {
-                let AstField::Named { name: fname, value: fval, .. } = &af.inner else { continue; };
-                let ir_val = lower_type_fn_value(&fval.inner, &fname.inner, ctx, &ir_loc(&fval.loc));
-                body.push(IrFnBodyField { name: fname.inner.clone(), value: ir_val });
-            }
-
-            ir_entries.push(IrTypeFnEntry { alias, vendor_type: vendor_type_id, fields: body });
-        }
-
-        let def = IrTypeFnDef { name: fn_name, params, scope, loc, body: ir_entries };
-        ctx.alloc_type_fn(def);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Pass 6 — resolve plans
 // ---------------------------------------------------------------------------
@@ -1882,7 +1744,7 @@ fn pass6_resolve_plans(parse_scopes: &[AstScope], ctx: &mut Ctx) -> Vec<IrPlanDe
         parse_scopes.iter().enumerate().flat_map(|(scope_idx, ast_scope)| {
             let scope = ScopeId(scope_idx as u32);
             ast_scope.defs.iter().filter_map(move |def| {
-                let AstDef::Plan(p) = def else { return None; };
+                let AstItem::Plan(p) = def else { return None; };
                 Some((
                     p.inner.name.inner.clone(),
                     IrLoc { unit: p.loc.unit, start: p.loc.start, end: p.loc.end },
@@ -1930,8 +1792,6 @@ pub fn resolve(res: ParseRes) -> IrRes {
     pass3b_flatten_alias_types(&mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::Insts);
     pass5_resolve_fun_fields(&res.scopes, &mut ctx);
-    pass7_resolve_type_fns(&res.scopes, &mut ctx);
-
     let plans = pass6_resolve_plans(&res.scopes, &mut ctx);
 
     let mut errors = ctx.errors;

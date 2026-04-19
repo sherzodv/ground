@@ -15,7 +15,7 @@ fn ts_gen_primitive_fields() {
             path:   vec![],
             src:    r#"
                 def label { key = string } = make_label { value = string }
-                label env { key: "environment" }
+                env = label { key: "environment" }
                 plan env
             "#.into(),
             ts_src: Some(r#"
@@ -46,7 +46,7 @@ fn ts_gen_integer_output() {
             path:   vec![],
             src:    r#"
                 def port = make_port { number = integer }
-                port api {}
+                api = port {}
                 plan api
             "#.into(),
             ts_src: Some(r#"

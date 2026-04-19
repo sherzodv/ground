@@ -1,7 +1,8 @@
 use ground_compile::ast::{
-    AstDef, AstField, AstFieldDef, AstLinkDef, AstPack, AstPlan, AstPrimitive, AstRef,
-    AstRefSegVal, AstScope, AstScopeId, AstStructItem, AstTopDef, AstTopDefOutput, AstTypeDef,
-    AstTypeDefBody, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse, AstTypeFnEntry,
+    AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPlan, AstPrimitive, AstRef,
+    AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody, AstStructFieldKind,
+    AstStructItem, AstTypeDef,
+    AstTypeDefBody, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse,
 };
 use ground_compile::parse::parse;
 
@@ -53,13 +54,9 @@ pub fn show_primitive(p: &AstPrimitive) -> &'static str {
     }
 }
 
-fn show_typefn_entry(e: &AstTypeFnEntry) -> String {
-    format!("{}={}", e.alias.inner, show_value(&e.value.inner))
-}
-
 pub fn show_type_def_body(body: &AstTypeDefBody) -> String {
     match body {
-        AstTypeDefBody::Unit         => "Unit".to_string(),
+        AstTypeDefBody::Unit         => "unit".to_string(),
         AstTypeDefBody::Primitive(p) => format!("Primitive({})", show_primitive(p)),
         AstTypeDefBody::Ref(r)       => format!("Ref({})", show_ref(r)),
         AstTypeDefBody::Enum(items)  => {
@@ -67,60 +64,73 @@ pub fn show_type_def_body(body: &AstTypeDefBody) -> String {
             format!("Enum[{}]", parts.join(" | "))
         }
         AstTypeDefBody::Struct(items) => {
+            if items.is_empty() {
+                return "unit".to_string();
+            }
             let parts: Vec<_> = items.iter().map(|i| show_struct_item(&i.inner)).collect();
             format!("Struct[{}]", parts.join(", "))
         }
         AstTypeDefBody::List(inner) => {
             format!("List[{}]", show_type_def(&inner.inner))
         }
-        AstTypeDefBody::TypeFn(entries) => {
-            let parts: Vec<_> = entries.iter().map(|e| show_typefn_entry(&e.inner)).collect();
-            format!("TypeFn[{}]", parts.join(", "))
-        }
     }
 }
 
 pub fn show_type_def(td: &AstTypeDef) -> String {
     let name = td.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    if td.params.is_empty() {
-        format!("Type[{}, {}]", name, show_type_def_body(&td.body.inner))
-    } else {
-        let params: Vec<_> = td.params.iter()
-            .map(|p| format!("{}:{}", p.inner.name.inner, show_ref(&p.inner.ty.inner)))
-            .collect();
-        format!("TypeFn[{}({}), {}]", name, params.join(", "), show_type_def_body(&td.body.inner))
-    }
+    format!("Type[{}, {}]", name, show_type_def_body(&td.body.inner))
 }
 
-pub fn show_field_def(f: &AstFieldDef) -> String {
+pub fn show_field_def(f: &AstDefI) -> String {
     let name = f.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
     format!("Field[{}, {}]", name, show_type_def(&f.ty.inner))
 }
 
-pub fn show_top_def_output(output: &AstTopDefOutput) -> String {
+pub fn show_struct_field(f: &AstStructField) -> String {
+    let name = f.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
+    match (&f.kind, &f.body) {
+        (AstStructFieldKind::Def, AstStructFieldBody::Type(ty)) => {
+            format!("FieldDef[{}, {}]", name, show_type_def(&ty.inner))
+        }
+        (AstStructFieldKind::Set, AstStructFieldBody::Value(value)) => {
+            format!("FieldSet[{}, {}]", name, show_value(&value.inner))
+        }
+        (AstStructFieldKind::Def, AstStructFieldBody::Value(value)) => {
+            format!("FieldDef[{}, {}]", name, show_value(&value.inner))
+        }
+        (AstStructFieldKind::Set, AstStructFieldBody::Type(ty)) => {
+            format!("FieldSet[{}, {}]", name, show_type_def(&ty.inner))
+        }
+    }
+}
+
+pub fn show_top_def_output(output: &AstDefO) -> String {
     match output {
-        AstTopDefOutput::Unit => "Unit".to_string(),
-        AstTopDefOutput::TypeExpr(td) => show_type_def_body(&td.inner.body.inner),
-        AstTopDefOutput::Struct(items) => {
+        AstDefO::Unit => "unit".to_string(),
+        AstDefO::TypeExpr(td) => show_type_def_body(&td.inner.body.inner),
+        AstDefO::Struct(items) => {
+            if items.is_empty() {
+                return "unit".to_string();
+            }
             let parts: Vec<_> = items.iter().map(|i| show_struct_item(&i.inner)).collect();
             format!("Struct[{}]", parts.join(", "))
         }
     }
 }
 
-pub fn show_top_def(td: &AstTopDef) -> String {
-    let mut parts = vec![td.name.inner.clone()];
-    if !td.input.is_empty() {
+pub fn show_top_def(td: &AstDef) -> String {
+    let name = td.name.inner.clone();
+    let hook = show_ref(&td.hook.inner);
+    let input = if td.input.is_empty() {
+        "unit".to_string()
+    } else {
         let input_parts: Vec<_> = td.input.iter()
             .map(|f| show_field_def(&f.inner))
             .collect();
-        parts.push(format!("Input[{}]", input_parts.join(", ")));
-    }
-    if let Some(hook) = &td.hook {
-        parts.push(hook.inner.clone());
-    }
-    parts.push(show_top_def_output(&td.output.inner));
-    format!("Def[{}]", parts.join(", "))
+        format!("Input[{}]", input_parts.join(", "))
+    };
+    let output = show_top_def_output(&td.output.inner);
+    format!("Def[{name}, {hook}, {input}, {output}]")
 }
 
 pub fn show_pack(p: &AstPack) -> String {
@@ -144,16 +154,10 @@ pub fn show_plan(p: &AstPlan) -> String {
 
 pub fn show_struct_item(item: &AstStructItem) -> String {
     match item {
-        AstStructItem::Field(fd)    => show_field_def(&fd.inner),
+        AstStructItem::Field(fd)    => show_struct_field(&fd.inner),
+        AstStructItem::Anon(v)      => format!("Anon[{}]", show_value(&v.inner)),
         AstStructItem::Def(td)      => show_top_def(&td.inner),
-        AstStructItem::TypeDef(td)  => show_type_def(&td.inner),
-        AstStructItem::LinkDef(ld)  => show_link_def(&ld.inner),
     }
-}
-
-pub fn show_link_def(ld: &AstLinkDef) -> String {
-    let name = ld.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    format!("Link[{}, {}]", name, show_type_def(&ld.ty.inner))
 }
 
 pub fn show_value(v: &AstValue) -> String {
@@ -165,6 +169,9 @@ pub fn show_value(v: &AstValue) -> String {
             format!("List[{}]", parts.join(", "))
         }
         AstValue::Struct { type_hint, fields } => {
+            if type_hint.is_none() && fields.is_empty() {
+                return "unit".to_string();
+            }
             let mut parts: Vec<String> = Vec::new();
             if let Some(hint) = type_hint {
                 parts.push(format!("Hint({})", show_ref(&hint.inner)));
@@ -186,27 +193,12 @@ pub fn show_use(u: &AstUse) -> String {
     format!("Use[{}]", show_ref(&u.path))
 }
 
-pub fn show_def(def: &AstDef) -> String {
+pub fn show_def(def: &AstItem) -> String {
     match def {
-        AstDef::Def(td)  => show_top_def(&td.inner),
-        AstDef::Pack(p)  => show_pack(&p.inner),
-        AstDef::Plan(p)  => show_plan(&p.inner),
-        AstDef::Use(u)   => show_use(&u.inner),
-        AstDef::Type(td) => show_type_def(&td.inner),
-        AstDef::Link(ld) => show_link_def(&ld.inner),
-        AstDef::Inst(inst) => {
-            let mut parts = vec![
-                show_ref(&inst.inner.type_name.inner),
-                inst.inner.inst_name.inner.clone(),
-            ];
-            parts.extend(inst.inner.fields.iter().map(|f| show_field(&f.inner)));
-            format!("Inst[{}]", parts.join(", "))
-        }
-        AstDef::Scope(s) => {
-            let name = s.inner.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-            let parts: Vec<_> = s.inner.defs.iter().map(show_def).collect();
-            format!("Scope[{}, {}]", name, parts.join(", "))
-        }
+        AstItem::Def(td)  => show_top_def(&td.inner),
+        AstItem::Pack(p)  => show_pack(&p.inner),
+        AstItem::Plan(p)  => show_plan(&p.inner),
+        AstItem::Use(u)   => show_use(&u.inner),
     }
 }
 

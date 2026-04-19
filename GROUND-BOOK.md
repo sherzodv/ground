@@ -1,36 +1,183 @@
 The Ground Book
 
-## Defs
+The Ground is a declarative systems design language facilitating composable abstractions to define layered architecture.
 
-The def construct can define enumerations:
-
+The core syntactic construct of the Ground language is a mapping between structures:
 ```ground
-port = http | grpc
-region = us-east | us-west
+def service {
+  name = string
+} = aws_ecs_service {
+  image = reference
+  port  = http | grpc
+}
+
 ```
 
-Lists:
+We defined a mapping named **service** which, given the input structure, maps it to the output using the mapper **aws_ecs_service**. While the **service** estabslishes *what maps to what* defining a typed relation, the **aws_ecs_service** refers to the implementation, defining the *how this mapping happens*. **aws_ecs_service** is a reference  to a typescript function which implements the actual transformation.
 
+Mappings are compoasable. We can define another mapping, where now the **service** defines the *how*, i.e. becomes the implementation. Note how we can pass inputs to the **service** mapping using a `field: value` syntax:
 ```ground
-port = http | grpc
-ports = [ port ]
+def payments {} = service {
+  name: "marstech-api"
+}
 ```
 
-Or even simpler:
+Note that the **payments** service inherits the output structure from the **service**. We can read this as: create a new mapping called **payments** with no input parameters, whose output structure is inherited from the **service** mapping given the provided input parameters.
 
+But both of these definitions have no effect in Ground until we **plan** them. A **plan** construct in Ground is a terminal statement that starts the actual *resolution* process.
 ```ground
-ports = [ http | grpc ]
+plan payments
 ```
 
-Structures:
+Now when we have all the pieces, let's connect the dots by defining how the *resolution* works. Ground starts with a **plan** statement. It reads the **plan**'s target and triess to resolve it, in this case it's the **payments** mapping. Ground then tries to find a symbol named *service* in the scope and it finds the **service** mapping. The resolution process repeats for the **service** mapping with the inherited inputs provided in the **payments** mapping. There is no mapping called **aaws_ecs_service** but there is a typescript function with same name in the scope. Ground evaluates it with the passed through input.
+
+On the way back from recursive resolution, Ground now checks if is there a typescript function called *service* in the scope.
+
+But in this case there is no typescript function called **service** in the scope.
+
+Ground allows omitting empty input args and other syntax details:
 ```ground
-service = {
-  image = string
+api service {
+  name: "marstech-api"
+}
+```
+
+Although this looks like we are creating a named instance of the **service**, from the Ground perspective we're are creating another mapping.
+```ground
+api service {
+  name: "marstech-api"
+}
+```
+
+---
+
+### Identity def — no hook, output = input
+
+```ground
+def service {
   port = grpc | http
 }
 ```
 
-There are primitive predefined defs, all of them are keywords:
+No hook, no output schema — the def is an identity transform. Its output shape is its
+input shape. `service` accepts `port` and passes it through.
+
+### Transformation def — with hook
+
+```ground
+def service {
+  port = grpc | http
+} = mk_service {
+  ecs_arn = string
+}
+```
+
+`mk_service` is a TypeScript function the user provides. Ground generates the interfaces:
+
+```typescript
+interface MkServiceI { port: 'grpc' | 'http' }
+interface MkServiceO { ecs_arn: string }
+```
+
+### Calling a def
+
+Call a def by providing its input values using `:` syntax:
+
+```ground
+api = service { port: http }
+```
+
+`api` is the result of calling `service` with `port: http`. If `service` has a hook,
+the hook runs. `api`'s output shape is `service`'s output shape.
+
+---
+
+## Composition
+
+Defs compose. This is the core of Ground.
+
+```ground
+def boo { i1 = string } = mk_boo { o1 = string }
+
+foo = boo { i1: "hello" }
+```
+
+`foo` calls `boo`, which calls `mk_boo`. The call graph is topo-sorted and evaluated
+bottom-up: `mk_boo` runs first, its output flows up to `foo`.
+
+`foo` can forward its own inputs into another def:
+
+```ground
+foo { i2 = string } = boo { i1: {i2} }
+// TS: foo(i2) = boo({ i1: i2 })
+```
+
+Or declare its own hook on top:
+
+```ground
+foo { i2 = string } = mk_foo { o2 = string }
+```
+
+The tchain can continue arbitrarily:
+
+```ground
+def service
+api = service
+deployment = api
+```
+
+Each link in the chain is a function call. The resolved graph is the composed result.
+
+---
+
+## Shorthands
+
+### Enum and list defs
+
+```ground
+port = grpc | http
+ports = [ port ]
+```
+
+These are defs whose output is an enum or list type — no input, no hook.
+
+### Struct shorthand
+
+When `def` and `=` are both omitted, the block is the input schema with identity transform:
+
+```ground
+service {
+  image = reference
+  port  = grpc | http
+}
+```
+
+Equivalent to:
+
+```ground
+def service {
+  image = reference
+  port  = grpc | http
+} = {}
+```
+
+### Nested defs
+
+The `def` keyword disambiguates a nested def from a field inside a struct body:
+
+```ground
+service = {
+  def scaling = {
+    min = integer
+    max = integer
+  }
+  scaling = def:scaling
+}
+```
+
+### Primitives
+
+Built-in terminal defs — cannot be decomposed further:
 
 ```ground
 boolean
@@ -40,67 +187,33 @@ reference
 unit
 ```
 
-Defs declare transformations, the general syntax is:
+---
+
+## Refs within defs
+
+Ground can express transformations without external hooks using ref expressions:
+
 ```ground
-def <name> <input def> = <transformation> <output def>
-
-def port unit = port_to_int http | grpc
-
 def service {
-  name = string
-  port = grpc | http
-} = aws_ecs_service {
-  image = string
-  label = string
-  port = integer
-}
-```
-
-All of these are optional and can be omitted:
-
-- The `def` keyword
-- Input def
-- Output def
-- Transformation
-
-A `def` keyword is used to disabmiguate internal def definition from a field definition:
-```ground
-service = {
-  def scaling = {
-    min = integer
-    max = integer
-  }
-  scaling = def:scaling
-}
-```
-
-The transformation is an external typescript function that is used to produce output tree given the input tree.
-
-Ground can define simple transformations without external functions using refs:
-```
-service {
-  name: reference
+  name = reference
 } = {
-  def scaling = {
-    min = integer
-    max = integer
-  }
-
   image = reference
   label = reference
-  scaling = def:scaling
 
   image: images/{name}:latest
   label: svc-{name}
-  scaling:max: 10
 }
 ```
 
-Transformations can override field values specified in Ground. This can be changed by using the `final` keyword.
-```
-service {
-  name: reference
-} = aws_ecs_service {
+The hook can be omitted when all output fields are covered by ref expressions.
+Ref expressions are computed before references are resolved.
+
+Transformations can lock specific values against hook overrides using `final`:
+
+```ground
+def service {
+  name = reference
+} = mk_service {
   image = reference
   label = reference
 
@@ -108,121 +221,58 @@ service {
 }
 ```
 
-Both transformation and input def can be omitted, yielding a simple structure syntax. In this case input is assumed `unit` and a default transformation ts function is generated — named after the def itself:
+`mk_service` cannot override `image` — `final` wins unconditionally.
+
+---
+
+## Plan
+
+All defs are pure, deferred descriptions. Nothing resolves until a `plan` declaration
+names a symbol as a resolution root. Ground produces output only for what is planned.
+
 ```ground
-service {
-  image = reference
-  label = reference
+prd-eu = aws_deploy {
+    stack: marstech
+}
+
+plan prd-eu
+```
+
+`plan` followed by a name is the entire statement. Ground top-sorts the graph
+reachable from `prd-eu` and resolves it bottom-up.
+
+When the symbol has an input def, `plan` supplies the args:
+
+```ground
+prd-eu {
+    region = string
+} = aws_deploy {
+    stack: marstech
+}
+
+plan prd-eu {
+    region: eu-central
 }
 ```
 
-This expands to:
+Ground validates the args against the input def before resolving. A missing required
+arg or a type mismatch is a compile error at the `plan` line.
+
+Multiple plans can reference the same or different symbols:
+
 ```ground
-def service unit = service {
-  image = reference
-  label = reference
-}
+plan prd-eu { region: eu-central }
+plan prd-me { region: me-central }
+plan stg-eu { region: eu-central }
 ```
 
-The power of defs is revealed in a transformation chain:
-```ground
-def service unit = service {
-  image = reference
-  label = reference
-}
+Each produces independent output. Defs not reachable from any `plan` are not resolved.
 
-def service unit = api {
-}
-```
-
-Which in case of when unit is omitted can be simplified, resulting in smth that looks like just an instance declaration:
-```ground
-service {
-  image = reference
-  label = reference
-}
-
-service api
-```
-
-Tchain by default inherits all the previously defined fields and defs:
-```ground
-service {
-  image = reference
-  label = reference
-}
-
-service api```
-```typescript
-// generated
-
-interface ServiceI {}
-interface ServiceO { image: Ref; label: Ref }
-
-interface ServiceApiI {}
-interface ServiceApiO { image: Ref; label: Ref }
-
-export function api(arg: ServiceApiI): ServiceApiO { ... }
-```
-
-Tchain arguments handling:
-```ground
-service {
-  version = string
-} = {
-  image = reference
-  label = reference
-}
-
-service {
-  version: "0.0.1"
-} api
-```
-
-To make it look more an instance declaration, arguments can be specified in the output section:
-```ground
-service {
-  version = string
-} = {
-  image = reference
-  label = reference
-}
-
-service api {
-  version: "0.0.1"
-}
-```
-
-Tchain can be continued further:
-```ground
-def service
-service api
-api deployment
-```
-
-Structure fields can be anonymous, i.e define unnamed fields, essentialy plain values which can be used in the structure body:
-```ground
-def database
-def service
-
-database main
-service users
-service api
-
-def stack = {
-  [ def:service | def:database ]
-}
-
-stack marketing {
-  database:main
-  service:users
-  api
-}
-```
+---
 
 # References
 
-A *reference* is Ground's string interpolation which does not utilize quotes
+A *reference* is Ground's string interpolation which does not utilize quotes:
 
 ```
 registry/payments:latest
@@ -232,206 +282,165 @@ service:api:http
 
 References allow to express more complex relations between defs:
 
-```
+```ground
 def service = {
   access = def:service
 }
 
-service payments {
+payments = service {
   image: local.dev/payments:latest
 }
 
-service api {
+api = service {
   image: local.dev/api:latest
   access: payments
 }
 ```
 
-Refs can express even more advanced connections:
+Refs can express typed connections:
 
-```
-def service() = {
-  port = http | grpc
+```ground
+def service = {
+  port   = http | grpc
   access = service:port
 }
 
-service payments {
-  port: grpc
-}
+payments = service { port: grpc }
 
-service api {
-  image: local.dev/api:latest
+api = service {
+  image:  local.dev/api:latest
   access: payments:grpc
 }
 ```
 
-Add lists:
+Lists:
 
-```
+```ground
 def service = {
-  port = http | grpc
+  port   = http | grpc
   access = [ service:port ]
 }
 
-service users {
-  port: grpc
-}
+users    = service { port: grpc }
+payments = service { port: grpc }
 
-service payments {
-  port: grpc
-}
-
-service api {
-  image: local.dev/api:latest
-  access: [
-    users:grpc
-    payments:grpc
-  ]
+api = service {
+  image:  local.dev/api:latest
+  access: [ users:grpc  payments:grpc ]
 }
 ```
 
-Enumeration (sum) defs:
-```
+Sum types in access lists:
+
+```ground
 def database = {
   engine = postgres | mysql
 }
 
 def service = {
-  port = http | grpc
+  port   = http | grpc
   access = [ service:port | database ]
 }
 
-database main {
-  engine: postgres
-}
+main     = database { engine: postgres }
+users    = service  { port: grpc }
+payments = service  { port: grpc }
 
-service users {
-  port: grpc
-}
-
-service payments {
-  port: grpc
-}
-
-service api {
-  image: local.dev/api:latest
-  access: [
-    main
-    users:grpc
-    payments:grpc
-  ]
+api = service {
+  image:  local.dev/api:latest
+  access: [ main  users:grpc  payments:grpc ]
 }
 ```
 
 Refs can use keywords and defined names to disambiguate resolving:
-```
-def database = {
-  engine = postgres | mysql
-}
 
-def service = {
-  port = http | grpc
-  access = [ service:port | database ]
-}
+```ground
+main-db  = database { engine: postgres }
+main-svc = service  { port: grpc }
+payments = service  { port: grpc }
 
-database main {
-  engine: postgres
-}
-
-service main {
-  port: grpc
-}
-
-service payments {
-  port: grpc
-}
-
-service api {
-  image: local.dev/api:latest
+api = service {
+  image:  local.dev/api:latest
   access: [
-    def:database:main
-    def:service:main:grpc
+    def:database:main-db
+    def:service:main-svc:grpc
     payments:grpc
   ]
 }
 ```
 
 Refs can have optional segments surrounded by `()`:
-```
+
+```ground
 def service = {
-  port = http | grpc
+  port   = http | grpc
   access = [ service:(port) ]
 }
 
-service users {
-  port: grpc
-}
+users    = service { port: grpc }
+payments = service { port: grpc }
 
-service payments {
-  port: grpc
-}
-
-service api {
-  image: local.dev/api:latest
-  access: [ users payments:grpc ]
+api = service {
+  image:  local.dev/api:latest
+  access: [ users  payments:grpc ]
 }
 ```
 
-Expressions `{}` are part of refs - ref expressions:
+Ref expressions are part of refs:
+
 ```ground
 def service {
   imageBase = string
-  image = string
+  name      = string
 } = {
-  image: {imageBase}/{image}:latest
+  image = reference
+  image: {imageBase}/{name}:latest
 }
 
-service api {
+api = service {
   imageBase: "local.domain"
-  image: "payments"
+  name:      "payments"
 }
 ```
 
-Ref expression can use defs:
+Ref expressions can use def fields:
+
 ```ground
 def service {
-  major = int
-  minor = int
+  major = integer
+  minor = integer
 } = {
   versionInfo = reference
-  versionInfo: V:{v.major}:{v.minor}
+  versionInfo: V:{major}:{minor}
 }
 
-service payments {
-  major: 2
-  minor: 1
-}
+payments = service { major: 2  minor: 1 }
 ```
 
 Ref expressions are computed (reduced) before references are resolved:
+
 ```ground
 def env = dev | prd
 
-service dev-payments {}
-service prd-payments {}
+dev-payments = service {}
+prd-payments = service {}
 
 def router {
   env = def:env
 } = {
   upstream = def:service
-  upstream: {e}-payments
+  upstream: {env}-payments
 }
 
-router api {
-  env: prod
-}
+api = router { env: prd }
 ```
 
 Ref expressions can define names:
+
 ```ground
 def tag {
-  name: reference
-  value: reference
+  name  = reference
+  value = reference
 } = {
   {name}: {value}
 }
@@ -441,7 +450,7 @@ def service {
   tags = [ def:tag ]
 }
 
-service payments {
+payments = service {
   name: {this.name}
   tags: [
     tag(project, ground)
@@ -450,10 +459,12 @@ service payments {
 }
 ```
 
+---
+
 ## Resolution
 
-Ground produces output by resolving the final graph. Graph is top-sorted and resolution starts from the bottom.
-Because of these there is no need to have explicit dependencies like in terraform.
+Ground produces output by resolving the final graph. The graph is topo-sorted and
+resolution starts from the bottom. There is no need for explicit dependency declarations.
 
 Ground collects values from all applicable sources, then applies priority:
 
@@ -476,8 +487,8 @@ sub-fields independently.
 
 ```ground
 def firewall = {
-  name        = string
-  allow_port  = integer
+  name       = string
+  allow_port = integer
 }
 
 def node = make_node {
@@ -500,8 +511,8 @@ hook as inputs.
 
 ```ground
 def firewall = make_fw {
-  name        = string
-  allow_port  = integer
+  name       = string
+  allow_port = integer
 }
 
 def node {
@@ -562,52 +573,11 @@ interface MakeNodeO { fw: Firewall; region: string }
 Without `via`, `make_node` must supply `fw` itself (sealed-subtree rule applies).
 With `via`, `make_fw` supplies it — `make_node` receives it and passes it through.
 
-## Plan
-
-All defs are pure, deferred descriptions. Nothing resolves until a `plan` declaration
-names a symbol as a resolution root. Ground produces output only for what is planned.
-
-```ground
-prd-eu = aws_deploy {
-    stack: marstech
-}
-
-plan prd-eu
-```
-
-`plan` followed by a name is the entire statement. Ground top-sorts the graph
-reachable from `prd-eu` and resolves it bottom-up.
-
-When the symbol has an input def, `plan` supplies the args:
-
-```ground
-prd-eu {
-    region = string
-} = aws_deploy {
-    stack: marstech
-}
-
-plan prd-eu {
-    region: eu-central
-}
-```
-
-Ground validates the args against the input def before resolving. A missing required
-arg or a type mismatch is a compile error at the `plan` line.
-
-Multiple plans can reference the same or different symbols:
-
-```ground
-plan prd-eu { region: eu-central }
-plan prd-me { region: me-central }
-plan stg-eu { region: eu-central }
-```
-
-Each produces independent output. Defs not reachable from any `plan` are not resolved.
+---
 
 ## Resolution — Worked Examples
 
-The following cases use a single set of types throughout:
+The following cases use a single set of defs throughout:
 
 ```ground
 def proto = http | grpc
@@ -634,7 +604,7 @@ def node = {
 `string` and `integer` are terminal — Ground cannot decompose them further.
 `endpoint`, `firewall`, and `node` are non-terminal — Ground recurses into their fields.
 
-Each case shows an alternative resolution strategy for `node` and its component types.
+Each case shows an alternative resolution strategy for `node` and its component defs.
 
 ---
 
@@ -664,7 +634,7 @@ def node {
 All terminal fields are provided by ref expressions. No hook, no decomposition.
 
 ```
-node api { name: "api" }
+api = node { name: "api" }
 
 node.ep.host        → ref "api.internal"      ✓
 node.ep.port        → ref 8080                ✓
@@ -703,7 +673,7 @@ function make_node(i: MakeNodeI): MakeNodeO {
 not recurse into `ep.host`, `ep.port`, `fw.name`, etc. The hook owns those subtrees.
 
 ```
-node api { name: "api" }
+api = node { name: "api" }
 
 node.ep  → make_node → { host: "api.internal", port: 8080, proto: http }  ✓ (sealed)
 node.fw  → make_node → { name: "api-fw", ... }                            ✓ (sealed)
@@ -715,22 +685,22 @@ node.fw.name   → NOT resolved independently (hook owns subtree)
 
 ### Case 3 — Fine-grained hooks with input pre-resolution
 
-Each type carries its own hook. `endpoint` and `firewall` take some fields as inputs
+Each def carries its own hook. `endpoint` and `firewall` take some fields as inputs
 (pre-resolved before the hook fires) and produce the rest via the hook.
 
 ```ground
 def endpoint {
-    host  = string       # input — provided at instantiation, injected into make_ep
-    proto = proto        # input — provided at instantiation, injected into make_ep
+    host  = string    # input — provided at call site, injected into make_ep
+    proto = proto     # input — provided at call site, injected into make_ep
 } = make_ep {
-    port = integer       # output — make_ep computes this
+    port = integer    # output — make_ep computes this
 }
 
 def firewall {
-    name = string        # input — provided at instantiation, injected into make_fw
+    name = string     # input — provided at call site, injected into make_fw
 } = make_fw {
-    description = string   # output — make_fw computes this
-    allow_port  = integer  # output — make_fw computes this
+    description = string    # output — make_fw computes this
+    allow_port  = integer   # output — make_fw computes this
 }
 
 def node {
@@ -741,11 +711,11 @@ def node {
 }
 ```
 
-`node` has no hook — Ground decomposes it. Each component type then resolves via
-its own hook, with input fields supplied at instantiation:
+`node` has no hook — Ground decomposes it. Each component def then resolves via
+its own hook, with input fields supplied at the call site:
 
 ```ground
-node api {
+api = node {
     name: api
     ep:   { host: api.internal  proto: http }
     fw:   { name: api-fw }
@@ -826,7 +796,7 @@ fw.allow_port:  final ref → 9090
 
 ### Case 6 — `via`: explicit nested hook delegation
 
-`via` in the output body delegates a field to its type's own hook, while the field
+`via` in the output body delegates a field to its def's own hook, while the field
 remains in the enclosing def's output shape:
 
 ```ground
