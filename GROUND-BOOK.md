@@ -527,3 +527,21 @@ plan stg-eu { region: eu-central }
 
 Each produces independent output. Defs not reachable from any `plan` are not resolved.
 
+## Packs
+
+A **pack** is a Ground namespacing tool. The can be nested.
+
+- Each folder from the source root creates a nested pack with same as folder's name
+- Each file creates a pack names as file's basename
+
+Typescript & ground files with the same name are in the same named pack.
+
+Ground allows explicit packs:
+
+```ground
+# File: geometry.grd
+pack shapes # creates a pack named shapes which continues to end of file
+
+pack smooth { # creates a pack named smooth inside pack shapes, with scoped defined by {}
+}
+```

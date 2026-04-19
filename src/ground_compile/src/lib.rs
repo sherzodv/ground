@@ -41,7 +41,7 @@ pub struct Unit {
     pub path:   Vec<String>,
     pub src:    String,
     /// Optional TypeScript source co-located with this unit.
-    /// Hook functions defined in `src` are implemented here.
+    /// Mapper functions defined in `src` are implemented here.
     pub ts_src: Option<String>,
 }
 
@@ -140,10 +140,10 @@ pub fn compile(req: CompileReq) -> CompileRes {
     }
 
     // Generate TypeScript interface declarations and type-compatibility assertions.
-    let generated_dts    = ts_gen::gen_hook_interfaces(&ir);
+    let generated_dts    = ts_gen::gen_mapper_interfaces(&ir);
     let tc_assertions    = ts_gen::gen_typecheck_assertions(&ir, &user_ts);
 
-    // Append assertions to user_ts so TypeScript verifies each hook implementation
+    // Append assertions to user_ts so TypeScript verifies each mapper implementation
     // is assignable to its declared I/O signature, even without explicit annotations.
     let user_ts_for_check = if tc_assertions.is_empty() {
         user_ts.clone()

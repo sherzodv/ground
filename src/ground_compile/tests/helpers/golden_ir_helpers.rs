@@ -199,7 +199,7 @@ fn show_scope_ir(scope_id: ScopeId, ir: &IrRes) -> String {
     let raw_name = scope.name.as_deref().unwrap_or("_");
     let kind_str = match scope.kind {
         ScopeKind::Pack => "pack",
-        ScopeKind::Type => "type",
+        ScopeKind::Struct => "struct",
     };
     let name = format!("{}:{}", kind_str, raw_name);
 

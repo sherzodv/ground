@@ -1,13 +1,13 @@
-/// Generate TypeScript interface declarations for hook I/O from the IR.
+/// Generate TypeScript interface declarations for mapper I/O from the IR.
 ///
-/// For every root def that carries a hook (parent=None, hook_fn=Some), we emit:
+/// For every root def that carries a mapper (parent=None, mapper_fn=Some), we emit:
 ///
 ///   interface MakeLabelInput  { key: string; }
 ///   interface MakeLabelOutput { value: string; }
 ///
-/// The naming convention is `PascalCase(hook_fn) + "Input"` / `"Output"`.
+/// The naming convention is `PascalCase(mapper_fn) + "Input"` / `"Output"`.
 /// These interfaces are prepended to the TypeScript blob before execution so
-/// hook authors can reference them for type safety; the transpiler erases them
+/// mapper authors can reference them for type safety; the transpiler erases them
 /// at runtime so they have no runtime cost.
 
 use crate::ir::{IrLinkType, IrPrimitive, IrRef, IrRefSegValue, IrRes, IrTypeBody, LinkId};
@@ -16,14 +16,14 @@ use crate::ir::{IrLinkType, IrPrimitive, IrRef, IrRefSegValue, IrRes, IrTypeBody
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn gen_hook_interfaces(ir: &IrRes) -> String {
+pub fn gen_mapper_interfaces(ir: &IrRes) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     for fun in &ir.funs {
         if fun.parent.is_some() { continue; }
-        let Some(hook_fn) = &fun.hook_fn else { continue; };
+        let Some(mapper_fn) = &fun.mapper_fn else { continue; };
 
-        let prefix = to_pascal_case(hook_fn);
+        let prefix = to_pascal_case(mapper_fn);
         parts.push(gen_interface(&format!("{}Input",  prefix), &fun.inputs,  ir));
         parts.push(gen_interface(&format!("{}Output", prefix), &fun.outputs, ir));
     }
@@ -33,7 +33,7 @@ pub fn gen_hook_interfaces(ir: &IrRes) -> String {
 
 /// Generate type-compatibility assertions to append to `user_ts` before type-checking.
 ///
-/// For each hook whose function is defined in `user_ts` (detected via
+/// For each mapper whose function is defined in `user_ts` (detected via
 /// `function <name>` pattern), emit:
 ///
 ///   const __tc0: (i: MakeLabelInput) => MakeLabelOutput = make_label; void __tc0;
@@ -45,16 +45,16 @@ pub fn gen_typecheck_assertions(ir: &IrRes, user_ts: &str) -> String {
 
     for (idx, fun) in ir.funs.iter().enumerate() {
         if fun.parent.is_some() { continue; }
-        let Some(hook_fn) = &fun.hook_fn else { continue; };
+        let Some(mapper_fn) = &fun.mapper_fn else { continue; };
 
         // Only assert for functions that are actually defined in user_ts.
-        let fn_decl = format!("function {hook_fn}");
+        let fn_decl = format!("function {mapper_fn}");
         if !user_ts.contains(&fn_decl) { continue; }
 
-        let prefix   = to_pascal_case(hook_fn);
+        let prefix   = to_pascal_case(mapper_fn);
         let var_name = format!("__tc{idx}");
         parts.push(format!(
-            "const {var_name}: (i: {prefix}Input) => {prefix}Output = {hook_fn}; void {var_name};"
+            "const {var_name}: (i: {prefix}Input) => {prefix}Output = {mapper_fn}; void {var_name};"
         ));
     }
 
@@ -117,7 +117,7 @@ fn ref_to_ts(r: &IrRef, ir: &IrRes) -> String {
             };
         }
     }
-    // Fallback: plain segments (shouldn't appear in hook I/O normally).
+    // Fallback: plain segments (shouldn't appear in mapper I/O normally).
     "unknown".to_string()
 }
 

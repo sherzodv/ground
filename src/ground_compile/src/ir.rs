@@ -5,7 +5,7 @@
 ///
 ///   `TypeId`   → `IrRes::types[id.0]`
 ///   `LinkId`   → `IrRes::links[id.0]`
-///   `FunId`    → `IrRes::funs[id.0]`
+///   `FunId`    → `IrRes::funs[id.0]` (resolved mapping entry)
 ///   `ScopeId`  → `IrRes::scopes[id.0]`  (`ScopeId(0)` is always the root)
 ///   `TypeFnId` → `IrRes::type_fns[id.0]`
 
@@ -73,7 +73,7 @@ pub enum IrRefSegValue {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScopeKind { Pack, Type }
+pub enum ScopeKind { Pack, Struct }
 
 /// `ScopeId(0)` is always the root scope.
 /// Separate maps per kind so types and links can share names in the same scope.
@@ -211,18 +211,18 @@ pub struct IrField {
     pub link_id: LinkId,
     pub name:    String,
     pub loc:     IrLoc,
-    pub via:     bool,   // true → pass pre-resolved (post-hook) value to enclosing hook
+    pub via:     bool,   // true → pass pre-resolved (post-mapper) value to enclosing mapper
     pub value:   IrValue,
 }
 
-/// A named program entity — unified representation for both root definitions and instances.
+/// A named mapping instance — unified representation for both root definitions and instances.
 ///
 /// `def boo`  → `parent: None`,          `type_id`: boo's own TypeId
 /// `boo b`    → `parent: Some(boo_id)`,  `type_id`: boo's TypeId
 /// `{ ... }`  → `parent: Some(type_id)`, `type_id`: the struct TypeId, `name`: "_"
 ///
-/// Hook fields are only populated for root definitions (`parent.is_none()`) that
-/// carry a TypeScript transformation: `def name { inputs } = hook_fn { outputs }`.
+/// Mapper fields are only populated for root definitions (`parent.is_none()`) that
+/// carry a TypeScript transformation: `def name { inputs } = mapper_fn { outputs }`.
 #[derive(Debug, Clone)]
 pub struct IrFunDef {
     pub type_id:   TypeId,
@@ -232,9 +232,9 @@ pub struct IrFunDef {
     pub scope:     ScopeId,
     pub loc:       IrLoc,
     pub fields:    Vec<IrField>,
-    pub hook_fn:   Option<String>,       // TS function name; None for non-hook funs
-    pub inputs:    Vec<LinkId>,          // input links (before `=` in hook def)
-    pub outputs:   Vec<LinkId>,          // output links (after `=` in hook def)
+    pub mapper_fn: Option<String>,       // TS function name; None for non-mapper defs
+    pub inputs:    Vec<LinkId>,          // input links (before `=` in mapper def)
+    pub outputs:   Vec<LinkId>,          // output links (after `=` in mapper def)
 }
 
 // ---------------------------------------------------------------------------

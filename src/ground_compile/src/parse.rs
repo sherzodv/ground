@@ -11,25 +11,6 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn name_ref(&self, name: &AstNode<String>) -> AstNode<AstRef> {
-        AstNode::new(
-            self.unit,
-            name.loc.start,
-            name.loc.end,
-            AstRef {
-                segments: vec![AstNode::new(
-                    self.unit,
-                    name.loc.start,
-                    name.loc.end,
-                    AstRefSeg {
-                        value: AstRefSegVal::Plain(name.inner.clone()),
-                        is_opt: false,
-                    },
-                )],
-            },
-        )
-    }
-
     fn new(src: &'a str, unit: u32) -> Self {
         Parser { src, pos: 0, unit, errors: Vec::new() }
     }
@@ -228,41 +209,18 @@ impl<'a> Parser<'a> {
         false
     }
 
-    // -- primitives ------------------------------------------------------
-
-    fn parse_primitive(&mut self) -> Option<AstNode<AstPrimitive>> {
-        let start = self.pos;
-        let p = if self.at_keyword("string") {
-            self.advance("string".len()); AstPrimitive::String
-        } else if self.at_keyword("integer") {
-            self.advance("integer".len()); AstPrimitive::Integer
-        } else if self.at_keyword("reference") {
-            self.advance("reference".len()); AstPrimitive::Reference
-        } else {
-            return None;
-        };
-        Some(self.node(start, p))
-    }
-
     // -- type expressions (link bodies, list elements) -------------------
 
-    /// `primitive | type-def | "[" type-expr "]" | ref ("|" ref)*`
+    /// `type-def | "[" type-expr "]" | ref ("|" ref)*`
     ///
-    /// Always returns an anonymous `AstTypeDef`; a union of refs desugars to `Enum`.
-    fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeDef>> {
+    /// Always returns a pure type expression; a union of refs desugars to `Enum`.
+    fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
         let start = self.pos;
 
         // `unit` is syntax sugar for the empty struct.
         if self.at_keyword("unit") {
             self.advance("unit".len());
-            let body = self.node(start, AstTypeDefBody::Struct(vec![]));
-            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
-        }
-
-        // Primitive
-        if let Some(prim) = self.parse_primitive() {
-            let body = self.node(start, AstTypeDefBody::Primitive(prim.inner));
-            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
+            return Some(self.node(start, AstTypeExpr::Unit));
         }
 
         // List: "[" type-expr "]"
@@ -274,15 +232,14 @@ impl<'a> Parser<'a> {
             if !self.eat("]") {
                 self.push_error(self.pos, "expected ']' after list type");
             }
-            let body = self.node(start, AstTypeDefBody::List(Box::new(inner)));
-            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
+            return Some(self.node(start, AstTypeExpr::List(Box::new(inner))));
         }
 
         // Struct body: "{" struct_items "}" — used for anonymous inline struct types in fields
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let body = self.node(start, AstTypeDefBody::Struct(items));
-            return Some(self.node(start, AstTypeDef { name: None, body, scope: None }));
+            let expr = if items.is_empty() { AstTypeExpr::Unit } else { AstTypeExpr::Struct(items) };
+            return Some(self.node(start, expr));
         }
 
         // Ref or sugar enum: ref ("|" ref)*
@@ -304,34 +261,10 @@ impl<'a> Parser<'a> {
 
         if refs.len() == 1 {
             let r = refs.remove(0);
-            let body = self.node(start, AstTypeDefBody::Ref(r.inner));
-            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
+            Some(self.node(start, AstTypeExpr::Ref(r.inner)))
         } else {
-            let body = self.node(start, AstTypeDefBody::Enum(refs));
-            Some(self.node(start, AstTypeDef { name: None, body, scope: None }))
+            Some(self.node(start, AstTypeExpr::Enum(refs)))
         }
-    }
-
-    // -- type body -------------------------------------------------------
-
-    /// `ref ("|" ref)*` — items are full refs, supporting multi-segment paths such as `type:foo`.
-    fn parse_enum_body(&mut self) -> Option<Vec<AstNode<AstRef>>> {
-        let first = self.parse_ref()?;
-        let mut items = vec![first];
-        loop {
-            let saved = self.pos;
-            self.skip_ws();
-            if self.eat("|") {
-                self.skip_ws();
-                if let Some(r) = self.parse_ref() {
-                    items.push(r);
-                    continue;
-                }
-            }
-            self.pos = saved;
-            break;
-        }
-        Some(items)
     }
 
     fn parse_struct_item(&mut self) -> Option<AstNode<AstStructItem>> {
@@ -600,9 +533,9 @@ impl<'a> Parser<'a> {
                 }
             }
             self.eat("}");
-            defs
+            Some(defs)
         } else {
-            vec![]
+            None
         };
         Some(self.node(start, AstPack { path, defs }))
     }
@@ -686,29 +619,9 @@ impl<'a> Parser<'a> {
         fields
     }
 
-    /// Parse `"{" (inst_item)* "}"` — a brace block of value fields (`:` syntax).
-    fn parse_value_body(&mut self) -> Vec<AstNode<AstField>> {
-        let mut fields = Vec::new();
-        if !self.eat("{") { return fields; }
-        loop {
-            self.skip_ws();
-            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
-            if let Some(item) = self.parse_inst_item() {
-                fields.push(item);
-            } else {
-                self.push_error(self.pos, format!(
-                    "unexpected token in instance body: {:?}", self.peek()
-                ));
-                self.skip_past_line();
-            }
-        }
-        self.eat("}");
-        fields
-    }
-
     /// After consuming `=` in a `def`-keyword form, parse the output:
     ///   - `{` struct body → `Struct`
-    ///   - `ref {` hook ref + struct body → `Struct` (with hook ref)
+    ///   - `ref {` mapper ref + struct body → `Struct` (with mapper ref)
     ///   - anything else → `TypeExpr`
     fn parse_after_eq(&mut self) -> (Option<AstNode<AstRef>>, AstNode<AstDefO>) {
         let start = self.pos;
@@ -716,18 +629,20 @@ impl<'a> Parser<'a> {
         // Direct struct body
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            return (None, self.node(start, AstDefO::Struct(items)));
+            let output = if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) };
+            return (None, self.node(start, output));
         }
 
-        // Try hook ref immediately followed (with optional ws) by `{`
+        // Try mapper ref immediately followed (with optional ws) by `{`
         let saved = self.pos;
-        if let Some(hook_ref) = self.parse_ref() {
+        if let Some(mapper_ref) = self.parse_ref() {
             self.skip_ws();
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                return (Some(hook_ref), self.node(start, AstDefO::Struct(items)));
+                let output = if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) };
+                return (Some(mapper_ref), self.node(start, output));
             }
-            self.pos = saved; // not a hook — backtrack
+            self.pos = saved; // not a mapper — backtrack
         }
 
         // Type expression (ref, enum, list, primitive)
@@ -739,7 +654,7 @@ impl<'a> Parser<'a> {
         (None, self.node(start, AstDefO::Struct(vec![])))
     }
 
-    /// `"def" ident input? ("=" hook? output)?`
+    /// `"def" ident input? ("=" mapper? output)?`
     fn parse_top_def_with_keyword(&mut self) -> Option<AstNode<AstDef>> {
         let start = self.pos;
         if !self.at_keyword("def") { return None; }
@@ -761,18 +676,17 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         let output_start = self.pos;
-        let (hook_opt, output) = if self.eat("=") {
+        let (mapper_opt, output) = if self.eat("=") {
             self.skip_ws();
             self.parse_after_eq()
         } else {
-            (None, self.node(output_start, AstDefO::Struct(vec![])))
+            (None, self.node(output_start, AstDefO::Unit))
         };
 
-        let hook = hook_opt.unwrap_or_else(|| self.name_ref(&name));
         Some(self.node(start, AstDef {
             name,
             input,
-            hook,
+            mapper: mapper_opt,
             output,
         }))
     }
@@ -784,9 +698,12 @@ impl<'a> Parser<'a> {
     ///   - `ref "{" struct-items "}"` → `Def[name, ref, unit, Struct[...]]`
     ///   - type-expr (ref, enum, list, primitive) → `TypeExpr` (type alias)
     ///
-    /// Shorthand explicit-hook def forms:
-    ///   - `ident hook "{" struct-items "}"` → `Def[name, hook, unit, Struct[...]]`
-    ///   - `ident hook` → `Def[name, hook, unit, unit]`
+    /// Shorthand explicit-mapper def forms:
+    ///   - `ident mapper "{" struct-items "}"` → `Def[name, mapper, unit, Struct[...]]`
+    ///   - `ident mapper` → `Def[name, mapper, unit, unit]`
+    ///
+    /// Shorthand initial def form:
+    ///   - `ident "{" field-def* "}"` → `Def[name, name, Input[...], unit]`
     ///
     /// Returns None (backtracking fully) when the input is not a keyword-free def.
     fn parse_top_def_no_keyword(&mut self) -> Option<AstNode<AstDef>> {
@@ -805,27 +722,37 @@ impl<'a> Parser<'a> {
         };
         self.skip_ws();
 
-        let hook = self.name_ref(&name);
+        if self.rest().starts_with('{') {
+            let input = self.parse_field_block();
+            let output = self.node(self.pos, AstDefO::Unit);
+            return Some(self.node(start, AstDef {
+                name,
+                input,
+                mapper: None,
+                output,
+            }));
+        }
 
         if !self.eat("=") {
-            let hook_saved = self.pos;
-            if let Some(hook_name) = self.parse_ref() {
+            let mapper_saved = self.pos;
+            if let Some(mapper_name) = self.parse_ref() {
                 self.skip_ws();
                 let out_start = self.pos;
                 let output = if self.rest().starts_with('{') {
                     let items = self.parse_struct_body().unwrap_or_default();
-                    self.node(out_start, AstDefO::Struct(items))
+                    let output = if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) };
+                    self.node(out_start, output)
                 } else {
-                    self.node(out_start, AstDefO::Struct(vec![]))
+                    self.node(out_start, AstDefO::Unit)
                 };
                 return Some(self.node(start, AstDef {
                     name,
                     input: vec![],
-                    hook: hook_name,
+                    mapper: Some(mapper_name),
                     output,
                 }));
             }
-            self.pos = hook_saved;
+            self.pos = mapper_saved;
             self.pos = saved;
             return None;
         }
@@ -836,27 +763,27 @@ impl<'a> Parser<'a> {
         // Direct struct body: `name = { field = type ... }` — type alias
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let output = self.node(out_start, AstDefO::Struct(items));
+            let output = self.node(out_start, if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) });
             return Some(self.node(start, AstDef {
                 name,
                 input: vec![],
-                hook,
+                mapper: None,
                 output,
             }));
         }
 
-        // Try explicit hook ref: `name = ref_expr { ... }`
+        // Try explicit mapper ref: `name = ref_expr { ... }`
         let ref_saved = self.pos;
         if let Some(ref_node) = self.parse_ref() {
             self.skip_ws();
-            // If followed by `{`, this is a def with explicit hook ref and struct body.
+            // If followed by `{`, this is a def with explicit mapper ref and struct body.
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                let output = self.node(out_start, AstDefO::Struct(items));
+                let output = self.node(out_start, if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) });
                 return Some(self.node(start, AstDef {
                     name,
                     input: vec![],
-                    hook: ref_node,
+                    mapper: Some(ref_node),
                     output,
                 }));
             }
@@ -869,7 +796,7 @@ impl<'a> Parser<'a> {
             return Some(self.node(start, AstDef {
                 name,
                 input: vec![],
-                hook,
+                mapper: None,
                 output,
             }));
         }
@@ -879,7 +806,7 @@ impl<'a> Parser<'a> {
         Some(self.node(start, AstDef {
             name,
             input: vec![],
-            hook,
+            mapper: None,
             output,
         }))
     }
@@ -982,6 +909,97 @@ fn find_or_create_scope(scopes: &mut Vec<AstScope>, name: &str, parent: AstScope
     id
 }
 
+fn find_or_create_struct_scope(scopes: &mut Vec<AstScope>, name: &AstNode<String>, parent: AstScopeId) -> AstScopeId {
+    for (i, scope) in scopes.iter().enumerate() {
+        if scope.parent == Some(parent)
+            && scope.kind == ScopeKind::Struct
+            && scope.name.as_ref().map(|n| n.inner.as_str()) == Some(name.inner.as_str())
+        {
+            return AstScopeId(i as u32);
+        }
+    }
+    let id = AstScopeId(scopes.len() as u32);
+    scopes.push(AstScope {
+        kind: ScopeKind::Struct,
+        name: Some(name.clone()),
+        parent: Some(parent),
+        defs: vec![],
+    });
+    id
+}
+
+fn hoist_nested_defs_from_items(items: &mut Vec<AstNode<AstStructItem>>) -> Vec<AstItem> {
+    let mut hoisted = Vec::new();
+    items.retain(|item| {
+        if let AstStructItem::Def(td) = &item.inner {
+            hoisted.push(AstItem::Def(td.clone()));
+            false
+        } else {
+            true
+        }
+    });
+    hoisted
+}
+
+fn hoist_nested_defs_in_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId) {
+    let defs_len = scopes[scope_id.0 as usize].defs.len();
+    for def_idx in 0..defs_len {
+        let mut hoisted = Vec::new();
+        let mut parent_name: Option<AstNode<String>> = None;
+
+        {
+            let scope = &mut scopes[scope_id.0 as usize];
+            if let Some(AstItem::Def(td)) = scope.defs.get_mut(def_idx) {
+                parent_name = Some(td.inner.name.clone());
+                if let AstDefO::Struct(items) = &mut td.inner.output.inner {
+                    hoisted = hoist_nested_defs_from_items(items);
+                    if items.is_empty() {
+                        td.inner.output.inner = AstDefO::Unit;
+                    }
+                }
+            }
+        }
+
+        if !hoisted.is_empty() {
+            let struct_scope_id = find_or_create_struct_scope(scopes, &parent_name.unwrap(), scope_id);
+            scopes[struct_scope_id.0 as usize].defs.extend(hoisted);
+        }
+    }
+
+    let child_scope_ids: Vec<AstScopeId> = scopes.iter().enumerate()
+        .filter_map(|(i, s)| (s.parent == Some(scope_id)).then_some(AstScopeId(i as u32)))
+        .collect();
+    for child_id in child_scope_ids {
+        hoist_nested_defs_in_scope(scopes, child_id);
+    }
+}
+
+fn find_or_create_pack_path(scopes: &mut Vec<AstScope>, path: &AstRef, parent: AstScopeId) -> AstScopeId {
+    let mut cur = parent;
+    for seg in &path.segments {
+        let Some(name) = seg.inner.as_plain() else { continue; };
+        cur = find_or_create_scope(scopes, name, cur);
+    }
+    cur
+}
+
+fn materialize_items_into_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId, items: Vec<AstItem>) {
+    let mut active_scope = scope_id;
+    for item in items {
+        match item {
+            AstItem::Pack(pack_node) => {
+                let pack_scope = find_or_create_pack_path(scopes, &pack_node.inner.path.inner, active_scope);
+                if let Some(defs) = pack_node.inner.defs {
+                    materialize_items_into_scope(scopes, pack_scope, defs);
+                } else {
+                    active_scope = pack_scope;
+                }
+            }
+            other => scopes[active_scope.0 as usize].defs.push(other),
+        }
+    }
+}
+
 pub fn parse(req: ParseReq) -> ParseRes {
     let root = AstScope { kind: ScopeKind::Pack, name: None, parent: None, defs: vec![] };
     let mut scopes = vec![root];
@@ -1003,9 +1021,10 @@ pub fn parse(req: ParseReq) -> ParseRes {
         unit_ts_srcs.push(unit.ts_src.clone());
 
         let mut p = Parser::new(&unit.src, unit_idx as u32);
-        let defs = p.parse_system();
+        let items = p.parse_system();
         errors.extend(p.errors);
-        scopes[leaf_id.0 as usize].defs.extend(defs);
+        materialize_items_into_scope(&mut scopes, leaf_id, items);
+        hoist_nested_defs_in_scope(&mut scopes, leaf_id);
     }
 
     ParseRes { scopes, errors, unit_scope_ids, unit_ts_srcs }

@@ -73,21 +73,21 @@ pub enum AstPrimitive { String, Integer, Reference }
 // Unified def node — the central construct of the language
 // ---------------------------------------------------------------------------
 
-/// A named def — covers type aliases, bare unit types, hook transformations, and instances.
+/// A named mapping — covers type aliases, bare unit types, mapper-backed transforms, and instances.
 ///
 /// Forms:
 ///   `name = type_expr`                         — type alias
 ///   `def name`                                 — bare entity def
-///   `def name { input } = { output }`          — def with canonical hook name = `name`
-///   `def name { input } = hookname { output }` — def with explicit hook name
-///   `name = hook_ref { output }`               — def with explicit hook and output body
-///   `name hook { output }`                     — shorthand def with explicit hook
-///   `name hook`                                — shorthand def with explicit hook and unit output
+///   `def name { input } = { output }`          — def with implicit mapper name = `name`
+///   `def name { input } = mapper { output }`   — def with explicit mapper name
+///   `name = mapper_ref { output }`             — def with explicit mapper and output body
+///   `name mapper { output }`                   — shorthand def with explicit mapper
+///   `name mapper`                              — shorthand def with explicit mapper and unit output
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstDef {
     pub name:    AstNode<String>,
     pub input:   Vec<AstNode<AstDefI>>,        // fields before `=`; empty for simple defs
-    pub hook:    AstNode<AstRef>,              // canonical hook ref; defaults to the def name
+    pub mapper:  Option<AstNode<AstRef>>,      // explicit mapper ref when it appears in source
     pub output:  AstNode<AstDefO>,
 }
 
@@ -95,15 +95,15 @@ pub struct AstDef {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstDefO {
     Unit,                                     // bare `def name` or `name` with no `=`
-    TypeExpr(AstNode<AstTypeDef>),            // `= type_expr`
-    Struct(Vec<AstNode<AstStructItem>>),      // `= hook? { struct_items }`
+    TypeExpr(AstNode<AstTypeExpr>),           // `= type_expr`
+    Struct(Vec<AstNode<AstStructItem>>),      // `= mapper? { struct_items }`
 }
 
 /// Input field declaration inside a def input block or struct output body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstDefI {
     pub name: Option<AstNode<String>>,        // None for anonymous `= type_expr`
-    pub ty:   AstNode<AstTypeDef>,
+    pub ty:   AstNode<AstTypeExpr>,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ pub struct AstDefI {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstPack {
     pub path: AstNode<AstRef>,
-    pub defs: Vec<AstItem>,                   // empty for bare file-level `pack std:aws`
+    pub defs: Option<Vec<AstItem>>,           // None for bare file-level `pack std:aws`
 }
 
 /// `plan name` or `plan name { fields }` — resolution trigger.
@@ -129,7 +129,7 @@ pub struct AstPlan {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AstTypeDefBody {
+pub enum AstTypeExpr {
     /// Unit: bare `def name` or `name` with no rhs
     Unit,
     /// Built-in scalar: `string` | `integer` | `reference`
@@ -140,17 +140,8 @@ pub enum AstTypeDefBody {
     Enum(Vec<AstNode<AstRef>>),
     /// Struct body: `{ field … }` — field items
     Struct(Vec<AstNode<AstStructItem>>),
-    /// List whose element type is described by the inner `AstTypeDef`: `[ … ]`
-    List(Box<AstNode<AstTypeDef>>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AstTypeDef {
-    pub name:   Option<AstNode<String>>,
-    pub body:   AstNode<AstTypeDefBody>,
-    /// Populated by the parse pass for named struct types: the `ScopeKind::Type`
-    /// scope that holds this struct's inline type definitions.
-    pub scope:  Option<AstScopeId>,
+    /// List whose element type is described by the inner `AstTypeExpr`: `[ … ]`
+    List(Box<AstNode<AstTypeExpr>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +154,8 @@ pub enum AstStructItem {
     Field(AstNode<AstStructField>),
     /// Anonymous value item inside a struct body.
     Anon(AstNode<AstValue>),
-    /// `def name = type_expr` — nested named def inside a struct body
+    /// Temporary nested named def inside a struct body; the parse pass hoists these
+    /// into an adjacent `ScopeKind::Struct` scope before returning the final AST.
     Def(AstNode<AstDef>),
 }
 
@@ -175,7 +167,7 @@ pub enum AstStructFieldKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstStructFieldBody {
-    Type(AstNode<AstTypeDef>),
+    Type(AstNode<AstTypeExpr>),
     Value(AstNode<AstValue>),
 }
 
@@ -213,7 +205,7 @@ pub enum AstField {
 pub struct AstScopeId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ScopeKind { Pack, Type }
+pub enum ScopeKind { Pack, Struct }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstScope {

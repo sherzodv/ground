@@ -30,7 +30,7 @@ fn basic_002() {
         norm(
             r##"
             Scope[pack:test,
-                Def[x, x, unit, Enum[Ref(a) | Ref(b)]],
+                Def[x, _, unit, Enum[Ref(a) | Ref(b)]],
             ]
         "##
         ),
@@ -48,7 +48,7 @@ fn enum_001() {
         norm(
             r##"
             Scope[pack:test,
-                Def[zone, zone, unit, Enum[Ref(1) | Ref(2) | Ref(3) | Ref(4) | Ref(5)]],
+                Def[zone, _, unit, Enum[Ref(1) | Ref(2) | Ref(3) | Ref(4) | Ref(5)]],
             ]
         "##
         ),
@@ -62,7 +62,7 @@ fn enum_002() {
         norm(
             r##"
             Scope[pack:test,
-                Def[region, region, unit, Enum[Ref(eu-central) | Ref(eu-west) | Ref(us-east) | Ref(us-west) | Ref(ap-southeast)]],
+                Def[region, _, unit, Enum[Ref(eu-central) | Ref(eu-west) | Ref(us-east) | Ref(us-west) | Ref(ap-southeast)]],
             ]
         "##
         ),
@@ -76,7 +76,7 @@ fn enum_003() {
         norm(
             r##"
             Scope[pack:test,
-                Def[boo, boo, unit, Enum[Ref(type:foo) | Ref(type:goo)]],
+                Def[boo, _, unit, Enum[Ref(type:foo) | Ref(type:goo)]],
             ]
         "##
         ),
@@ -90,7 +90,7 @@ fn enum_004() {
         norm(
             r##"
             Scope[pack:test,
-                Def[boo, boo, unit, Enum[Ref(plain) | Ref(type:foo)]],
+                Def[boo, _, unit, Enum[Ref(plain) | Ref(type:foo)]],
             ]
         "##
         ),
@@ -104,7 +104,7 @@ fn def_001() {
         norm(
             r##"
             Scope[pack:test,
-                Def[database, database, unit, unit],
+                Def[database, _, unit, unit],
             ]
         "##
         ),
@@ -118,7 +118,7 @@ fn def_002() {
         norm(
             r##"
             Scope[pack:test,
-                Def[database, database, unit, unit],
+                Def[database, _, unit, unit],
             ]
         "##
         ),
@@ -132,7 +132,7 @@ fn def_003() {
         norm(
             r##"
             Scope[pack:test,
-                Def[database, database, unit, unit],
+                Def[database, _, unit, unit],
             ]
         "##
         ),
@@ -147,7 +147,7 @@ fn def_004() {
         norm(
             r##"
             Scope[pack:test,
-                Def[database, database, unit, unit],
+                Def[database, _, unit, unit],
             ]
         "##
         ),
@@ -161,7 +161,7 @@ fn struct_001() {
         norm(
             r##"
             Scope[pack:test,
-                Def[database, database, unit, Struct[FieldDef[engine, Type[_, Primitive(string)]]]],
+                Def[database, _, unit, Struct[FieldDef[engine, Type[_, Ref(string)]]]],
             ]
         "##
         ),
@@ -175,7 +175,7 @@ fn struct_002() {
         norm(
             r##"
             Scope[pack:test,
-                Def[database, database, unit, Struct[FieldDef[manage, Type[_, Enum[Ref(self) | Ref(provider) | Ref(cloud)]]]]],
+                Def[database, _, unit, Struct[FieldDef[manage, Type[_, Enum[Ref(self) | Ref(provider) | Ref(cloud)]]]]],
             ]
         "##
         ),
@@ -189,7 +189,7 @@ fn struct_003() {
         norm(
             r##"
             Scope[pack:test,
-                Def[stack, stack, unit, Struct[FieldDef[_, Type[_, Enum[Ref(service) | Ref(database)]]]]],
+                Def[stack, _, unit, Struct[FieldDef[_, Type[_, Enum[Ref(service) | Ref(database)]]]]],
             ]
         "##
         ),
@@ -203,7 +203,10 @@ fn struct_004() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[Def[port, port, unit, Enum[Ref(grpc) | Ref(http)]]]],
+                Def[service, _, unit, unit],
+                Scope[struct:service,
+                    Def[port, _, unit, Enum[Ref(grpc) | Ref(http)]],
+                ],
             ]
         "##
         ),
@@ -226,7 +229,7 @@ fn struct_005() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[FieldDef[image, Type[_, Primitive(reference)]], FieldDef[scaling, Type[_, Struct[FieldDef[min, Type[_, Primitive(integer)]]]]]]],
+                Def[service, _, unit, Struct[FieldDef[image, Type[_, Ref(reference)]], FieldDef[scaling, Type[_, Struct[FieldDef[min, Type[_, Ref(integer)]]]]]]],
             ]
         "##
         ),
@@ -234,37 +237,17 @@ fn struct_005() {
 }
 
 // ---------------------------------------------------------------------------
-// Fields
+// Top-Level Alias Forms
 // ---------------------------------------------------------------------------
 
 #[test]
-fn field_001() {
+fn alias_001() {
     assert_eq!(
         show("image = reference"),
         norm(
             r##"
             Scope[pack:test,
-                Def[image, image, unit, Primitive(reference)],
-            ]
-        "##
-        ),
-    );
-    assert_eq!(
-        show("count = integer"),
-        norm(
-            r##"
-            Scope[pack:test,
-                Def[count, count, unit, Primitive(integer)],
-            ]
-        "##
-        ),
-    );
-    assert_eq!(
-        show("label = string"),
-        norm(
-            r##"
-            Scope[pack:test,
-                Def[label, label, unit, Primitive(string)],
+                Def[image, _, unit, Ref(reference)],
             ]
         "##
         ),
@@ -272,13 +255,13 @@ fn field_001() {
 }
 
 #[test]
-fn field_002() {
+fn alias_002() {
     assert_eq!(
         show("engine = postgresql"),
         norm(
             r##"
             Scope[pack:test,
-                Def[engine, engine, unit, Ref(postgresql)],
+                Def[engine, _, unit, Ref(postgresql)],
             ]
         "##
         ),
@@ -286,13 +269,13 @@ fn field_002() {
 }
 
 #[test]
-fn field_003() {
+fn alias_003() {
     assert_eq!(
         show("manage = self | provider | cloud"),
         norm(
             r##"
             Scope[pack:test,
-                Def[manage, manage, unit, Enum[Ref(self) | Ref(provider) | Ref(cloud)]],
+                Def[manage, _, unit, Enum[Ref(self) | Ref(provider) | Ref(cloud)]],
             ]
         "##
         ),
@@ -300,13 +283,13 @@ fn field_003() {
 }
 
 #[test]
-fn field_004() {
+fn alias_004() {
     assert_eq!(
         show("access = [ service ]"),
         norm(
             r##"
             Scope[pack:test,
-                Def[access, access, unit, List[Type[_, Ref(service)]]],
+                Def[access, _, unit, List[Type[_, Ref(service)]]],
             ]
         "##
         ),
@@ -314,13 +297,13 @@ fn field_004() {
 }
 
 #[test]
-fn field_005() {
+fn alias_005() {
     assert_eq!(
         show("access = [ service | database ]"),
         norm(
             r##"
             Scope[pack:test,
-                Def[access, access, unit, List[Type[_, Enum[Ref(service) | Ref(database)]]]],
+                Def[access, _, unit, List[Type[_, Enum[Ref(service) | Ref(database)]]]],
             ]
         "##
         ),
@@ -328,13 +311,13 @@ fn field_005() {
 }
 
 #[test]
-fn field_006() {
+fn alias_006() {
     assert_eq!(
         show("access = [ service:(port) | database ]"),
         norm(
             r##"
             Scope[pack:test,
-                Def[access, access, unit, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]],
+                Def[access, _, unit, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]],
             ]
         "##
         ),
@@ -342,13 +325,13 @@ fn field_006() {
 }
 
 #[test]
-fn field_007() {
+fn alias_007() {
     assert_eq!(
         show("region = type:region:type:zone"),
         norm(
             r##"
             Scope[pack:test,
-                Def[region, region, unit, Ref(type:region:type:zone)],
+                Def[region, _, unit, Ref(type:region:type:zone)],
             ]
         "##
         ),
@@ -356,13 +339,13 @@ fn field_007() {
 }
 
 #[test]
-fn field_008() {
+fn alias_008() {
     assert_eq!(
         show("scaling = { min = integer  max = integer }"),
         norm(
             r##"
             Scope[pack:test,
-                Def[scaling, scaling, unit, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]],
+                Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
             ]
         "##
         ),
@@ -380,7 +363,7 @@ fn ref_001() {
         norm(
             r##"
             Scope[pack:test,
-                Def[foo, foo, unit, Ref(svc:grpc?)],
+                Def[foo, _, unit, Ref(svc:grpc?)],
             ]
         "##
         ),
@@ -492,11 +475,11 @@ fn ref_008() {
 }
 
 // ---------------------------------------------------------------------------
-// Explicit Hook Defs
+// Explicit Mapper Defs
 // ---------------------------------------------------------------------------
 
 #[test]
-fn hook_003() {
+fn mapper_003() {
     assert_eq!(
         show("api service { image: api:prod }"),
         norm(
@@ -510,7 +493,7 @@ fn hook_003() {
 }
 
 #[test]
-fn hook_004() {
+fn mapper_004() {
     assert_eq!(
         show("api service"),
         norm(
@@ -524,7 +507,7 @@ fn hook_004() {
 }
 
 #[test]
-fn hook_005() {
+fn mapper_005() {
     assert_eq!(
         show("svc-api = service {}"),
         norm(
@@ -538,13 +521,13 @@ fn hook_005() {
 }
 
 #[test]
-fn hook_006() {
+fn mapper_006() {
     assert_eq!(
         show("svc-api = service"),
         norm(
             r##"
             Scope[pack:test,
-                Def[svc-api, svc-api, unit, Ref(service)],
+                Def[svc-api, _, unit, Ref(service)],
             ]
         "##
         ),
@@ -552,13 +535,13 @@ fn hook_006() {
 }
 
 #[test]
-fn hook_006a() {
+fn mapper_006a() {
     assert_eq!(
         show("def svc-api = service"),
         norm(
             r##"
             Scope[pack:test,
-                Def[svc-api, svc-api, unit, Ref(service)],
+                Def[svc-api, _, unit, Ref(service)],
             ]
         "##
         ),
@@ -566,7 +549,7 @@ fn hook_006a() {
 }
 
 #[test]
-fn hook_007() {
+fn mapper_007() {
     assert_eq!(
         show("svc-api = service { image: svc-api:prod }"),
         norm(
@@ -580,7 +563,7 @@ fn hook_007() {
 }
 
 #[test]
-fn hook_008() {
+fn mapper_008() {
     assert_eq!(
         show("svc-api = service { image: svc-api:prod  port: grpc }"),
         norm(
@@ -594,7 +577,7 @@ fn hook_008() {
 }
 
 #[test]
-fn hook_009() {
+fn mapper_009() {
     assert_eq!(
         show(r##"svc = service { label: "hello world" }"##),
         norm(
@@ -608,7 +591,7 @@ fn hook_009() {
 }
 
 #[test]
-fn hook_010() {
+fn mapper_010() {
     assert_eq!(
         show("svc = service { zone: 5 }"),
         norm(
@@ -622,7 +605,7 @@ fn hook_010() {
 }
 
 #[test]
-fn hook_011() {
+fn mapper_011() {
     assert_eq!(
         show("svc = service { access: [ svc-b svc-c ] }"),
         norm(
@@ -636,7 +619,7 @@ fn hook_011() {
 }
 
 #[test]
-fn hook_012() {
+fn mapper_012() {
     assert_eq!(
         show(
             r##"
@@ -648,8 +631,8 @@ fn hook_012() {
         norm(
             r##"
             Scope[pack:test,
-                Def[scaling, scaling, unit, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]],
-                Def[svc, svc, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
+                Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                Def[svc, _, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
                 Def[my-svc, svc, unit, Struct[FieldSet[scaling, Struct[Field[min, Ref(1)], Field[max, Ref(10)]]]]],
             ]
         "##
@@ -658,7 +641,7 @@ fn hook_012() {
 }
 
 #[test]
-fn hook_013() {
+fn mapper_013() {
     assert_eq!(
         show(
             r##"
@@ -671,8 +654,8 @@ fn hook_013() {
         norm(
             r##"
             Scope[pack:test,
-                Def[scaling, scaling, unit, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]],
-                Def[svc, svc, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
+                Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                Def[svc, _, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
                 Def[my-scaling, scaling, unit, Struct[FieldSet[min, Ref(1)], FieldSet[max, Ref(10)]]],
                 Def[my-svc, svc, unit, Struct[FieldSet[scaling, Ref(my-scaling)]]],
             ]
@@ -682,7 +665,7 @@ fn hook_013() {
 }
 
 #[test]
-fn hook_014() {
+fn mapper_014() {
     // Space-separated items → two separate Anon fields, each a plain Ref.
     assert_eq!(
         show("my-stack = stack { svc-a  svc-b }"),
@@ -697,7 +680,7 @@ fn hook_014() {
 }
 
 #[test]
-fn hook_015() {
+fn mapper_015() {
     // Bracket-wrapped items → single Anon field containing a List value.
     assert_eq!(
         show("my-stack = stack { [ svc-a  svc-b ] }"),
@@ -712,7 +695,7 @@ fn hook_015() {
 }
 
 #[test]
-fn hook_016() {
+fn mapper_016() {
     // Parser does not deduplicate — both Field entries are preserved as-is.
     assert_eq!(
         show(r##"my-db = db { engine: "pg"  engine: "mysql" }"##),
@@ -727,7 +710,7 @@ fn hook_016() {
 }
 
 #[test]
-fn hook_017() {
+fn mapper_017() {
     // Space-separated bare refs each become a separate Anon — no deduplication.
     assert_eq!(
         show(r##"my-stack = stack { svc-a  svc-a }"##),
@@ -742,7 +725,7 @@ fn hook_017() {
 }
 
 #[test]
-fn hook_018() {
+fn mapper_018() {
     assert_eq!(
         show(
             r##"
@@ -754,8 +737,8 @@ fn hook_018() {
         norm(
             r##"
             Scope[pack:test,
-                Def[scaling, scaling, unit, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]],
-                Def[svc, svc, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
+                Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                Def[svc, _, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
                 Def[my-svc, svc, unit, Struct[FieldSet[scaling, Struct[Hint(type:scaling), Field[min, Ref(2)], Field[max, Ref(10)]]]]],
             ]
         "##
@@ -764,7 +747,7 @@ fn hook_018() {
 }
 
 #[test]
-fn hook_019() {
+fn mapper_019() {
     // Hint without type: prefix is also valid
     assert_eq!(
         show(
@@ -777,8 +760,8 @@ fn hook_019() {
         norm(
             r##"
             Scope[pack:test,
-                Def[scaling, scaling, unit, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]],
-                Def[svc, svc, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
+                Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                Def[svc, _, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
                 Def[my-svc, svc, unit, Struct[FieldSet[scaling, Struct[Hint(scaling), Field[min, Ref(2)], Field[max, Ref(10)]]]]],
             ]
         "##
@@ -787,7 +770,7 @@ fn hook_019() {
 }
 
 #[test]
-fn hook_020() {
+fn mapper_020() {
     // Brace-group refs inside a list inside a nested struct body
     assert_eq!(
         show("my-svc = svc { cfg: { ids: [{sg:id}] } }"),
@@ -802,7 +785,7 @@ fn hook_020() {
 }
 
 #[test]
-fn hook_021() {
+fn mapper_021() {
     // List element that is a brace-group ref with a trailing plain atom
     assert_eq!(
         show("my-svc = svc { names: [{this:name}-sg] }"),
@@ -817,7 +800,7 @@ fn hook_021() {
 }
 
 #[test]
-fn hook_022() {
+fn mapper_022() {
     // Type hint on a struct that is itself a field value inside an outer hinted struct
     assert_eq!(
         show("my-svc = svc { outer: outer_type { inner: inner_type { x: 1 } } }"),
@@ -918,7 +901,7 @@ fn use_006() {
             r##"
             Scope[pack:test,
                 Use[pack:std:type:service],
-                Def[stack, stack, unit, Struct[FieldDef[name, Type[_, Primitive(string)]]]],
+                Def[stack, _, unit, Struct[FieldDef[name, Type[_, Ref(string)]]]],
             ]
         "##
         ),
@@ -979,10 +962,10 @@ fn scope_001() {
             r##"
             Scope[pack:infra,
                 Scope[pack:web,
-                    Def[image, image, unit, Primitive(reference)],
+                    Def[image, _, unit, Ref(reference)],
                 ],
                 Scope[pack:db,
-                    Def[engine, engine, unit, Primitive(string)],
+                    Def[engine, _, unit, Ref(string)],
                 ],
             ]
         "##
@@ -1021,12 +1004,15 @@ fn integration_001() {
         norm(
             r##"
             Scope[pack:test,
-                Def[zone, zone, unit, Enum[Ref(1) | Ref(2) | Ref(3) | Ref(4) | Ref(5)]],
-                Def[region, region, unit, Enum[Ref(eu-central) | Ref(eu-west) | Ref(us-east) | Ref(us-west) | Ref(ap-southeast)]],
-                Def[access, access, unit, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]],
-                Def[database, database, unit, Struct[FieldDef[manage, Type[_, Enum[Ref(self) | Ref(provider) | Ref(cloud)]]], FieldDef[engine, Type[_, Enum[Ref(postgresql) | Ref(mongodb)]]], FieldDef[version, Type[_, Primitive(string)]]]],
-                Def[service, service, unit, Struct[Def[port, port, unit, Enum[Ref(grpc) | Ref(http)]], FieldDef[image, Type[_, Primitive(reference)]], FieldDef[access, Type[_, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]]], FieldDef[scaling, Type[_, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]]]]],
-                Def[region_path, region_path, unit, Ref(type:region:type:zone)],
+                Def[zone, _, unit, Enum[Ref(1) | Ref(2) | Ref(3) | Ref(4) | Ref(5)]],
+                Def[region, _, unit, Enum[Ref(eu-central) | Ref(eu-west) | Ref(us-east) | Ref(us-west) | Ref(ap-southeast)]],
+                Def[access, _, unit, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]],
+                Def[database, _, unit, Struct[FieldDef[manage, Type[_, Enum[Ref(self) | Ref(provider) | Ref(cloud)]]], FieldDef[engine, Type[_, Enum[Ref(postgresql) | Ref(mongodb)]]], FieldDef[version, Type[_, Ref(string)]]]],
+                Def[service, _, unit, Struct[FieldDef[image, Type[_, Ref(reference)]], FieldDef[access, Type[_, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]]], FieldDef[scaling, Type[_, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]]]]],
+                Def[region_path, _, unit, Ref(type:region:type:zone)],
+                Scope[struct:service,
+                    Def[port, _, unit, Enum[Ref(grpc) | Ref(http)]],
+                ],
             ]
         "##
         ),
@@ -1055,9 +1041,12 @@ fn integration_002() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[Def[port, port, unit, Enum[Ref(grpc) | Ref(http)]], FieldDef[sidecar, Type[_, Struct[FieldDef[service, Type[_, Ref(type:service:port?)]]]]]]],
+                Def[service, _, unit, Struct[FieldDef[sidecar, Type[_, Struct[FieldDef[service, Type[_, Ref(type:service:port?)]]]]]]],
                 Def[upstream, service, unit, unit],
                 Def[my-svc, service, unit, Struct[FieldSet[sidecar, Struct[Field[service, Ref(upstream:grpc)]]]]],
+                Scope[struct:service,
+                    Def[port, _, unit, Enum[Ref(grpc) | Ref(http)]],
+                ],
             ]
         "##
         ),
@@ -1065,11 +1054,11 @@ fn integration_002() {
 }
 
 // ---------------------------------------------------------------------------
-// Hook defs
+// Mapper defs
 // ---------------------------------------------------------------------------
 
 #[test]
-fn hook_001() {
+fn mapper_001() {
     assert_eq!(
         show(
             r##"
@@ -1090,7 +1079,7 @@ fn hook_001() {
 }
 
 #[test]
-fn hook_002() {
+fn mapper_002() {
     use golden_parse_helpers::show_multi;
     assert_eq!(
         show_multi(vec![(
@@ -1125,7 +1114,7 @@ fn def_011() {
         norm(
             r##"
             Scope[pack:test,
-                Def[port, port, unit, Enum[Ref(http) | Ref(grpc)]],
+                Def[port, _, unit, Enum[Ref(http) | Ref(grpc)]],
             ]
         "##
         ),
@@ -1139,7 +1128,7 @@ fn def_012() {
         norm(
             r##"
             Scope[pack:test,
-                Def[x, x, unit, Ref(service)],
+                Def[x, _, unit, Ref(service)],
             ]
         "##
         ),
@@ -1153,7 +1142,7 @@ fn def_013() {
         norm(
             r##"
             Scope[pack:test,
-                Def[ports, ports, unit, List[Type[_, Ref(port)]]],
+                Def[ports, _, unit, List[Type[_, Ref(port)]]],
             ]
         "##
         ),
@@ -1167,7 +1156,7 @@ fn def_014() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
+                Def[service, _, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
             ]
         "##
         ),
@@ -1181,7 +1170,7 @@ fn def_015() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]], FieldDef[image, Type[_, Primitive(reference)]]]],
+                Def[service, _, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]], FieldDef[image, Type[_, Ref(reference)]]]],
             ]
         "##
         ),
@@ -1195,7 +1184,7 @@ fn def_016() {
         norm(
             r##"
             Scope[pack:test,
-                Def[stack, stack, unit, Struct[FieldDef[_, Type[_, List[Type[_, Enum[Ref(service) | Ref(database)]]]]]]],
+                Def[stack, _, unit, Struct[FieldDef[_, Type[_, List[Type[_, Enum[Ref(service) | Ref(database)]]]]]]],
             ]
         "##
         ),
@@ -1209,7 +1198,7 @@ fn def_017() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[FieldDef[access, Type[_, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]]]]],
+                Def[service, _, unit, Struct[FieldDef[access, Type[_, List[Type[_, Enum[Ref(service:port?) | Ref(database)]]]]]]],
             ]
         "##
         ),
@@ -1227,7 +1216,7 @@ fn def_005() {
         norm(
             r##"
             Scope[pack:test,
-                Def[secret, secret, unit, unit],
+                Def[secret, _, unit, unit],
             ]
         "##
         ),
@@ -1241,7 +1230,7 @@ fn def_006() {
         norm(
             r##"
             Scope[pack:test,
-                Def[port, port, unit, Enum[Ref(http) | Ref(grpc)]],
+                Def[port, _, unit, Enum[Ref(http) | Ref(grpc)]],
             ]
         "##
         ),
@@ -1255,7 +1244,35 @@ fn def_007() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
+                Def[service, _, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn def_007a() {
+    assert_eq!(
+        show("service { port = grpc | http }"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[service, _, Input[Field[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]], unit],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn def_007b() {
+    assert_eq!(
+        show("rectangle { width = integer  height = integer }"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[rectangle, _, Input[Field[width, Type[_, Ref(integer)]], Field[height, Type[_, Ref(integer)]]], unit],
             ]
         "##
         ),
@@ -1269,7 +1286,7 @@ fn def_008() {
         norm(
             r##"
             Scope[pack:test,
-                Def[node, node, Input[Field[name, Type[_, Primitive(string)]]], Struct[FieldDef[ep, Type[_, Ref(endpoint)]]]],
+                Def[node, _, Input[Field[name, Type[_, Ref(string)]]], Struct[FieldDef[ep, Type[_, Ref(endpoint)]]]],
             ]
         "##
         ),
@@ -1283,7 +1300,7 @@ fn def_009() {
         norm(
             r##"
             Scope[pack:test,
-                Def[node, make_node, Input[Field[name, Type[_, Primitive(string)]]], Struct[FieldDef[ep, Type[_, Ref(endpoint)]]]],
+                Def[node, make_node, Input[Field[name, Type[_, Ref(string)]]], Struct[FieldDef[ep, Type[_, Ref(endpoint)]]]],
             ]
         "##
         ),
@@ -1313,7 +1330,10 @@ fn struct_006() {
         norm(
             r##"
             Scope[pack:test,
-                Def[s, s, unit, Struct[Def[scaling, scaling, unit, Struct[FieldDef[min, Type[_, Primitive(integer)]], FieldDef[max, Type[_, Primitive(integer)]]]]]],
+                Def[s, _, unit, unit],
+                Scope[struct:s,
+                    Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                ],
             ]
         "##
         ),
@@ -1331,7 +1351,7 @@ fn qualifier_001() {
         norm(
             r##"
             Scope[pack:test,
-                Def[stack, stack, unit, Struct[FieldDef[_, Type[_, List[Type[_, Enum[Ref(def:service) | Ref(def:database)]]]]]]],
+                Def[stack, _, unit, Struct[FieldDef[_, Type[_, List[Type[_, Enum[Ref(def:service) | Ref(def:database)]]]]]]],
             ]
         "##
         ),
@@ -1349,7 +1369,9 @@ fn pack_001() {
         norm(
             r##"
             Scope[pack:test,
-                Pack[std:aws],
+                Scope[pack:std,
+                    Scope[pack:aws],
+                ],
             ]
         "##
         ),
@@ -1359,11 +1381,14 @@ fn pack_001() {
 #[test]
 fn pack_002() {
     assert_eq!(
-        show("pack std"),
+        show("pack std
+              port = http | grpc"),
         norm(
             r##"
             Scope[pack:test,
-                Pack[std],
+                Scope[pack:std,
+                    Def[port, _, unit, Enum[Ref(http) | Ref(grpc)]],
+                ],
             ]
         "##
         ),
@@ -1377,8 +1402,10 @@ fn pack_003() {
         norm(
             r##"
             Scope[pack:test,
-                Pack[std:aws,
-                    Def[port, port, unit, Enum[Ref(http) | Ref(grpc)]],
+                Scope[pack:std,
+                    Scope[pack:aws,
+                        Def[port, _, unit, Enum[Ref(http) | Ref(grpc)]],
+                    ],
                 ],
             ]
         "##
@@ -1393,9 +1420,9 @@ fn pack_004() {
         norm(
             r##"
             Scope[pack:test,
-                Pack[std,
-                    Pack[aws,
-                        Def[port, port, unit, Enum[Ref(http) | Ref(grpc)]],
+                Scope[pack:std,
+                    Scope[pack:aws,
+                        Def[port, _, unit, Enum[Ref(http) | Ref(grpc)]],
                     ],
                 ],
             ]
@@ -1437,11 +1464,11 @@ fn plan_002() {
 }
 
 // ---------------------------------------------------------------------------
-// New syntax — explicit hook defs and use still compose cleanly
+// New syntax — explicit mapper defs and use still compose cleanly
 // ---------------------------------------------------------------------------
 
 #[test]
-fn hook_023() {
+fn mapper_023() {
     assert_eq!(
         show(
             r##"
@@ -1452,7 +1479,7 @@ fn hook_023() {
         norm(
             r##"
             Scope[pack:test,
-                Def[service, service, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
+                Def[service, _, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
                 Def[api, service, unit, Struct[FieldSet[port, Ref(grpc)]]],
             ]
         "##
@@ -1473,7 +1500,7 @@ fn use_008() {
             r##"
             Scope[pack:test,
                 Use[std],
-                Def[service, service, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
+                Def[service, _, unit, Struct[FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
             ]
         "##
         ),

@@ -237,12 +237,12 @@ fn error_use_ambiguous_two_imports() {
 }
 
 // ---------------------------------------------------------------------------
-// Hook function scope errors
+// Mapper function scope errors
 // ---------------------------------------------------------------------------
 
-/// A hook def that names a TS function with no ts_src provided → resolve error.
+/// A mapper def that names a TS function with no ts_src provided → resolve error.
 #[test]
-fn error_hook_fn_not_in_scope() {
+fn error_mapper_fn_not_in_scope() {
     let out = show(r#"
         def label { key = string } = make_label { value = string }
         label env { key: "environment" }
@@ -252,16 +252,16 @@ fn error_hook_fn_not_in_scope() {
     assert!(out.contains("not in scope"), "error should explain scoping: {out}");
 }
 
-/// A hook def that names a TS function defined in another pack but not imported.
+/// A mapper def that names a TS function defined in another pack but not imported.
 #[test]
-fn error_hook_fn_not_imported() {
+fn error_mapper_fn_not_imported() {
     use ground_compile::ast::{ParseReq, ParseUnit};
     use ground_compile::parse::parse;
     use ground_compile::resolve::resolve;
 
     let res = parse(ParseReq { units: vec![
         ParseUnit {
-            name:   "hooks".into(),
+            name:   "mappers".into(),
             path:   vec![],
             src:    String::new(),
             ts_src: Some("function make_label(i) { return { value: i.key }; }".into()),

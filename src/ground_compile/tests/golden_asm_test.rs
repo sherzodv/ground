@@ -6,14 +6,14 @@
 use golden_asm_helpers::show_with_ts;
 
 // ---------------------------------------------------------------------------
-// Hook execution tests
+// Mapper execution tests
 // ---------------------------------------------------------------------------
 
-/// Coarse hook: hook owns the complete output subtree (Case 2 from the book).
+/// Coarse mapper: the mapper owns the complete output subtree (Case 2 from the book).
 ///   def node { name = string } = make_node { ep = endpoint }
-/// The hook returns { host, port } which become the ep fields.
+/// The mapper returns { host, port } which become the ep fields.
 #[test]
-fn hook_coarse_output() {
+fn mapper_coarse_output() {
     let grd = r#"
         endpoint = { host = string  port = integer }
         def node { name = string } = make_node { ep = endpoint }
@@ -25,14 +25,14 @@ fn hook_coarse_output() {
         }
     "#;
     let out = show_with_ts(grd, ts);
-    assert!(out.contains("ep=Inst"), "hook output ep field must be present");
-    assert!(out.contains("host=Str(\"api.internal\")"), "hook must compute host");
-    assert!(out.contains("port=Int(8080)"), "hook must compute port");
+    assert!(out.contains("ep=Inst"), "mapper output ep field must be present");
+    assert!(out.contains("host=Str(\"api.internal\")"), "mapper must compute host");
+    assert!(out.contains("port=Int(8080)"), "mapper must compute port");
 }
 
-/// Hook with no inputs: output-only hook fires with empty input object.
+/// Mapper with no inputs: output-only mapper fires with empty input object.
 #[test]
-fn hook_no_inputs() {
+fn mapper_no_inputs() {
     let grd = r#"
         def tag = make_tag { name = string  value = string }
         ground-managed = tag {}
@@ -43,14 +43,14 @@ fn hook_no_inputs() {
         }
     "#;
     let out = show_with_ts(grd, ts);
-    assert!(out.contains("name=Str(\"ground-managed\")"), "hook must produce name");
-    assert!(out.contains("value=Str(\"true\")"), "hook must produce value");
+    assert!(out.contains("name=Str(\"ground-managed\")"), "mapper must produce name");
+    assert!(out.contains("value=Str(\"true\")"), "mapper must produce value");
 }
 
-/// Hook with input fields that produce a list output.
+/// Mapper with input fields that produces a list output.
 #[test]
-fn hook_list_output() {
-    // prefix and count are INPUT fields (before =); items is the OUTPUT (returned by hook).
+fn mapper_list_output() {
+    // prefix and count are INPUT fields (before =); items is the OUTPUT (returned by the mapper).
     let grd = r#"
         def tags { prefix = string  count = integer } = make_tags { items = string }
         my-tags = tags { prefix: "svc"  count: 3 }
@@ -63,6 +63,6 @@ fn hook_list_output() {
         }
     "#;
     let out = show_with_ts(grd, ts);
-    assert!(out.contains("items=List"), "hook list output must appear");
+    assert!(out.contains("items=List"), "mapper list output must appear");
     assert!(out.contains("Str(\"svc-0\")"), "first list element must be present");
 }

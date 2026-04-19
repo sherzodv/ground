@@ -55,7 +55,7 @@ fn error_005() {
 
 #[test]
 fn error_006() {
-    // `deploy` statement with no `to` keyword; parser should surface an error.
-    let out = show("deploy svc aws as prod {}");
+    // Shorthand initial defs require `field = type` entries in the block.
+    let out = show("service { port }");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
 }

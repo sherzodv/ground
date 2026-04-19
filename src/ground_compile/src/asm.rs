@@ -30,7 +30,7 @@ pub struct AsmSymbol {
 #[derive(Debug, Clone)]
 pub struct AsmPlan {
     pub name:      String,        // plan name (e.g. "prd-eu")
-    pub root:      AsmInst,       // the root instance (lowered + hooks fired)
+    pub root:      AsmInst,       // the root instance (lowered + mappers fired)
     pub fields:    Vec<AsmField>, // root's fields + plan-level overrides
     pub reachable: Vec<AsmInst>,  // all reachable named instances, topo-sorted (leaves first)
 }
@@ -80,11 +80,11 @@ pub struct AsmInstRef {
 // ---------------------------------------------------------------------------
 
 pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
-    // Build hook lookup: type_id.0 → FunId of the def fun (parent=None) that carries the hook.
-    // Hooks are defined on `def name { inputs } = hook_fn { outputs }` root funs and apply
-    // to all instance funs of the same type at lowering time.
-    let hook_map: HashMap<u32, FunId> = ir.funs.iter().enumerate()
-        .filter(|(_, f)| f.parent.is_none() && f.hook_fn.is_some())
+    // Build mapper lookup: type_id.0 → FunId of the root def (parent=None) that carries the mapper.
+    // Mappers are defined on `def name { inputs } = mapper_fn { outputs }` root defs and apply
+    // to all mapping instances of the same type at lowering time.
+    let mapper_map: HashMap<u32, FunId> = ir.funs.iter().enumerate()
+        .filter(|(_, f)| f.parent.is_none() && f.mapper_fn.is_some())
         .map(|(idx, f)| (f.type_id.0, FunId(idx as u32)))
         .collect();
 
@@ -93,7 +93,7 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
 
     // Resolve each plan: topo-sort reachable instances, resolve leaves first.
     let plans: Vec<AsmPlan> = ir.plans.iter().filter_map(|plan| {
-        // Find the root fun by name.
+        // Find the root mapping by name.
         let root_id = ir.funs.iter().enumerate()
             .find(|(_, f)| f.name == plan.name)
             .map(|(idx, _)| FunId(idx as u32))?;
@@ -104,10 +104,10 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
         // Topo-sort: leaves (no deps in reachable set) come first.
         let ordered = topo_sort(&reachable_ids, ir);
 
-        // Resolve bottom-up, caching results so via fields can look up post-hook values.
+        // Resolve bottom-up, caching results so via fields can look up post-mapper values.
         for &fid in &ordered {
             if !cache.contains_key(&fid) {
-                let inst = lower_fun(fid, ir, &hook_map, ts_src, &cache);
+                let inst = lower_fun(fid, ir, &mapper_map, ts_src, &cache);
                 cache.insert(fid, inst);
             }
         }
@@ -133,7 +133,7 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
     }).collect();
 
     // Build symbol table from all named funs; use cache where already resolved.
-    let symbol = build_symbol(ir, &hook_map, ts_src, &cache);
+    let symbol = build_symbol(ir, &mapper_map, ts_src, &cache);
 
     AsmRes { plans, symbol }
 }
@@ -143,7 +143,7 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
 // ---------------------------------------------------------------------------
 
 /// Collect all named instance IDs reachable from `root` via `IrValue::Inst` references.
-/// Anonymous funs (name == "_") are traversed but not collected.
+/// Anonymous mappings (name == "_") are traversed but not collected.
 fn collect_reachable(root: FunId, ir: &IrRes) -> HashSet<FunId> {
     let mut visited: HashSet<FunId> = HashSet::new();
     let mut queue: VecDeque<FunId> = VecDeque::new();
@@ -180,7 +180,7 @@ fn enqueue_named_fun_refs(v: &IrValue, ir: &IrRes, queue: &mut VecDeque<FunId>) 
 /// Kahn's topo-sort over a set of named instance IDs.
 /// Returns them in dependency order — leaves (no deps) first, root last.
 fn topo_sort(ids: &HashSet<FunId>, ir: &IrRes) -> Vec<FunId> {
-    // For each id, compute its direct named-fun deps (within ids).
+    // For each id, compute its direct named-mapping deps (within ids).
     let mut deps_of: HashMap<FunId, HashSet<FunId>> = HashMap::new();
     let mut dependents_of: HashMap<FunId, Vec<FunId>> = HashMap::new();
 
@@ -252,12 +252,12 @@ fn collect_named_deps_in_value(
 // Symbol building
 // ---------------------------------------------------------------------------
 
-/// Build the global symbol table from all named funs.
-/// Uses the cache for funs already resolved during plan walks;
+/// Build the global symbol table from all named mappings.
+/// Uses the cache for mappings already resolved during plan walks;
 /// resolves fresh (with empty cache context) for any remaining.
 fn build_symbol(
     ir:       &IrRes,
-    hook_map: &HashMap<u32, FunId>,
+    mapper_map: &HashMap<u32, FunId>,
     ts_src:   &str,
     cache:    &HashMap<FunId, AsmInst>,
 ) -> AsmSymbol {
@@ -266,7 +266,7 @@ fn build_symbol(
         .map(|(idx, _)| {
             let fid = FunId(idx as u32);
             cache.get(&fid).cloned()
-                .unwrap_or_else(|| lower_fun(fid, ir, hook_map, ts_src, cache))
+                .unwrap_or_else(|| lower_fun(fid, ir, mapper_map, ts_src, cache))
         })
         .collect();
     AsmSymbol { insts }
@@ -279,29 +279,29 @@ fn build_symbol(
 fn lower_fun(
     id:       FunId,
     ir:       &IrRes,
-    hook_map: &HashMap<u32, FunId>,
+    mapper_map: &HashMap<u32, FunId>,
     ts_src:   &str,
     cache:    &HashMap<FunId, AsmInst>,
 ) -> AsmInst {
-    let fun       = &ir.funs[id.0 as usize];
-    let type_name = ir.types[fun.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
-    let name      = fun.name.clone();
-    let type_hint = fun.type_hint.clone();
+    let mapping   = &ir.funs[id.0 as usize];
+    let type_name = ir.types[mapping.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
+    let name      = mapping.name.clone();
+    let type_hint = mapping.type_hint.clone();
 
     // Lower all user-provided fields to AsmValue (raw, for ASM output).
-    let mut fields: Vec<AsmField> = fun.fields.iter().map(|f| lower_field(f, ir)).collect();
+    let mut fields: Vec<AsmField> = mapping.fields.iter().map(|f| lower_field(f, ir)).collect();
 
-    // If this fun's type has a hook def and we have TypeScript source, execute the hook.
-    // The hook is stored on the def fun (parent=None); look it up via hook_map.
+    // If this mapping's type has a mapper def and we have TypeScript source, execute the mapper.
+    // The mapper is stored on the root def (parent=None); look it up via mapper_map.
     if !ts_src.is_empty() {
-        if let Some(&def_fid) = hook_map.get(&fun.type_id.0) {
-            let def_fun = &ir.funs[def_fid.0 as usize];
-            let hook_fn = def_fun.hook_fn.as_ref().unwrap();
+        if let Some(&def_fid) = mapper_map.get(&mapping.type_id.0) {
+            let def_mapping = &ir.funs[def_fid.0 as usize];
+            let mapper_fn = def_mapping.mapper_fn.as_ref().unwrap();
 
-            // Build input JSON from the fun's user-provided fields (the input links).
-            // Fields marked `via` use the pre-resolved (post-hook) cached AsmInst as their value.
-            let input_link_set: HashSet<u32> = def_fun.inputs.iter().map(|l| l.0).collect();
-            let input_map: serde_json::Map<String, serde_json::Value> = fun.fields.iter()
+            // Build input JSON from the mapping's user-provided fields (the input links).
+            // Fields marked `via` use the pre-resolved (post-mapper) cached AsmInst as their value.
+            let input_link_set: HashSet<u32> = def_mapping.inputs.iter().map(|l| l.0).collect();
+            let input_map: serde_json::Map<String, serde_json::Value> = mapping.fields.iter()
                 .filter(|f| input_link_set.contains(&f.link_id.0))
                 .map(|f| {
                     let json_val = if f.via {
@@ -314,8 +314,8 @@ fn lower_fun(
                 .collect();
             let input_json = serde_json::Value::Object(input_map).to_string();
 
-            // Call the TypeScript hook and merge output fields into the fun.
-            match call_hook(ts_src, hook_fn, &input_json) {
+            // Call the TypeScript mapper and merge output fields into the mapping.
+            match call_hook(ts_src, mapper_fn, &input_json) {
                 Ok(output_json) => {
                     if let Ok(serde_json::Value::Object(map)) =
                         serde_json::from_str::<serde_json::Value>(&output_json)
@@ -326,8 +326,8 @@ fn lower_fun(
                     }
                 }
                 Err(_) => {
-                    // Hook execution errors surface at generation time when expected
-                    // fields are missing. Silently continue so other funs resolve.
+                    // Mapper execution errors surface at generation time when expected
+                    // fields are missing. Silently continue so other mappings resolve.
                 }
             }
         }
@@ -341,8 +341,8 @@ fn lower_field(f: &IrField, ir: &IrRes) -> AsmField {
 }
 
 fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
-    // Note: lower_value does not execute hooks on inline anonymous instances.
-    // Hooks only fire on named instances via lower_inst (hook_map/ts_src path).
+    // Note: lower_value does not execute mappers on inline anonymous instances.
+    // Mappers only fire on named instances via lower_inst (mapper_map/ts_src path).
     match v {
         IrValue::Str(s) => AsmValue::Str(s.clone()),
         IrValue::Int(n) => AsmValue::Int(*n),
@@ -367,21 +367,21 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
         }
 
         IrValue::Inst(fid) => {
-            let fun = &ir.funs[fid.0 as usize];
-            if fun.name == "_" {
-                // Anonymous inline fun — embed fully (no hook execution for inline funs).
-                let fields    = fun.fields.iter().map(|f| lower_field(f, ir)).collect();
-                let type_hint = fun.type_hint.clone();
+            let mapping = &ir.funs[fid.0 as usize];
+            if mapping.name == "_" {
+                // Anonymous inline mapping — embed fully (no mapper execution for inline mappings).
+                let fields    = mapping.fields.iter().map(|f| lower_field(f, ir)).collect();
+                let type_hint = mapping.type_hint.clone();
                 AsmValue::Inst(Box::new(AsmInst {
-                    type_name: ir.types[fun.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
+                    type_name: ir.types[mapping.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into()),
                     name: "_".into(),
                     type_hint,
                     fields,
                 }))
             } else {
-                // Named fun — emit a ref; full data lives in AsmSymbol.
-                let type_name = ir.types[fun.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
-                AsmValue::InstRef(AsmInstRef { type_name, name: fun.name.clone() })
+                // Named mapping — emit a ref; full data lives in AsmSymbol.
+                let type_name = ir.types[mapping.type_id.0 as usize].name.clone().unwrap_or_else(|| "_".into());
+                AsmValue::InstRef(AsmInstRef { type_name, name: mapping.name.clone() })
             }
         }
 
@@ -396,10 +396,10 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
 }
 
 // ---------------------------------------------------------------------------
-// Hook I/O serialisation helpers
+// Mapper I/O serialisation helpers
 // ---------------------------------------------------------------------------
 
-/// Convert an `IrValue` to a `serde_json::Value` for passing to a TypeScript hook.
+/// Convert an `IrValue` to a `serde_json::Value` for passing to a TypeScript mapper.
 fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
     match v {
         IrValue::Str(s)  => serde_json::Value::String(s.clone()),
@@ -429,7 +429,7 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
         IrValue::Inst(fid) => {
             let child = &ir.funs[fid.0 as usize];
             let mut map = serde_json::Map::new();
-            // Expose the fun name as "_name" so hooks can use it.
+            // Expose the mapping name as "_name" so parent mappers can use it.
             map.insert("_name".into(), serde_json::Value::String(child.name.clone()));
             for f in &child.fields {
                 map.insert(f.name.clone(), ir_value_to_json(&f.value, ir));
@@ -445,8 +445,8 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
     }
 }
 
-/// Like `ir_value_to_json` but for `IrValue::Inst` uses the post-hook cached `AsmInst`.
-/// Used for fields marked `via` — the hook receives the already-resolved child value.
+/// Like `ir_value_to_json` but for `IrValue::Inst` uses the post-mapper cached `AsmInst`.
+/// Used for fields marked `via` — the mapper receives the already-resolved child value.
 fn ir_value_to_json_via(v: &IrValue, ir: &IrRes, cache: &HashMap<FunId, AsmInst>) -> serde_json::Value {
     match v {
         IrValue::Inst(fid) => {
@@ -487,7 +487,7 @@ pub fn asm_value_to_json(v: &AsmValue) -> serde_json::Value {
     }
 }
 
-/// Convert a `serde_json::Value` returned by a hook into an `AsmValue`.
+/// Convert a `serde_json::Value` returned by a mapper into an `AsmValue`.
 fn json_val_to_asm_value(v: &serde_json::Value) -> AsmValue {
     match v {
         serde_json::Value::String(s)  => AsmValue::Str(s.clone()),

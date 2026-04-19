@@ -206,8 +206,11 @@ fn struct_with_inline_type_def() {
             r##"
             Scope[pack:test,
                 Type#0[service, Struct[Link#0[image, Prim(reference)]]],
-                Type#1[port, Enum[grpc|http]],
                 Fun#0[Type#0, service],
+                Scope[struct:service,
+                    Type#1[port, Enum[grpc|http]],
+                    Fun#1[Type#1, port],
+                ],
             ]
         "##
         ),
@@ -294,8 +297,8 @@ fn top_level_link_list() {
                 Type#0[service, Struct[Link#1[image, Prim(reference)]]],
                 Type#1[database, Struct[Link#2[engine, Prim(string)]]],
                 Link#0[access, List[IrRef[Struct(Type#0):(port)] | IrRef[Struct(Type#1)]]],
-                Scope[type:service],
-                Scope[type:database],
+                Scope[struct:service],
+                Scope[struct:database],
             ]
         "##
         ),
@@ -1438,13 +1441,17 @@ fn inline_named_type_with_typed_path_ref() {
         norm(
             r##"
             Scope[pack:test,
-                Type#0[service, Struct[Link#1[sidecar, IrRef[Struct(Type#2)]]]],
-                Type#1[port, Enum[grpc|http]],
-                Type#2[sidecar, Struct[Link#0[service, IrRef[Struct(Type#0):(Enum(Type#1))]]]],
+                Type#0[service, Struct[Link#0[sidecar, IrRef[Struct(Type#2)]]]],
                 Fun#0[Type#0, service],
                 Fun#1[Type#0, upstream],
-                Fun#2[Type#0, my-svc, Field[Link#1, Inst(Fun#3)]],
-                Fun#3[Type#2, _, Field[Link#0, Inst(Fun#1):Variant(Type#1, "grpc")]],
+                Fun#2[Type#0, my-svc, Field[Link#0, Inst(Fun#5)]],
+                Fun#5[Type#2, _, Field[Link#1, Inst(Fun#1):Variant(Type#1, "grpc")]],
+                Scope[struct:service,
+                    Type#1[port, Enum[grpc|http]],
+                    Type#2[sidecar, Struct[Link#1[service, IrRef[Struct(Type#0):(Enum(Type#1))]]]],
+                    Fun#3[Type#1, port],
+                    Fun#4[Type#2, sidecar],
+                ],
             ]
         "##
         ),
@@ -1452,28 +1459,28 @@ fn inline_named_type_with_typed_path_ref() {
 }
 
 // ---------------------------------------------------------------------------
-// Hook TS function scope tests
+// Mapper TS function scope tests
 // ---------------------------------------------------------------------------
 
-/// Same pack: ts_src in the same unit as the hook def → no ERR in output.
+/// Same pack: ts_src in the same unit as the mapper def → no ERR in output.
 #[test]
-fn hook_fn_same_pack_in_scope() {
+fn mapper_fn_same_pack_in_scope() {
     let out = show_with_ts(
         r#"def label { key = string } = make_label { value = string }"#,
         "function make_label(i) { return { value: i.key }; }",
     );
     assert!(
         !out.contains("ERR:"),
-        "same-pack hook should resolve cleanly, got: {out}"
+        "same-pack mapper should resolve cleanly, got: {out}"
     );
 }
 
-/// Cross-pack via wildcard import: `use hooks:*` brings ts fn into scope.
+/// Cross-pack via wildcard import: `use mappers:*` brings ts fn into scope.
 #[test]
-fn hook_fn_wildcard_import() {
+fn mapper_fn_wildcard_import() {
     let out = show_multi_ts(vec![
         (
-            "hooks",
+            "mappers",
             vec![],
             "",
             Some("function make_label(i) { return { value: i.key }; }"),
@@ -1481,23 +1488,23 @@ fn hook_fn_wildcard_import() {
         (
             "main",
             vec![],
-            r#"use hooks:*
+            r#"use mappers:*
             def label { key = string } = make_label { value = string }"#,
             None,
         ),
     ]);
     assert!(
         !out.contains("ERR:"),
-        "wildcard-imported hook should resolve cleanly, got: {out}"
+        "wildcard-imported mapper should resolve cleanly, got: {out}"
     );
 }
 
-/// Cross-pack via specific import: `use hooks:make_label` brings ts fn into scope.
+/// Cross-pack via specific import: `use mappers:make_label` brings ts fn into scope.
 #[test]
-fn hook_fn_specific_import() {
+fn mapper_fn_specific_import() {
     let out = show_multi_ts(vec![
         (
-            "hooks",
+            "mappers",
             vec![],
             "",
             Some("function make_label(i) { return { value: i.key }; }"),
@@ -1505,14 +1512,14 @@ fn hook_fn_specific_import() {
         (
             "main",
             vec![],
-            r#"use hooks:fn:make_label
+            r#"use mappers:fn:make_label
             def label { key = string } = make_label { value = string }"#,
             None,
         ),
     ]);
     assert!(
         !out.contains("ERR:"),
-        "specific-imported hook should resolve cleanly, got: {out}"
+        "specific-imported mapper should resolve cleanly, got: {out}"
     );
 }
 

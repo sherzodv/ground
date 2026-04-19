@@ -1,8 +1,7 @@
 use ground_compile::ast::{
     AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPlan, AstPrimitive, AstRef,
     AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody, AstStructFieldKind,
-    AstStructItem, AstTypeDef,
-    AstTypeDefBody, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse,
+    AstStructItem, AstTypeExpr, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse,
 };
 use ground_compile::parse::parse;
 
@@ -54,43 +53,39 @@ pub fn show_primitive(p: &AstPrimitive) -> &'static str {
     }
 }
 
-pub fn show_type_def_body(body: &AstTypeDefBody) -> String {
+pub fn show_type_expr(body: &AstTypeExpr) -> String {
     match body {
-        AstTypeDefBody::Unit         => "unit".to_string(),
-        AstTypeDefBody::Primitive(p) => format!("Primitive({})", show_primitive(p)),
-        AstTypeDefBody::Ref(r)       => format!("Ref({})", show_ref(r)),
-        AstTypeDefBody::Enum(items)  => {
+        AstTypeExpr::Unit         => "unit".to_string(),
+        AstTypeExpr::Primitive(p) => format!("Primitive({})", show_primitive(p)),
+        AstTypeExpr::Ref(r)       => format!("Ref({})", show_ref(r)),
+        AstTypeExpr::Enum(items)  => {
             let parts: Vec<_> = items.iter().map(|i| format!("Ref({})", show_ref(&i.inner))).collect();
             format!("Enum[{}]", parts.join(" | "))
         }
-        AstTypeDefBody::Struct(items) => {
-            if items.is_empty() {
-                return "unit".to_string();
-            }
+        AstTypeExpr::Struct(items) => {
             let parts: Vec<_> = items.iter().map(|i| show_struct_item(&i.inner)).collect();
             format!("Struct[{}]", parts.join(", "))
         }
-        AstTypeDefBody::List(inner) => {
-            format!("List[{}]", show_type_def(&inner.inner))
+        AstTypeExpr::List(inner) => {
+            format!("List[{}]", show_nested_type_expr(&inner.inner))
         }
     }
 }
 
-pub fn show_type_def(td: &AstTypeDef) -> String {
-    let name = td.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    format!("Type[{}, {}]", name, show_type_def_body(&td.body.inner))
+pub fn show_nested_type_expr(td: &AstTypeExpr) -> String {
+    format!("Type[_, {}]", show_type_expr(td))
 }
 
 pub fn show_field_def(f: &AstDefI) -> String {
     let name = f.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-    format!("Field[{}, {}]", name, show_type_def(&f.ty.inner))
+    format!("Field[{}, {}]", name, show_nested_type_expr(&f.ty.inner))
 }
 
 pub fn show_struct_field(f: &AstStructField) -> String {
     let name = f.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
     match (&f.kind, &f.body) {
         (AstStructFieldKind::Def, AstStructFieldBody::Type(ty)) => {
-            format!("FieldDef[{}, {}]", name, show_type_def(&ty.inner))
+            format!("FieldDef[{}, {}]", name, show_nested_type_expr(&ty.inner))
         }
         (AstStructFieldKind::Set, AstStructFieldBody::Value(value)) => {
             format!("FieldSet[{}, {}]", name, show_value(&value.inner))
@@ -99,7 +94,7 @@ pub fn show_struct_field(f: &AstStructField) -> String {
             format!("FieldDef[{}, {}]", name, show_value(&value.inner))
         }
         (AstStructFieldKind::Set, AstStructFieldBody::Type(ty)) => {
-            format!("FieldSet[{}, {}]", name, show_type_def(&ty.inner))
+            format!("FieldSet[{}, {}]", name, show_nested_type_expr(&ty.inner))
         }
     }
 }
@@ -107,11 +102,8 @@ pub fn show_struct_field(f: &AstStructField) -> String {
 pub fn show_top_def_output(output: &AstDefO) -> String {
     match output {
         AstDefO::Unit => "unit".to_string(),
-        AstDefO::TypeExpr(td) => show_type_def_body(&td.inner.body.inner),
+        AstDefO::TypeExpr(td) => show_type_expr(&td.inner),
         AstDefO::Struct(items) => {
-            if items.is_empty() {
-                return "unit".to_string();
-            }
             let parts: Vec<_> = items.iter().map(|i| show_struct_item(&i.inner)).collect();
             format!("Struct[{}]", parts.join(", "))
         }
@@ -120,7 +112,7 @@ pub fn show_top_def_output(output: &AstDefO) -> String {
 
 pub fn show_top_def(td: &AstDef) -> String {
     let name = td.name.inner.clone();
-    let hook = show_ref(&td.hook.inner);
+    let mapper = td.mapper.as_ref().map(|m| show_ref(&m.inner)).unwrap_or_else(|| "_".to_string());
     let input = if td.input.is_empty() {
         "unit".to_string()
     } else {
@@ -130,16 +122,20 @@ pub fn show_top_def(td: &AstDef) -> String {
         format!("Input[{}]", input_parts.join(", "))
     };
     let output = show_top_def_output(&td.output.inner);
-    format!("Def[{name}, {hook}, {input}, {output}]")
+    format!("Def[{name}, {mapper}, {input}, {output}]")
 }
 
 pub fn show_pack(p: &AstPack) -> String {
     let path = show_ref(&p.path.inner);
-    if p.defs.is_empty() {
-        format!("Pack[{}]", path)
+    if let Some(defs) = &p.defs {
+        if defs.is_empty() {
+            format!("Pack[{},\n,\n]", path)
+        } else {
+            let parts: Vec<_> = defs.iter().map(show_def).collect();
+            format!("Pack[{},\n{},\n]", path, parts.join(",\n"))
+        }
     } else {
-        let parts: Vec<_> = p.defs.iter().map(show_def).collect();
-        format!("Pack[{},\n{},\n]", path, parts.join(",\n"))
+        format!("Pack[{}]", path)
     }
 }
 
@@ -169,9 +165,6 @@ pub fn show_value(v: &AstValue) -> String {
             format!("List[{}]", parts.join(", "))
         }
         AstValue::Struct { type_hint, fields } => {
-            if type_hint.is_none() && fields.is_empty() {
-                return "unit".to_string();
-            }
             let mut parts: Vec<String> = Vec::new();
             if let Some(hint) = type_hint {
                 parts.push(format!("Hint({})", show_ref(&hint.inner)));
@@ -207,7 +200,7 @@ pub fn show_scope(scopes: &[AstScope], id: AstScopeId) -> String {
     let raw_name = scope.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
     let kind_str = match scope.kind {
         ScopeKind::Pack => "pack",
-        ScopeKind::Type => "type",
+        ScopeKind::Struct => "struct",
     };
     let name = format!("{}:{}", kind_str, raw_name);
 

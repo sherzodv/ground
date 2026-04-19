@@ -100,7 +100,7 @@ pub fn norm(s: &str) -> String {
         .join("\n")
 }
 
-/// Parse + resolve + lower `input` with TypeScript source for hook execution.
+/// Parse + resolve + lower `input` with TypeScript source for mapper execution.
 pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
     let res = parse(ParseReq {
         units: vec![ParseUnit {

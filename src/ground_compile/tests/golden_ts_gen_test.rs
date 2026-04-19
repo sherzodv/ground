@@ -1,12 +1,12 @@
-/// Tests for TypeScript interface generation from hook defs.
+/// Tests for TypeScript interface generation from mapper defs.
 ///
-/// Ground generates `interface {Hook}Input` / `interface {Hook}Output` for
-/// every root def that carries a hook, prepending them to the TS blob before
-/// execution. These tests verify the full compile+execute path with hooks.
+/// Ground generates `interface {Mapper}Input` / `interface {Mapper}Output` for
+/// every root def that carries a mapper, prepending them to the TS blob before
+/// execution. These tests verify the full compile+execute path with mappers.
 
 use ground_compile::{compile, CompileReq, Unit};
 
-/// Hook def with primitive input/output: hook receives input field, returns output.
+/// Mapper def with primitive input/output: the mapper receives the input field and returns the output.
 #[test]
 fn ts_gen_primitive_fields() {
     let res = compile(CompileReq {
@@ -33,11 +33,11 @@ fn ts_gen_primitive_fields() {
     assert_eq!(
         format!("{:?}", field.value),
         r#"Str("environment=prod")"#,
-        "hook should produce value=environment=prod"
+        "mapper should produce value=environment=prod"
     );
 }
 
-/// Hook def with integer output field.
+/// Mapper def with integer output field.
 #[test]
 fn ts_gen_integer_output() {
     let res = compile(CompileReq {
@@ -61,5 +61,5 @@ fn ts_gen_integer_output() {
     let plan  = &res.plans[0];
     let inst  = plan.reachable.iter().find(|i| i.name == "api").expect("api instance missing");
     let field = inst.fields.iter().find(|f| f.name == "number").expect("number field missing");
-    assert_eq!(format!("{:?}", field.value), "Int(8080)", "hook should produce number=8080");
+    assert_eq!(format!("{:?}", field.value), "Int(8080)", "mapper should produce number=8080");
 }
