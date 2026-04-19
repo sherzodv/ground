@@ -67,13 +67,13 @@ pub struct AstRef {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AstPrimitive { String, Integer, Reference }
+pub enum AstPrimitive { String, Integer, Boolean, Reference }
 
 // ---------------------------------------------------------------------------
 // Unified def node — the central construct of the language
 // ---------------------------------------------------------------------------
 
-/// A named mapping — covers type aliases, bare unit types, mapper-backed transforms, and instances.
+/// A named mapping — covers type aliases, bare unit shapes, mapper-backed transforms, and instances.
 ///
 /// Forms:
 ///   `name = type_expr`                         — type alias
@@ -85,6 +85,7 @@ pub enum AstPrimitive { String, Integer, Reference }
 ///   `name mapper`                              — shorthand def with explicit mapper and unit output
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstDef {
+    pub planned: bool,                        // true when declared with `plan`
     pub name:    AstNode<String>,
     pub input:   Vec<AstNode<AstDefI>>,        // fields before `=`; empty for simple defs
     pub mapper:  Option<AstNode<AstRef>>,      // explicit mapper ref when it appears in source
@@ -107,7 +108,7 @@ pub struct AstDefI {
 }
 
 // ---------------------------------------------------------------------------
-// Pack and Plan declarations
+// Pack declarations
 // ---------------------------------------------------------------------------
 
 /// `pack ref` or `pack ref { defs... }` — namespace declaration (like Scala packages).
@@ -115,13 +116,6 @@ pub struct AstDefI {
 pub struct AstPack {
     pub path: AstNode<AstRef>,
     pub defs: Option<Vec<AstItem>>,           // None for bare file-level `pack std:aws`
-}
-
-/// `plan name` or `plan name { fields }` — resolution trigger.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AstPlan {
-    pub name:   AstNode<String>,
-    pub fields: Vec<AstNode<AstField>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +126,7 @@ pub struct AstPlan {
 pub enum AstTypeExpr {
     /// Unit: bare `def name` or `name` with no rhs
     Unit,
-    /// Built-in scalar: `string` | `integer` | `reference`
+    /// Built-in scalar: `string` | `integer` | `boolean` | `reference`
     Primitive(AstPrimitive),
     /// Single reference to an existing type: `postgresql`, `type:region:type:zone`
     Ref(AstRef),
@@ -237,8 +231,6 @@ pub enum AstItem {
     Def(AstNode<AstDef>),
     /// `pack ref { … }` namespace declaration
     Pack(AstNode<AstPack>),
-    /// `plan name { … }` resolution trigger
-    Plan(AstNode<AstPlan>),
     Use(AstNode<AstUse>),
 }
 

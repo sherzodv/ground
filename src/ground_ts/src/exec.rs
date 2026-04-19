@@ -28,6 +28,11 @@ use std::sync::Arc;
 ///
 /// Returns the JSON string produced by `JSON.stringify(fn(input))`.
 pub fn call_hook(ts_src: &str, fn_name: &str, input_json: &str) -> Result<String> {
+    call_hook_args(ts_src, fn_name, &[input_json])
+}
+
+/// Call a single TypeScript hook function with JSON-encoded arguments.
+pub fn call_hook_args(ts_src: &str, fn_name: &str, args_json: &[&str]) -> Result<String> {
     let js = ts_to_js(ts_src)?;
 
     let mut rt = JsRuntime::new(RuntimeOptions::default());
@@ -35,9 +40,11 @@ pub fn call_hook(ts_src: &str, fn_name: &str, input_json: &str) -> Result<String
     // Load the hook definitions as a classic script.
     rt.execute_script("<hooks>", js)?;
 
-    // Call: JSON.stringify( globalThis["fn_name"](input) )
+    let args_src = args_json.join(", ");
+
+    // Call: JSON.stringify( globalThis["fn_name"](...args) )
     let call = format!(
-        "JSON.stringify(globalThis[{fn_name:?}]({input_json}))"
+        "JSON.stringify(globalThis[{fn_name:?}]({args_src}))"
     );
     let handle = rt.execute_script("<call>", call)?;
 

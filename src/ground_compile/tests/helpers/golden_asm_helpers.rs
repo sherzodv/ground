@@ -1,6 +1,6 @@
 use ground_compile::asm::*;
 use ground_compile::ast::{ParseReq, ParseUnit};
-use ground_compile::ir::{IrRes, ScopeId, ScopeKind};
+use ground_compile::ir::IrRes;
 use ground_compile::parse::parse;
 use ground_compile::resolve::resolve;
 
@@ -12,13 +12,14 @@ pub fn show_value(v: &AsmValue) -> String {
     match v {
         AsmValue::Str(s)              => format!("Str({:?})", s),
         AsmValue::Int(n)              => format!("Int({})", n),
-        AsmValue::Ref(s)              => format!("Ref({:?})", s),
+        AsmValue::Bool(b)             => format!("Bool({})", b),
+        AsmValue::Ref(s)              => format!("Ref({})", s),
         AsmValue::Variant(gv)         => match &gv.payload {
             None    => format!("Variant({}, {:?})", gv.type_name, gv.value),
             Some(p) => format!("Variant({}, {:?}, {})", gv.type_name, gv.value, show_value(p)),
         },
-        AsmValue::InstRef(ir)         => format!("InstRef({}, {})", ir.type_name, ir.name),
-        AsmValue::Inst(gi)            => format!("Inst[{}]", show_inst_inline(gi)),
+        AsmValue::DefRef(ir)          => format!("DefRef({}, {})", ir.type_name, ir.name),
+        AsmValue::Def(gi)             => format!("Def[{}]", show_def_inline(gi)),
         AsmValue::Path(segs)          => segs.iter().map(show_value).collect::<Vec<_>>().join(":"),
         AsmValue::List(items)         => {
             let parts: Vec<_> = items.iter().map(show_value).collect();
@@ -28,63 +29,24 @@ pub fn show_value(v: &AsmValue) -> String {
 }
 
 fn show_field(f: &AsmField) -> String {
-    format!("{}={}", f.name, show_value(&f.value))
+    format!("{}: {}", f.name, show_value(&f.value))
 }
 
-fn show_inst_inline(i: &AsmInst) -> String {
-    let mut parts = vec![i.type_name.clone(), i.name.clone()];
-    if let Some(hint) = &i.type_hint {
-        parts.push(format!("hint={}", hint));
+fn show_def_inline(d: &AsmDef) -> String {
+    let mut head = format!("{} = {}", d.name, d.type_name);
+    if let Some(hint) = &d.type_hint {
+        head.push_str(&format!(" hint: {}", hint));
     }
-    parts.extend(i.fields.iter().map(show_field));
-    parts.join(", ")
-}
-
-pub fn show_inst(i: &AsmInst) -> String {
-    format!("Inst[{}]", show_inst_inline(i))
-}
-
-pub fn show_plan(p: &AsmPlan) -> String {
-    let plan_fields: Vec<_> = p.fields.iter().map(show_field).collect();
-    let mut parts = vec![
-        format!("Plan[{}]", p.name),
-        format!("  root: {}", show_inst(&p.root)),
-    ];
-    if !plan_fields.is_empty() {
-        parts.push(format!("  fields: {}", plan_fields.join(", ")));
-    }
-    parts.join("\n")
-}
-
-// ---------------------------------------------------------------------------
-// Scope tree
-// ---------------------------------------------------------------------------
-
-fn show_scope_asm(scope_id: ScopeId, ir: &IrRes, scoped_insts: &[(ScopeId, &AsmInst)]) -> String {
-    let scope = &ir.scopes[scope_id.0 as usize];
-    let name  = format!("pack:{}", scope.name.as_deref().unwrap_or("_"));
-
-    let mut parts: Vec<String> = Vec::new();
-
-    // Named instances belonging to this scope
-    for (sid, inst) in scoped_insts {
-        if *sid == scope_id {
-            parts.push(show_inst(inst));
-        }
-    }
-
-    // Child Pack scopes only (Type scopes are empty at ASM level — type info erased)
-    for (i, s) in ir.scopes.iter().enumerate() {
-        if s.parent == Some(scope_id) && s.kind == ScopeKind::Pack {
-            parts.push(show_scope_asm(ScopeId(i as u32), ir, scoped_insts));
-        }
-    }
-
-    if parts.is_empty() {
-        format!("Scope[{}]", name)
+    if d.fields.is_empty() {
+        head
     } else {
-        format!("Scope[{},\n{},\n]", name, parts.join(",\n"))
+        let fields = d.fields.iter().map(show_field).collect::<Vec<_>>().join(", ");
+        format!("{head} {{ {fields} }}")
     }
+}
+
+pub fn show_def(d: &AsmDef) -> String {
+    format!("Def[{}]", show_def_inline(d))
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +60,11 @@ pub fn norm(s: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Parse + resolve + lower `input` with TypeScript source for mapper execution.
+pub fn show(grd_src: &str) -> String {
+    show_with_ts(grd_src, "")
 }
 
 /// Parse + resolve + lower `input` with TypeScript source for mapper execution.
@@ -115,26 +82,6 @@ pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
 }
 
 fn show_asm(asm: AsmRes, ir: IrRes) -> String {
-    let mut lines: Vec<String> = Vec::new();
-
-    // Pair each named IR fun's scope with its lowered AsmInst (order preserved by lower)
-    let ir_named_scopes: Vec<ScopeId> = ir.funs.iter()
-        .filter(|f| f.name != "_")
-        .map(|f| f.scope)
-        .collect();
-    let scoped_insts: Vec<(ScopeId, &AsmInst)> = ir_named_scopes.iter().copied()
-        .zip(asm.symbol.insts.iter())
-        .collect();
-
-    // Scope tree: direct Pack children of root
-    for (i, s) in ir.scopes.iter().enumerate().skip(1) {
-        if s.parent == Some(ScopeId(0)) && s.kind == ScopeKind::Pack {
-            lines.push(show_scope_asm(ScopeId(i as u32), &ir, &scoped_insts));
-        }
-    }
-
-    // Plans
-    lines.extend(asm.plans.iter().map(show_plan));
-
-    norm(&lines.join("\n"))
+    let _ = ir;
+    norm(&asm.defs.iter().map(show_def).collect::<Vec<_>>().join("\n"))
 }

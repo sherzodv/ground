@@ -1,5 +1,5 @@
 use ground_compile::ast::{
-    AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPlan, AstPrimitive, AstRef,
+    AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPrimitive, AstRef,
     AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody, AstStructFieldKind,
     AstStructItem, AstTypeExpr, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse,
 };
@@ -49,6 +49,7 @@ pub fn show_primitive(p: &AstPrimitive) -> &'static str {
     match p {
         AstPrimitive::String    => "string",
         AstPrimitive::Integer   => "integer",
+        AstPrimitive::Boolean   => "boolean",
         AstPrimitive::Reference => "reference",
     }
 }
@@ -122,7 +123,8 @@ pub fn show_top_def(td: &AstDef) -> String {
         format!("Input[{}]", input_parts.join(", "))
     };
     let output = show_top_def_output(&td.output.inner);
-    format!("Def[{name}, {mapper}, {input}, {output}]")
+    let head = if td.planned { "Plan" } else { "Def" };
+    format!("{head}[{name}, {mapper}, {input}, {output}]")
 }
 
 pub fn show_pack(p: &AstPack) -> String {
@@ -136,15 +138,6 @@ pub fn show_pack(p: &AstPack) -> String {
         }
     } else {
         format!("Pack[{}]", path)
-    }
-}
-
-pub fn show_plan(p: &AstPlan) -> String {
-    if p.fields.is_empty() {
-        format!("Plan[{}]", p.name.inner)
-    } else {
-        let parts: Vec<_> = p.fields.iter().map(|f| show_field(&f.inner)).collect();
-        format!("Plan[{}, {}]", p.name.inner, parts.join(", "))
     }
 }
 
@@ -190,7 +183,6 @@ pub fn show_def(def: &AstItem) -> String {
     match def {
         AstItem::Def(td)  => show_top_def(&td.inner),
         AstItem::Pack(p)  => show_pack(&p.inner),
-        AstItem::Plan(p)  => show_plan(&p.inner),
         AstItem::Use(u)   => show_use(&u.inner),
     }
 }

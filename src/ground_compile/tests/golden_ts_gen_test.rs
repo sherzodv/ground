@@ -15,8 +15,7 @@ fn ts_gen_primitive_fields() {
             path:   vec![],
             src:    r#"
                 def label { key = string } = make_label { value = string }
-                env = label { key: "environment" }
-                plan env
+                plan env = label { key: "environment" }
             "#.into(),
             ts_src: Some(r#"
                 function make_label(i) { return { value: i.key + "=prod" }; }
@@ -27,9 +26,8 @@ fn ts_gen_primitive_fields() {
     assert!(res.errors.is_empty(),
         "compile errors: {:?}", res.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 
-    let plan  = &res.plans[0];
-    let inst  = plan.reachable.iter().find(|i| i.name == "env").expect("env instance missing");
-    let field = inst.fields.iter().find(|f| f.name == "value").expect("value field missing");
+    let def   = res.defs.iter().find(|d| d.name == "env").expect("env def missing");
+    let field = def.fields.iter().find(|f| f.name == "value").expect("value field missing");
     assert_eq!(
         format!("{:?}", field.value),
         r#"Str("environment=prod")"#,
@@ -46,8 +44,7 @@ fn ts_gen_integer_output() {
             path:   vec![],
             src:    r#"
                 def port = make_port { number = integer }
-                api = port {}
-                plan api
+                plan api = port {}
             "#.into(),
             ts_src: Some(r#"
                 function make_port(_i) { return { number: 8080 }; }
@@ -58,8 +55,32 @@ fn ts_gen_integer_output() {
     assert!(res.errors.is_empty(),
         "compile errors: {:?}", res.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 
-    let plan  = &res.plans[0];
-    let inst  = plan.reachable.iter().find(|i| i.name == "api").expect("api instance missing");
-    let field = inst.fields.iter().find(|f| f.name == "number").expect("number field missing");
+    let def   = res.defs.iter().find(|d| d.name == "api").expect("api def missing");
+    let field = def.fields.iter().find(|f| f.name == "number").expect("number field missing");
     assert_eq!(format!("{:?}", field.value), "Int(8080)", "mapper should produce number=8080");
+}
+
+/// Mapper def with boolean output field.
+#[test]
+fn ts_gen_boolean_output() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name:   "test".into(),
+            path:   vec![],
+            src:    r#"
+                def feature = make_feature { enabled = boolean }
+                plan beta = feature {}
+            "#.into(),
+            ts_src: Some(r#"
+                function make_feature(_i) { return { enabled: true }; }
+            "#.into()),
+        }],
+    });
+
+    assert!(res.errors.is_empty(),
+        "compile errors: {:?}", res.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+
+    let def   = res.defs.iter().find(|d| d.name == "beta").expect("beta def missing");
+    let field = def.fields.iter().find(|f| f.name == "enabled").expect("enabled field missing");
+    assert_eq!(format!("{:?}", field.value), "Bool(true)", "mapper should produce enabled=true");
 }

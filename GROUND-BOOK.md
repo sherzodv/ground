@@ -73,13 +73,23 @@ If no mapper is explicitly referenced, Ground uses shorthand defaults:
 - with no output block, the mapper is `identity`
 - with an output block, the mapper is the def name itself
 
-Mappings are compoasable. The **r1** "instance" that we declared earlier is nothing more than just another mapping based on the **rectangle** mapping and inheriting the output structure from it, where now the **rectangle** defines the *how*, i.e. not only it is the inherited mapping, but also is the Typescript function reference. Note how input params are passed using the `field: value` syntax. Using the full mapping definition it becomes:
+Mappings are composable. The **r1** "instance" that we declared earlier is nothing more than just another mapping based on the **rectangle** mapping and inheriting the output structure from it, where now the **rectangle** defines the *how*, i.e. not only it is the inherited mapping, but also is the Typescript function reference. Note how input params are passed using the `field: value` syntax. Using the full mapping definition it becomes:
 ```ground
 def r1 {} = rectangle {
   width:  1
   height: 2
 }
 ```
+
+A composed def is still a full def. It inherits the output structure of the def it is based on, and may further refine or extend that structure in its own output block. Inside such a block, `field: value` assigns a value to a field of the current def, while `field = type` defines a new field on the current def.
+
+```ground
+def colored_rectangle {} = rectangle {
+  color = string
+}
+```
+
+Here `colored_rectangle` is its own def. It inherits the structure of `rectangle` and adds a new field `color = string`.
 
 And finally the **plan** statement is there to trigger the *resolution process*:
 ```ground
@@ -533,6 +543,17 @@ A **pack** is a Ground namespacing tool. The can be nested.
 
 - Each folder from the source root creates a nested pack with same as folder's name
 - Each file creates a pack names as file's basename
+- Special pack.grd contains definitions for a pack of the same name as the containing folder
+
+For example:
+
+```
+./std/           # pack std
+./std/pack.grd   # pack definitions belonging to pack std
+./std/math.grd   # pack std:math
+./std/io/        # pack std:io
+./std/io/net.grd # pack std:io:net
+```
 
 Typescript & ground files with the same name are in the same named pack.
 
@@ -545,3 +566,4 @@ pack shapes # creates a pack named shapes which continues to end of file
 pack smooth { # creates a pack named smooth inside pack shapes, with scoped defined by {}
 }
 ```
+

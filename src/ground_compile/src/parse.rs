@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
             return Some(self.node(start, AstTypeExpr::List(Box::new(inner))));
         }
 
-        // Struct body: "{" struct_items "}" — used for anonymous inline struct types in fields
+        // Struct body: "{" struct_items "}" — used for anonymous inline struct shapes in fields
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
             let expr = if items.is_empty() { AstTypeExpr::Unit } else { AstTypeExpr::Struct(items) };
@@ -272,7 +272,7 @@ impl<'a> Parser<'a> {
 
         // def keyword → nested named def inside struct body
         if self.at_keyword("def") {
-            if let Some(td) = self.parse_top_def_with_keyword() {
+            if let Some(td) = self.parse_top_def_with_keyword("def", false) {
                 return Some(self.node(start, AstStructItem::Def(td)));
             }
         }
@@ -540,42 +540,6 @@ impl<'a> Parser<'a> {
         Some(self.node(start, AstPack { path, defs }))
     }
 
-    // -- new keyword: plan -----------------------------------------------
-
-    /// `"plan" ident ("{" inst-field* "}")?`
-    fn parse_plan(&mut self) -> Option<AstNode<AstPlan>> {
-        let start = self.pos;
-        if !self.at_keyword("plan") { return None; }
-        let saved = self.pos;
-        self.advance("plan".len());
-        self.skip_ws();
-        let name = match self.parse_ident() {
-            Some(n) => n,
-            None    => { self.pos = saved; return None; }
-        };
-        self.skip_ws();
-        let fields = if self.eat("{") {
-            let mut fields = Vec::new();
-            loop {
-                self.skip_ws();
-                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
-                if let Some(f) = self.try_parse_inst_field() {
-                    fields.push(f);
-                } else {
-                    self.push_error(self.pos, format!(
-                        "unexpected token in plan body: {:?}", self.peek()
-                    ));
-                    self.skip_past_line();
-                }
-            }
-            self.eat("}");
-            fields
-        } else {
-            vec![]
-        };
-        Some(self.node(start, AstPlan { name, fields }))
-    }
-
     // -- new unified def forms ------------------------------------------
 
     /// `ident "=" type_expr` — a single named field def.
@@ -655,11 +619,12 @@ impl<'a> Parser<'a> {
     }
 
     /// `"def" ident input? ("=" mapper? output)?`
-    fn parse_top_def_with_keyword(&mut self) -> Option<AstNode<AstDef>> {
+    /// `"plan" ident input? ("=" mapper? output)?`
+    fn parse_top_def_with_keyword(&mut self, keyword: &str, planned: bool) -> Option<AstNode<AstDef>> {
         let start = self.pos;
-        if !self.at_keyword("def") { return None; }
+        if !self.at_keyword(keyword) { return None; }
         let saved = self.pos;
-        self.advance("def".len());
+        self.advance(keyword.len());
         self.skip_ws();
         let name = match self.parse_ident() {
             Some(n) => n,
@@ -684,6 +649,7 @@ impl<'a> Parser<'a> {
         };
 
         Some(self.node(start, AstDef {
+            planned,
             name,
             input,
             mapper: mapper_opt,
@@ -726,6 +692,7 @@ impl<'a> Parser<'a> {
             let input = self.parse_field_block();
             let output = self.node(self.pos, AstDefO::Unit);
             return Some(self.node(start, AstDef {
+                planned: false,
                 name,
                 input,
                 mapper: None,
@@ -746,6 +713,7 @@ impl<'a> Parser<'a> {
                     self.node(out_start, AstDefO::Unit)
                 };
                 return Some(self.node(start, AstDef {
+                    planned: false,
                     name,
                     input: vec![],
                     mapper: Some(mapper_name),
@@ -765,6 +733,7 @@ impl<'a> Parser<'a> {
             let items = self.parse_struct_body().unwrap_or_default();
             let output = self.node(out_start, if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) });
             return Some(self.node(start, AstDef {
+                planned: false,
                 name,
                 input: vec![],
                 mapper: None,
@@ -781,6 +750,7 @@ impl<'a> Parser<'a> {
                 let items = self.parse_struct_body().unwrap_or_default();
                 let output = self.node(out_start, if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) });
                 return Some(self.node(start, AstDef {
+                    planned: false,
                     name,
                     input: vec![],
                     mapper: Some(ref_node),
@@ -794,6 +764,7 @@ impl<'a> Parser<'a> {
         if let Some(te) = self.parse_type_expr() {
             let output = self.node(out_start, AstDefO::TypeExpr(te));
             return Some(self.node(start, AstDef {
+                planned: false,
                 name,
                 input: vec![],
                 mapper: None,
@@ -804,6 +775,7 @@ impl<'a> Parser<'a> {
         self.push_error(self.pos, "expected type expression or struct body after '='");
         let output = self.node(out_start, AstDefO::Struct(vec![]));
         Some(self.node(start, AstDef {
+            planned: false,
             name,
             input: vec![],
             mapper: None,
@@ -817,10 +789,10 @@ impl<'a> Parser<'a> {
         }
         if self.at_keyword("use")  { return self.parse_use().map(AstItem::Use); }
         if self.at_keyword("plan") {
-            if let Some(p) = self.parse_plan() { return Some(AstItem::Plan(p)); }
+            if let Some(td) = self.parse_top_def_with_keyword("plan", true) { return Some(AstItem::Def(td)); }
         }
         if self.at_keyword("def") {
-            if let Some(td) = self.parse_top_def_with_keyword() { return Some(AstItem::Def(td)); }
+            if let Some(td) = self.parse_top_def_with_keyword("def", false) { return Some(AstItem::Def(td)); }
         }
         if let Some(td) = self.parse_top_def_no_keyword() { return Some(AstItem::Def(td)); }
         None

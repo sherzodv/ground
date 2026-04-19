@@ -52,6 +52,17 @@ fn error_field_from_different_type_rejected() {
 }
 
 #[test]
+fn error_composed_shape_redefines_inherited_field() {
+    let out = show(r##"
+        service = { image = reference }
+        api = service { image = string }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("image"), "error should name the duplicate inherited field: {out}");
+    assert!(out.contains("already exists"), "error should explain the inherited collision: {out}");
+}
+
+#[test]
 fn error_invalid_enum_variant() {
     let out = show(r##"
         zone = 1 | 2 | 3
@@ -71,6 +82,18 @@ fn error_unknown_instance_ref() {
     "##);
     assert!(out.contains("ERR:"), "expected error, got: {out}");
     assert!(out.contains("ghost"), "error should mention the unknown instance: {out}");
+}
+
+#[test]
+fn error_planned_def_cannot_be_referenced() {
+    let out = show(r##"
+        service = { image = reference }
+        plan api = service { image: nginx }
+        stack = { service = service }
+        my-stack = stack { service: api }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("api"), "error should mention the planned def name: {out}");
 }
 
 #[test]
@@ -150,7 +173,7 @@ fn error_typed_enum_struct_without_hint() {
         h = host { e: { val: 5 } }
     "##);
     assert!(out.contains("ERR:"), "expected error, got: {out}");
-    assert!(out.contains("type hint required"), "expected hint-required error, got: {out}");
+    assert!(out.contains("shape hint required"), "expected hint-required error, got: {out}");
 }
 
 #[test]

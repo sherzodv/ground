@@ -5,7 +5,7 @@ pub mod resolve;
 pub mod asm;
 mod ts_gen;
 
-pub use asm::{AsmInst, AsmField, AsmValue, AsmVariant, AsmInstRef, asm_value_to_json};
+pub use asm::{AsmDef, AsmField, AsmValue, AsmVariant, AsmDefRef, asm_value_to_json};
 
 // ---------------------------------------------------------------------------
 // Embedded stdlib
@@ -29,7 +29,7 @@ fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
 }
 
 // ---------------------------------------------------------------------------
-// Public input types
+// Public input shapes
 // ---------------------------------------------------------------------------
 
 pub struct CompileReq {
@@ -46,7 +46,7 @@ pub struct Unit {
 }
 
 // ---------------------------------------------------------------------------
-// Public output types
+// Public output shapes
 // ---------------------------------------------------------------------------
 
 pub struct CompileError {
@@ -60,28 +60,8 @@ pub struct ErrorLoc {
     pub col:  u32,
 }
 
-/// Lookup table for all named instances in the program.
-pub struct Symbol {
-    pub instances: Vec<AsmInst>,
-}
-
-impl Symbol {
-    pub fn get(&self, name: &str) -> Option<&AsmInst> {
-        self.instances.iter().find(|i| i.name == name)
-    }
-}
-
-/// A fully resolved plan context created from a `plan name` declaration.
-pub struct Plan {
-    pub name:      String,
-    pub root:      AsmInst,
-    pub fields:    Vec<AsmField>,
-    pub reachable: Vec<AsmInst>,
-}
-
 pub struct CompileRes {
-    pub symbol:  Symbol,
-    pub plans:   Vec<Plan>,
+    pub defs:    Vec<AsmDef>,
     pub errors:  Vec<CompileError>,
 }
 
@@ -136,7 +116,7 @@ pub fn compile(req: CompileReq) -> CompileRes {
 
     // Don't lower if the IR has errors — it may be in an invalid state.
     if !errors.is_empty() {
-        return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors };
+        return CompileRes { defs: vec![], errors };
     }
 
     // Generate TypeScript interface declarations and type-compatibility assertions.
@@ -161,12 +141,12 @@ pub fn compile(req: CompileReq) -> CompileRes {
                     .map(|d| CompileError { message: d.message.clone(), loc: None })
                     .collect();
                 if !ts_errors.is_empty() {
-                    return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors: ts_errors };
+                    return CompileRes { defs: vec![], errors: ts_errors };
                 }
             }
             Err(e) => {
                 let msg = format!("TypeScript type-check engine error: {e}");
-                return CompileRes { symbol: Symbol { instances: vec![] }, plans: vec![], errors: vec![CompileError { message: msg, loc: None }] };
+                return CompileRes { defs: vec![], errors: vec![CompileError { message: msg, loc: None }] };
             }
         }
     }
@@ -179,16 +159,7 @@ pub fn compile(req: CompileReq) -> CompileRes {
 
     let ctx = asm::lower(&ir, &full_ts);
 
-    let symbol = Symbol { instances: ctx.symbol.insts };
-
-    let plans = ctx.plans.into_iter().map(|p| Plan {
-        name:      p.name,
-        root:      p.root,
-        fields:    p.fields,
-        reachable: p.reachable,
-    }).collect();
-
-    CompileRes { symbol, plans, errors }
+    CompileRes { defs: ctx.defs, errors }
 }
 
 // ---------------------------------------------------------------------------
