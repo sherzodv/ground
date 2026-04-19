@@ -1,0 +1,6 @@
+{% macro unit(path, template) -%}
+{
+  "file": "{{ path }}",
+  "template": "{{ template }}"
+}
+{%- endmacro unit %}

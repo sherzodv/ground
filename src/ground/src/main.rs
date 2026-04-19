@@ -2,7 +2,8 @@ mod ops_display;
 
 use std::{env, fs, path::{Path, PathBuf}, process};
 
-use ground_compile::{compile, CompileReq, CompileRes, AsmValue, AsmInstRef, Symbol, Unit, STDLIB_UNIT_COUNT};
+use ground_be_terra::JsonUnit;
+use ground_compile::{compile, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit, STDLIB_UNIT_COUNT};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
@@ -179,7 +180,7 @@ fn do_compile() -> CompileRes {
         process::exit(1);
     }
 
-    if res.plans.is_empty() {
+    if res.defs.is_empty() {
         eprintln!("no plan declarations found — nothing to generate");
         process::exit(1);
     }
@@ -187,30 +188,46 @@ fn do_compile() -> CompileRes {
     res
 }
 
-/// Compile and generate a merged Terraform JSON for the first deploy.
-/// Used by `cmd_plan` and `cmd_apply` which operate on a single terraform workspace.
-fn compile_and_gen() -> (CompileRes, String, String) {
+/// Compile and generate Terraform files for a single planned def.
+/// `ground plan` / `ground apply` operate on one terraform workspace at a time,
+/// so multiple planned defs must use `ground gen terra` instead.
+fn compile_and_gen() -> (CompileRes, Vec<JsonUnit>, String) {
     let res = do_compile();
 
-    let json = match ground_be_terra::generate(&res) {
-        Ok(j)  => j,
+    if res.defs.len() != 1 {
+        eprintln!(
+            "expected exactly one plan for this command, found {} — use `ground gen terra` to generate all stacks",
+            res.defs.len()
+        );
+        process::exit(1);
+    }
+
+    let outputs = match ground_be_terra::generate_each(&res) {
+        Ok(o)  => o,
         Err(e) => { eprintln!("error: {e}"); process::exit(1); }
     };
 
-    let stack_name = res.plans[0].name.clone();
-    (res, json, stack_name)
+    let stack_name = res.defs[0].name.clone();
+    let stack_outputs: Vec<JsonUnit> = outputs.into_iter()
+        .filter(|u| u.file.starts_with(&format!("{stack_name}/")))
+        .collect();
+
+    (res, stack_outputs, stack_name)
 }
 
-fn write_stack(stack_name: &str, json: &str) {
-    let dir      = format!(".ground/terra/{stack_name}");
-    let out_path = format!("{dir}/main.tf.json");
-
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("error: {dir}: {e}"); process::exit(1);
-    }
-
-    if let Err(e) = fs::write(&out_path, json) {
-        eprintln!("error: {out_path}: {e}"); process::exit(1);
+fn write_stack_units(outputs: &[JsonUnit]) {
+    for output in outputs {
+        let out_path = Path::new(".ground/terra").join(&output.file);
+        if let Some(parent) = out_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("error: {}: {e}", parent.display());
+                process::exit(1);
+            }
+        }
+        if let Err(e) = fs::write(&out_path, &output.content) {
+            eprintln!("error: {}: {e}", out_path.display());
+            process::exit(1);
+        }
     }
 }
 
@@ -222,9 +239,9 @@ fn cmd_gen_terra() {
         Err(e) => { eprintln!("error: {e}"); process::exit(1); }
     };
 
-    for (name, json) in &outputs {
-        write_stack(name, json);
-        println!("wrote .ground/terra/{name}/main.tf.json");
+    for output in &outputs {
+        write_stack_units(std::slice::from_ref(output));
+        println!("wrote .ground/terra/{}", output.file);
     }
 }
 
@@ -234,16 +251,16 @@ fn cmd_gen_terra() {
 
 fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
     let mut lookup = Vec::new();
-    for plan in &res.plans {
-        let alias_u = plan.name.replace('-', "_");
-        let pfx_u = plan.fields.iter()
+    for def in &res.defs {
+        let alias_u = def.name.replace('-', "_");
+        let pfx_u = def.fields.iter()
             .find(|f| f.name == "prefix")
             .and_then(|f| match &f.value {
                 AsmValue::Str(s) | AsmValue::Ref(s) => Some(s.replace('-', "_")),
                 _ => None,
             })
             .unwrap_or_default();
-        for inst_ref in collect_members(&plan.root, &res.symbol) {
+        for inst_ref in collect_members(def) {
             let inst_u = inst_ref.name.replace('-', "_");
             let key    = format!("{pfx_u}{alias_u}_{inst_u}");
             let label  = format!("{}:{}", inst_ref.type_name, inst_ref.name);
@@ -253,37 +270,31 @@ fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
     lookup
 }
 
-fn collect_members(inst: &ground_compile::AsmInst, symbol: &Symbol) -> Vec<AsmInstRef> {
+fn collect_members(def: &AsmDef) -> Vec<AsmDefRef> {
     let mut out  = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    seen.insert(inst.name.clone());
-    for f in &inst.fields {
-        collect_refs_deep(&f.value, symbol, &mut out, &mut seen);
+    seen.insert(def.name.clone());
+    for f in &def.fields {
+        collect_refs_deep(&f.value, &mut out, &mut seen);
     }
     out
 }
 
 fn collect_refs_deep(
     v:      &AsmValue,
-    symbol: &Symbol,
-    out:    &mut Vec<AsmInstRef>,
+    out:    &mut Vec<AsmDefRef>,
     seen:   &mut std::collections::HashSet<String>,
 ) {
     match v {
-        AsmValue::InstRef(r) => {
+        AsmValue::DefRef(r) => {
             if seen.insert(r.name.clone()) {
                 out.push(r.clone());
-                if let Some(inst) = symbol.get(&r.name) {
-                    for f in &inst.fields {
-                        collect_refs_deep(&f.value, symbol, out, seen);
-                    }
-                }
             }
         }
-        AsmValue::List(items)  => { for i in items  { collect_refs_deep(i, symbol, out, seen); } }
-        AsmValue::Path(segs)   => { for s in segs   { collect_refs_deep(s, symbol, out, seen); } }
-        AsmValue::Inst(i)      => { for f in &i.fields { collect_refs_deep(&f.value, symbol, out, seen); } }
-        AsmValue::Variant(v)   => { if let Some(p) = &v.payload { collect_refs_deep(p, symbol, out, seen); } }
+        AsmValue::List(items) => { for i in items { collect_refs_deep(i, out, seen); } }
+        AsmValue::Path(segs) => { for s in segs { collect_refs_deep(s, out, seen); } }
+        AsmValue::Def(def) => { for f in &def.fields { collect_refs_deep(&f.value, out, seen); } }
+        AsmValue::Variant(v) => { if let Some(p) = &v.payload { collect_refs_deep(p, out, seen); } }
         _ => {}
     }
 }
@@ -456,11 +467,11 @@ fn display_plan_summary(
 fn cmd_apply(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (res, json, stack_name) = compile_and_gen();
+    let (res, outputs, stack_name) = compile_and_gen();
     let provider = "aws".to_string();
     let lookup = build_lookup(&res);
 
-    write_stack(&stack_name, &json);
+    write_stack_units(&outputs);
 
     let dir = Path::new(".ground/terra").join(&stack_name);
 
@@ -484,11 +495,11 @@ fn cmd_apply(verbose: bool) {
 fn cmd_plan(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (res, json, stack_name) = compile_and_gen();
+    let (res, outputs, stack_name) = compile_and_gen();
     let provider = "aws".to_string();
     let lookup = build_lookup(&res);
 
-    write_stack(&stack_name, &json);
+    write_stack_units(&outputs);
 
     let dir = Path::new(".ground/terra").join(&stack_name);
 

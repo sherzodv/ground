@@ -1,0 +1,4 @@
+{% for def in defs -%}
+plan {{ def.name }}
+  {{ def.type_name }} {{ def.name }}
+{% endfor %}

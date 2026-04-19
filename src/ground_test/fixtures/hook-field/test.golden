@@ -1,5 +1,0 @@
-plan env
-  label env
-    key: environment
-    value: environment=prod
-    

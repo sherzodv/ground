@@ -1,0 +1,5 @@
+name="api"
+port=8080
+enabled=true
+endpoint={"_name":"_","host":"api.internal","port":8080,"tls":true}
+tags=["api","public","enabled"]

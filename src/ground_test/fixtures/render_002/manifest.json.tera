@@ -1,0 +1,9 @@
+{% import "_files.tera" as files -%}
+{
+  "files": [
+    {% for def in defs -%}
+    {{ files::unit(path="services/" ~ def.name ~ "/summary.txt", template="summary.txt.tera") }},
+    {{ files::unit(path="services/" ~ def.name ~ "/values.txt", template="values.txt.tera") }}
+    {%- endfor %}
+  ]
+}

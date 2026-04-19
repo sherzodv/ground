@@ -1,0 +1,4 @@
+{% import "_content.tera" as content -%}
+{% for def in defs -%}
+{{ content::summary(def=def) }}
+{% endfor %}

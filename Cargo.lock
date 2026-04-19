@@ -945,6 +945,7 @@ version = "0.0.0"
 dependencies = [
  "ground_be_terra",
  "ground_compile",
+ "ground_gen",
  "serde_json",
  "tera",
 ]

@@ -1,0 +1,10 @@
+{
+  "files": [
+    {% for def in defs -%}
+    {
+      "file": "plans/{{ def.name }}.txt",
+      "template": "plan.txt.tera"
+    }
+    {%- endfor %}
+  ]
+}

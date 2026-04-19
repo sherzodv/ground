@@ -1,0 +1,8 @@
+{
+  "files": [
+    {
+      "file": "plans/minimal.txt",
+      "template": "plan.txt.tera"
+    }
+  ]
+}

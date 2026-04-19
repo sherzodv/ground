@@ -1,0 +1,12 @@
+{
+  "files": [
+    {
+  "file": "services/api/summary.txt",
+  "template": "summary.txt.tera"
+},
+    {
+  "file": "services/api/values.txt",
+  "template": "values.txt.tera"
+}
+  ]
+}

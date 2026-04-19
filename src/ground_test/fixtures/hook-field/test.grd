@@ -1,3 +1,0 @@
-def label { key = string } = make_label { value = string }
-env = label { key: "environment" }
-plan env

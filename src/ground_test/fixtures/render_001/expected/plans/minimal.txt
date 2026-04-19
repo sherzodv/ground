@@ -1,0 +1,2 @@
+plan minimal
+  minimal minimal

@@ -1,0 +1,12 @@
+def endpoint {
+  host = string
+  port = integer
+  tls = boolean
+}
+
+def service { name = string  port = integer  enabled = boolean } = mk_demo_service {
+  endpoint = endpoint
+  tags = [string]
+}
+
+plan api = service { name: "api"  port: 8080  enabled: true }
