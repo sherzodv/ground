@@ -2,169 +2,222 @@ The Ground Book
 
 The Ground is a declarative systems design language facilitating composable abstractions to define layered architecture.
 
-The core syntactic construct of the Ground language is a mapping between structures:
+The Ground language only defines typed relations called mappings, and delegates the actual transformation logic to strictly typed and pure Typescript functions. During the resolution process Ground generates all the necessary types and signatures for Typescript, letting a user to define implementations.
+
 ```ground
-def service {
-  name = string
-} = aws_ecs_service {
-  image = reference
-  port  = http | grpc
+rectangle {
+  width  = integer
+  height = integer
+} = {
+  area = integer
 }
 
-```
-
-We defined a mapping named **service** which, given the input structure, maps it to the output using the mapper **aws_ecs_service**. While the **service** estabslishes *what maps to what* defining a typed relation, the **aws_ecs_service** refers to the implementation, defining the *how this mapping happens*. **aws_ecs_service** is a reference  to a typescript function which implements the actual transformation.
-
-Mappings are compoasable. We can define another mapping, where now the **service** defines the *how*, i.e. becomes the implementation. Note how we can pass inputs to the **service** mapping using a `field: value` syntax:
-```ground
-def payments {} = service {
-  name: "marstech-api"
+r1 rectangle {
+  width:  1
+  height: 2
 }
+
+plan r1
 ```
-
-Note that the **payments** service inherits the output structure from the **service**. We can read this as: create a new mapping called **payments** with no input parameters, whose output structure is inherited from the **service** mapping given the provided input parameters.
-
-But both of these definitions have no effect in Ground until we **plan** them. A **plan** construct in Ground is a terminal statement that starts the actual *resolution* process.
-```ground
-plan payments
-```
-
-Now when we have all the pieces, let's connect the dots by defining how the *resolution* works. Ground starts with a **plan** statement. It reads the **plan**'s target and triess to resolve it, in this case it's the **payments** mapping. Ground then tries to find a symbol named *service* in the scope and it finds the **service** mapping. The resolution process repeats for the **service** mapping with the inherited inputs provided in the **payments** mapping. There is no mapping called **aaws_ecs_service** but there is a typescript function with same name in the scope. Ground evaluates it with the passed through input.
-
-On the way back from recursive resolution, Ground now checks if is there a typescript function called *service* in the scope.
-
-But in this case there is no typescript function called **service** in the scope.
-
-Ground allows omitting empty input args and other syntax details:
-```ground
-api service {
-  name: "marstech-api"
-}
-```
-
-Although this looks like we are creating a named instance of the **service**, from the Ground perspective we're are creating another mapping.
-```ground
-api service {
-  name: "marstech-api"
-}
-```
-
----
-
-### Identity def — no hook, output = input
-
-```ground
-def service {
-  port = grpc | http
-}
-```
-
-No hook, no output schema — the def is an identity transform. Its output shape is its
-input shape. `service` accepts `port` and passes it through.
-
-### Transformation def — with hook
-
-```ground
-def service {
-  port = grpc | http
-} = mk_service {
-  ecs_arn = string
-}
-```
-
-`mk_service` is a TypeScript function the user provides. Ground generates the interfaces:
 
 ```typescript
-interface MkServiceI { port: 'grpc' | 'http' }
-interface MkServiceO { ecs_arn: string }
+export interface rectangleI {
+  width: number;   // ground:integer
+  height: number;  // ground:integer
+}
+
+export interface rectangleO extends rectangleI {
+  area: number;    // ground:integer
+}
+
+export function rectangle(input: rectangleI): rectangleO {
+  const { width, height } = input;
+
+  if (!Number.isInteger(width) || !Number.isInteger(height)) {
+    throw new Error("width and height must be integers");
+  }
+
+  return {
+    width,
+    height,
+    area: width * height,
+  };
+}
 ```
 
-### Calling a def
+Things to note in this example:
 
-Call a def by providing its input values using `:` syntax:
+- **rectangle** defines a typed mapping between input and output structures
+- by default the input fields are included in the output as is
+- `field = type` syntax defines a field and it's type
+- `field: value` syntax provides a value for a field
+- by default Ground searches for a Typescript function with the same name as as the mapping name to perform the resolution of the output value
+- Ground starts the resolution process from a **plan** statement, and all definitions that are not reachable from it are purely descriptive and have no effect
 
+If we run the Ground on the code above it will internally resolve it to `r1 { width: 1 height: 2 area: 2 }` and render it with a user provided template to a file. This example uses a Ground's shorthand syntax to define mappings.
+
+Now let's dive into more details and explore the **def** construct, which is the core of the Ground language. The full mapping definition looks like this:
 ```ground
-api = service { port: http }
+def rectangle {
+  width  = integer
+  height = integer
+} = mk_rect {
+  area   = integer
+}
 ```
 
-`api` is the result of calling `service` with `port: http`. If `service` has a hook,
-the hook runs. `api`'s output shape is `service`'s output shape.
+We used the **def** keyword to define a mapping named **rectangle** which, given the input structure, maps it to the output using the mapper **mk_rect**. While the **rectangle** estabslishes *what* maps to what defining a typed relation, the **mk_rect** refers to the implementation, defining the *how* this mapping is done. **mk_rect** is a reference to a typescript function which implements the actual transformation.
 
----
+If no mapper function is referenced, Ground searches the Typescript function with the same name as the mapping name, as it was in the first example
 
-## Composition
-
-Defs compose. This is the core of Ground.
-
+Mappings are compoasable. The **r1** "instance" that we declared earlier is nothing more than just another mapping based on the **rectangle** mapping and inheriting the output structure from it, where now the **rectangle** defines the *how*, i.e. not only it is the inherited mapping, but also is the Typescript function reference. Note how input params are passed using the `field: value` syntax. Using the full mapping definition it becomes:
 ```ground
-def boo { i1 = string } = mk_boo { o1 = string }
-
-foo = boo { i1: "hello" }
+def r1 {} = rectangle {
+  width:  1
+  height: 2
+}
 ```
 
-`foo` calls `boo`, which calls `mk_boo`. The call graph is topo-sorted and evaluated
-bottom-up: `mk_boo` runs first, its output flows up to `foo`.
-
-`foo` can forward its own inputs into another def:
-
+And finally the **plan** statement is there to trigger the *resolution process*:
 ```ground
-foo { i2 = string } = boo { i1: {i2} }
-// TS: foo(i2) = boo({ i1: i2 })
+plan r1
 ```
 
-Or declare its own hook on top:
+Now when we have all the pieces, let's connect the dots by defining how the *resolution* works. Ground starts with a **plan** statement. It reads the **plan**'s target and triess to resolve it, in this case it's the **r1** mapping. Ground then tries to find a symbol named *rectangle* in the scope and it finds the **rectangle** mapping. The resolution process repeats for the **rectangle** mapping with the inherited inputs provided in the **r1** mapping. There is no mapping called **mk_rect** but there is a typescript function with same name in the scope. Ground evaluates it with the passed through input. On the way back from the recursive resolution, Ground now checks if is there a typescript function called *rectangle* in the scope. If there is Ground feds the resolved output along with the input provided to **r1**.
+```typescript
+// =========================
+// ground.generated.d.ts
+// =========================
 
+export interface rectangleI {
+  width: number;
+  height: number;
+}
+
+export interface rectangleO extends rectangleI {
+  area: number;
+}
+
+export interface r1I {}
+
+export interface r1O extends rectangleO {}
+
+export function mk_rect(input: rectangleI): rectangleO;
+
+export function rectangle(
+  resolved: rectangleO,
+  input: r1I
+): r1O;
+
+
+// =========================
+// impl.ts (user code)
+// =========================
+
+import {
+  rectangleI,
+  rectangleO,
+  r1I,
+  r1O,
+} from "./ground.generated";
+
+export function mk_rect(input: rectangleI): rectangleO {
+  const { width, height } = input;
+
+  if (!Number.isInteger(width) || !Number.isInteger(height)) {
+    throw new Error("width and height must be integers");
+  }
+
+  return {
+    width,
+    height,
+    area: width * height,
+  };
+}
+
+export function rectangle(
+  resolved: rectangleO,
+  _input: r1I
+): r1O {
+  return resolved;
+}
+```
+
+When resolving `r1` defined as `def r1 {} = rectangle { width: 1 height: 2 }`:
+
+- Ground sees `rectangle` in mapper position
+- It checks whether `rectangle` is also a mapping → yes
+- Ground **descends** and resolves the `rectangle` mapping using the provided input
+- The `rectangle` mapping uses its mapper `mk_rect`, producing `{ width: 1, height: 2, area: 2 }`
+
+After that:
+
+- Ground **ascends** and checks for a Typescript function named `rectangle`
+- Since it exists, Ground calls it as the mapper for `r1`, passing:
+  - the resolved output of `rectangle`
+  - the input of `r1`
+
+The result of this call is the final value of `r1`.
+
+In summary:
+
+- if a mapper name also resolves to a mapping, Ground
+  - resolves that mapping first (descent)
+  - then applies the Typescript function with the same name on ascent
+- the mapper function receives the resolved output of the descended mapping and the input of the current mapping
+
+As we said earlier, Ground allows more readable syntax by omitting **def**, input definition, **=** and a mapper reference.
 ```ground
-foo { i2 = string } = mk_foo { o2 = string }
+r1 rectangle {
+  width:  1
+  height: 2
+}
+
+plan r1
 ```
 
-The tchain can continue arbitrarily:
+> [!IMPORTANT] The `field: value` syntax can only appear in the output block
 
+When `def` and `=` are both omitted, the definition is the input schema with the identity mapper. It's only possible for the initial **def**, and not for composed definitions:
 ```ground
-def service
-api = service
-deployment = api
+rectangle {
+  width  = integer
+  height = integer
+}
 ```
 
-Each link in the chain is a function call. The resolved graph is the composed result.
+is equivalent to:
+```ground
+def rectangle {
+  width  = integer
+  height = integer
+} = identity {}
+```
 
----
+This is convenient for simple data carrier types without computed fields.
 
-## Shorthands
+### Primitives
+
+Built-in terminal defs — cannot be decomposed further:
+```ground
+boolean
+integer
+string
+reference
+unit
+```
 
 ### Enum and list defs
 
+These are defs whose output is an enum or list type — no input:
 ```ground
 port = grpc | http
 ports = [ port ]
 ```
 
-These are defs whose output is an enum or list type — no input, no hook.
-
-### Struct shorthand
-
-When `def` and `=` are both omitted, the block is the input schema with identity transform:
-
-```ground
-service {
-  image = reference
-  port  = grpc | http
-}
-```
-
-Equivalent to:
-
-```ground
-def service {
-  image = reference
-  port  = grpc | http
-} = {}
-```
-
 ### Nested defs
 
 The `def` keyword disambiguates a nested def from a field inside a struct body:
-
 ```ground
 service = {
   def scaling = {
@@ -175,105 +228,9 @@ service = {
 }
 ```
 
-### Primitives
-
-Built-in terminal defs — cannot be decomposed further:
-
-```ground
-boolean
-integer
-string
-reference
-unit
-```
-
----
-
-## Refs within defs
-
-Ground can express transformations without external hooks using ref expressions:
-
-```ground
-def service {
-  name = reference
-} = {
-  image = reference
-  label = reference
-
-  image: images/{name}:latest
-  label: svc-{name}
-}
-```
-
-The hook can be omitted when all output fields are covered by ref expressions.
-Ref expressions are computed before references are resolved.
-
-Transformations can lock specific values against hook overrides using `final`:
-
-```ground
-def service {
-  name = reference
-} = mk_service {
-  image = reference
-  label = reference
-
-  image: final images/{name}:latest
-}
-```
-
-`mk_service` cannot override `image` — `final` wins unconditionally.
-
----
-
-## Plan
-
-All defs are pure, deferred descriptions. Nothing resolves until a `plan` declaration
-names a symbol as a resolution root. Ground produces output only for what is planned.
-
-```ground
-prd-eu = aws_deploy {
-    stack: marstech
-}
-
-plan prd-eu
-```
-
-`plan` followed by a name is the entire statement. Ground top-sorts the graph
-reachable from `prd-eu` and resolves it bottom-up.
-
-When the symbol has an input def, `plan` supplies the args:
-
-```ground
-prd-eu {
-    region = string
-} = aws_deploy {
-    stack: marstech
-}
-
-plan prd-eu {
-    region: eu-central
-}
-```
-
-Ground validates the args against the input def before resolving. A missing required
-arg or a type mismatch is a compile error at the `plan` line.
-
-Multiple plans can reference the same or different symbols:
-
-```ground
-plan prd-eu { region: eu-central }
-plan prd-me { region: me-central }
-plan stg-eu { region: eu-central }
-```
-
-Each produces independent output. Defs not reachable from any `plan` are not resolved.
-
----
-
 # References
 
 A *reference* is Ground's string interpolation which does not utilize quotes:
-
 ```
 registry/payments:latest
 https://getground.com
@@ -281,7 +238,6 @@ service:api:http
 ```
 
 References allow to express more complex relations between defs:
-
 ```ground
 def service = {
   access = def:service
@@ -298,7 +254,6 @@ api = service {
 ```
 
 Refs can express typed connections:
-
 ```ground
 def service = {
   port   = http | grpc
@@ -314,7 +269,6 @@ api = service {
 ```
 
 Lists:
-
 ```ground
 def service = {
   port   = http | grpc
@@ -331,7 +285,6 @@ api = service {
 ```
 
 Sum types in access lists:
-
 ```ground
 def database = {
   engine = postgres | mysql
@@ -353,7 +306,6 @@ api = service {
 ```
 
 Refs can use keywords and defined names to disambiguate resolving:
-
 ```ground
 main-db  = database { engine: postgres }
 main-svc = service  { port: grpc }
@@ -370,7 +322,6 @@ api = service {
 ```
 
 Refs can have optional segments surrounded by `()`:
-
 ```ground
 def service = {
   port   = http | grpc
@@ -387,7 +338,6 @@ api = service {
 ```
 
 Ref expressions are part of refs:
-
 ```ground
 def service {
   imageBase = string
@@ -404,7 +354,6 @@ api = service {
 ```
 
 Ref expressions can use def fields:
-
 ```ground
 def service {
   major = integer
@@ -418,7 +367,6 @@ payments = service { major: 2  minor: 1 }
 ```
 
 Ref expressions are computed (reduced) before references are resolved:
-
 ```ground
 def env = dev | prd
 
@@ -436,7 +384,6 @@ api = router { env: prd }
 ```
 
 Ref expressions can define names:
-
 ```ground
 def tag {
   name  = reference
@@ -459,99 +406,77 @@ payments = service {
 }
 ```
 
----
+> [!IMPORTANT] Ground disambiguates referencess from the `field: value` syntax by spaces after the `:`
 
-## Resolution
+## Refs within defs
 
-Ground produces output by resolving the final graph. The graph is topo-sorted and
-resolution starts from the bottom. There is no need for explicit dependency declarations.
-
-Ground collects values from all applicable sources, then applies priority:
-
-```
-final ref  >  hook  >  ref  >  decomposition
-```
-
-1. A `final` **ref expression** — wins unconditionally; no hook can override
-2. A **TypeScript hook** — overrides any non-final ref expression for the same field
-3. A **ref expression** — used when no hook covers the field
-4. **Decomposition** — the field's type is itself a def that resolves recursively
-
-If none apply to a terminal field (`string`, `integer`, `boolean`) — compile error.
-
-### Hook propagation
-
-When a hook provides a value for a field, the entire subtree rooted at that field
-is considered resolved. Ground does not recurse into hook-provided values to resolve
-sub-fields independently.
-
+Ground can express simple mappings without mappers using ref expressions:
 ```ground
-def firewall = {
-  name       = string
-  allow_port = integer
-}
+def service {
+  name = reference
+} = {
+  image = reference
+  label = reference
 
-def node = make_node {
-  fw = firewall
+  image: images/{name}:latest
+  label: svc-{name}
 }
 ```
 
-`make_node` returns a complete `fw` object. Ground takes it as-is — it does not
-separately resolve `fw.name` or `fw.allow_port`. The hook owns the subtree.
-
-If the hook returns a partial object (e.g. `fw` with `name` but no `allow_port`),
-that is a compile error — enforced by the generated TypeScript interface which
-types the return as the complete `Firewall` shape.
-
-### Input args — pre-resolution
-
-Fields declared in the **input def** (before `=`) are resolved by their own hooks
-before the enclosing hook fires. The resolved values are injected into the enclosing
-hook as inputs.
-
+The mapper can be omitted when all the output fields are covered by ref expressions. Ref expressions are computed before references are resolved.
+Mappings can lock specific values against mapper overrides using the **final** keyword:
 ```ground
-def firewall = make_fw {
-  name       = string
-  allow_port = integer
-}
+def service {
+  name = reference
+} = mk_service {
+  image = reference
+  label = reference
 
-def node {
-  fw = firewall       # input position — make_fw fires first
-} = make_node {       # make_node receives already-resolved fw
-  region = string
+  image: final images/{name}:latest
 }
 ```
 
-Generated interfaces reflect the ordering:
+**mk_service** cannot override **image** — **final** wins unconditionally.
 
-```typescript
-// make_fw fires first
-interface MakeFwI { /* firewall inputs */ }
-interface MakeFwO { name: string; allow_port: number }
+## Plan
 
-// make_node receives resolved fw as input
-interface MakeNodeI { fw: MakeFwO }
-interface MakeNodeO { region: string }
-```
-
-Compare with the same field in the **output body** — here `make_node` owns `fw`
-and must return it in full:
-
+All defs are pure, deferred descriptions. Nothing resolves until a `plan` declaration names a symbol as a resolution root. Ground produces output only for what is planned.
 ```ground
-def node = make_node {
-  fw     = firewall   # output position — make_node must provide fw completely
-  region = string
+prd-eu = aws_deploy {
+    stack: marstech
+}
+
+plan prd-eu
+```
+
+When the symbol has an input def, `plan` supplies the args:
+```ground
+prd-eu {
+    region = string
+} = aws_deploy {
+    stack: marstech
+}
+
+plan prd-eu {
+    region: eu-central
 }
 ```
 
-```typescript
-interface MakeNodeI { }
-interface MakeNodeO { fw: Firewall; region: string }
+Ground validates the args against the input def before resolving. A missing required
+arg or a type mismatch is a compile error at the `plan` line.
+
+Multiple plans can reference the same or different symbols:
+```ground
+plan prd-eu { region: eu-central }
+plan prd-me { region: me-central }
+plan stg-eu { region: eu-central }
 ```
 
-### `via` — explicit nested hook delegation
+Each produces independent output. Defs not reachable from any `plan` are not resolved.
 
-Within an output body, `via` explicitly delegates a field to its type's own hook,
+### `via` — explicit nested mapper delegation
+
+Within an output body, `via` explicitly delegates a field to its type's own mapper,
 while keeping the field in the enclosing def's output:
 
 ```ground
@@ -562,7 +487,7 @@ def node = make_node {
 ```
 
 This is the inverse of the input position: `fw` stays in `make_node`'s output
-shape, but its value comes from `firewall`'s hook rather than `make_node` itself.
+shape, but its value comes from `firewall`'s mapper rather than `make_node` itself.
 `make_node` may use the resolved `fw` to compute other output fields.
 
 ```typescript
@@ -608,7 +533,7 @@ Each case shows an alternative resolution strategy for `node` and its component 
 
 ---
 
-### Case 1 — Pure ref expressions, no hook
+### Case 1 — Pure ref expressions, no mapper
 
 ```ground
 def node {
@@ -631,7 +556,7 @@ def node {
 }
 ```
 
-All terminal fields are provided by ref expressions. No hook, no decomposition.
+All terminal fields are provided by ref expressions. No mapper, no decomposition.
 
 ```
 api = node { name: "api" }
@@ -646,7 +571,7 @@ node.fw.allow_port  → ref 8080                ✓
 
 ---
 
-### Case 2 — Coarse hook: hook owns the complete subtree
+### Case 2 — Coarse mapper: mapper owns the complete subtree
 
 ```ground
 def node {
@@ -670,23 +595,23 @@ function make_node(i: MakeNodeI): MakeNodeO {
 ```
 
 `make_node` returns complete `ep` and `fw` objects. Ground takes each as-is — it does
-not recurse into `ep.host`, `ep.port`, `fw.name`, etc. The hook owns those subtrees.
+not recurse into `ep.host`, `ep.port`, `fw.name`, etc. The mapper owns those subtrees.
 
 ```
 api = node { name: "api" }
 
 node.ep  → make_node → { host: "api.internal", port: 8080, proto: http }  ✓ (sealed)
 node.fw  → make_node → { name: "api-fw", ... }                            ✓ (sealed)
-node.ep.host   → NOT resolved independently (hook owns subtree)
-node.fw.name   → NOT resolved independently (hook owns subtree)
+node.ep.host   → NOT resolved independently (mapper owns subtree)
+node.fw.name   → NOT resolved independently (mapper owns subtree)
 ```
 
 ---
 
-### Case 3 — Fine-grained hooks with input pre-resolution
+### Case 3 — Fine-grained mappers with input pre-resolution
 
-Each def carries its own hook. `endpoint` and `firewall` take some fields as inputs
-(pre-resolved before the hook fires) and produce the rest via the hook.
+Each def carries its own mapper. `endpoint` and `firewall` take some fields as inputs
+(pre-resolved before the mapper fires) and produce the rest via the mapper.
 
 ```ground
 def endpoint {
@@ -711,8 +636,8 @@ def node {
 }
 ```
 
-`node` has no hook — Ground decomposes it. Each component def then resolves via
-its own hook, with input fields supplied at the call site:
+`node` has no mapper — Ground decomposes it. Each component def then resolves via
+its own mapper, with input fields supplied at the call site:
 
 ```ground
 api = node {
@@ -759,17 +684,17 @@ def node {
 Ground resolves `fw.allow_port` to `9090` via ref expression.
 `make_node` also returns `fw.allow_port: 8080`.
 
-Hook wins — priority is `hook > ref`:
+Mapper wins — priority is `mapper > ref`:
 
 ```
 fw.allow_port:  ref → 9090
-                hook → 8080
+                mapper → 8080
                 result → 8080
 ```
 
 ---
 
-### Case 5 — `final` blocks hook override
+### Case 5 — `final` blocks mapper override
 
 ```ground
 def node {
@@ -786,17 +711,17 @@ def node {
 
 ```
 fw.allow_port:  final ref → 9090
-                hook → 8080
+                mapper → 8080
                 result → 9090
 ```
 
-`final` is the only way to guarantee a ref expression survives a hook.
+`final` is the only way to guarantee a ref expression survives a mapper.
 
 ---
 
-### Case 6 — `via`: explicit nested hook delegation
+### Case 6 — `via`: explicit nested mapper delegation
 
-`via` in the output body delegates a field to its def's own hook, while the field
+`via` in the output body delegates a field to its def's own mapper, while the field
 remains in the enclosing def's output shape:
 
 ```ground
@@ -808,18 +733,18 @@ def node {
 }
 ```
 
-`endpoint`'s hook fires and produces `ep`. `make_node` receives the resolved `ep`
+`endpoint`'s mapper fires and produces `ep`. `make_node` receives the resolved `ep`
 as an input and may use it when computing other fields. `fw` is owned entirely
 by `make_node` (no `via` — sealed-subtree rule applies).
 
 ```typescript
-interface MakeNodeI { name: string; ep: Endpoint }  // ep pre-resolved by endpoint's hook
+interface MakeNodeI { name: string; ep: Endpoint }  // ep pre-resolved by endpoint's mapper
 interface MakeNodeO { ep: Endpoint; fw: Firewall }
 ```
 
 ---
 
-### Case 7 — Partial hook output: compile error
+### Case 7 — Partial mapper output: compile error
 
 ```ground
 def node {
@@ -840,11 +765,11 @@ function make_node(i: MakeNodeI): MakeNodeO {
 ```
 
 `make_node` claims `fw` but returns it incomplete. Ground does not fall back to
-decomposition for the missing sub-fields — hook claimed ownership of the subtree.
+decomposition for the missing sub-fields — mapper claimed ownership of the subtree.
 
 ```
-fw.allow_port   → hook claimed ownership → no fallback → ERROR
-fw.description  → hook claimed ownership → no fallback → ERROR
+fw.allow_port   → mapper claimed ownership → no fallback → ERROR
+fw.description  → mapper claimed ownership → no fallback → ERROR
 ```
 
 Caught at compile time: `MakeNodeO.fw` is typed as the complete `Firewall` shape,
@@ -863,13 +788,13 @@ def node {
 }
 ```
 
-`node` has no hook. Ground decomposes to `endpoint` and `firewall`, then tries to
+`node` has no mapper. Ground decomposes to `endpoint` and `firewall`, then tries to
 resolve their terminal fields. None are provided:
 
 ```
-ep.host        → no ref, no hook, terminal → ERROR
+ep.host        → no ref, no mapper, terminal → ERROR
 ep.port        → ERROR
-ep.proto       → no ref, no hook, sum type with no value → ERROR
+ep.proto       → no ref, no mapper, sum type with no value → ERROR
 fw.name        → ERROR
 fw.description → ERROR
 fw.allow_port  → ERROR
@@ -885,11 +810,11 @@ For each field F of type T:
 1. Is there a `final` ref expression for F?
    YES → use it. Done. Hook cannot override.
 
-2. Does the enclosing hook provide a value for F?
+2. Does the enclosing mapper provide a value for F?
    YES → use it. F's subtree is sealed. Done.
 
 3. Is there a ref expression for F?
-   YES → use it (enclosing hook may still override).
+   YES → use it (enclosing mapper may still override).
 
 4. Is T a non-terminal def?
    YES → decompose: recurse into T's definition.
@@ -900,9 +825,9 @@ For each field F of type T:
 
 ### The sealed-subtree invariant
 
-> If a hook provides a value V for field F, then every field reachable within V
+> If a mapper provides a value V for field F, then every field reachable within V
 > is resolved by V. Ground does not independently resolve any sub-field of F.
 
-This makes hooks composable and reasoning local: a hook author knows exactly what
+This makes mappers composable and reasoning local: a mapper author knows exactly what
 they own (their output shape), and Ground knows exactly what it owns (everything
-not covered by a hook or ref).
+not covered by a mapper or ref).
