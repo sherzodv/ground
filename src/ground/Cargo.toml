@@ -11,3 +11,4 @@ path = "src/main.rs"
 ground_compile    = { path = "../ground_compile" }
 ground_be_terra = { path = "../ground_be_terra" }
 ground_run      = { path = "../ground_run" }
+ground_lsp      = { path = "../ground_lsp" }

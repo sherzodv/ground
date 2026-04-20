@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "src/ground",
+  "src/ground_lsp",
   "src/ground_compile",
   "src/ground_gen",
   "src/ground_run",

@@ -23,6 +23,8 @@ fn main() {
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
         [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
         [cmd, sub] if cmd == "gen" && sub == "types"                              => cmd_gen_types(),
+        [cmd, sub] if cmd == "lsp" && sub == "start"                              => cmd_lsp_start(),
+        [cmd, sub] if cmd == "lsp" && sub == "stop"                               => cmd_lsp_stop(),
         [cmd] if cmd == "plan"                                                     => cmd_plan(false),
         [cmd, flag] if cmd == "plan" && flag == "--verbose"                        => cmd_plan(true),
         [cmd] if cmd == "apply"                                                    => cmd_apply(false),
@@ -32,6 +34,8 @@ fn main() {
             eprintln!("  ground init [--git-ignore]");
             eprintln!("  ground gen terra");
             eprintln!("  ground gen types");
+            eprintln!("  ground lsp start");
+            eprintln!("  ground lsp stop");
             eprintln!("  ground plan [--verbose]");
             eprintln!("  ground apply [--verbose]");
             process::exit(1);
@@ -243,6 +247,20 @@ fn cmd_gen_terra() {
     for output in &outputs {
         write_stack_units(std::slice::from_ref(output));
         println!("wrote .ground/terra/{}", output.file);
+    }
+}
+
+fn cmd_lsp_start() {
+    if let Err(e) = ground_lsp::start() {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
+}
+
+fn cmd_lsp_stop() {
+    if let Err(e) = ground_lsp::stop() {
+        eprintln!("error: {e}");
+        process::exit(1);
     }
 }
 

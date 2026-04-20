@@ -64,6 +64,13 @@ pub struct CompileRes {
     pub errors:  Vec<CompileError>,
 }
 
+pub struct AnalysisRes {
+    pub parse:      ast::ParseRes,
+    pub ir:         ir::IrRes,
+    pub type_units: Vec<TypeUnit>,
+    pub errors:     Vec<CompileError>,
+}
+
 pub struct TypeUnit {
     pub file:    String,
     pub content: String,
@@ -84,7 +91,15 @@ fn type_unit_file(path: &[String], name: &str) -> String {
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn compile(req: CompileReq) -> CompileRes {
+struct Prepared {
+    parse_res:  ast::ParseRes,
+    ir:         ir::IrRes,
+    type_units: Vec<TypeUnit>,
+    errors:     Vec<CompileError>,
+    full_ts:    String,
+}
+
+fn prepare(req: CompileReq) -> Prepared {
     // Prepend stdlib units before user units, carrying ts_src with each unit.
     let mut units: Vec<ast::ParseUnit> = make_stdlib_parse_units();
     units.extend(req.units.into_iter().map(|u| ast::ParseUnit {
@@ -121,7 +136,7 @@ pub fn compile(req: CompileReq) -> CompileRes {
         .join("\n\n");
 
     let parse_res = parse::parse(parse_req);
-    let ir        = resolve::resolve(parse_res);
+    let ir        = resolve::resolve(parse_res.clone());
 
     let errors: Vec<CompileError> = ir.errors.iter()
         .map(|e| {
@@ -135,7 +150,7 @@ pub fn compile(req: CompileReq) -> CompileRes {
 
     // Don't lower if the IR has errors — it may be in an invalid state.
     if !errors.is_empty() {
-        return CompileRes { defs: vec![], type_units: vec![], errors };
+        return Prepared { parse_res, ir, type_units: vec![], errors, full_ts: String::new() };
     }
 
     // Generate TypeScript interface declarations and type-compatibility assertions.
@@ -166,12 +181,18 @@ pub fn compile(req: CompileReq) -> CompileRes {
                     .map(|d| CompileError { message: d.message.clone(), loc: None })
                     .collect();
                 if !ts_errors.is_empty() {
-                    return CompileRes { defs: vec![], type_units: vec![], errors: ts_errors };
+                    return Prepared { parse_res, ir, type_units: vec![], errors: ts_errors, full_ts: String::new() };
                 }
             }
             Err(e) => {
                 let msg = format!("TypeScript type-check engine error: {e}");
-                return CompileRes { defs: vec![], type_units: vec![], errors: vec![CompileError { message: msg, loc: None }] };
+                return Prepared {
+                    parse_res,
+                    ir,
+                    type_units: vec![],
+                    errors: vec![CompileError { message: msg, loc: None }],
+                    full_ts: String::new(),
+                };
             }
         }
     }
@@ -182,9 +203,28 @@ pub fn compile(req: CompileReq) -> CompileRes {
         format!("{}\n\n{}", generated_dts, ts_src)
     };
 
-    let ctx = asm::lower(&ir, &full_ts);
+    Prepared { parse_res, ir, type_units, errors, full_ts }
+}
 
-    CompileRes { defs: ctx.defs, type_units, errors }
+pub fn analyze(req: CompileReq) -> AnalysisRes {
+    let prepared = prepare(req);
+    AnalysisRes {
+        parse: prepared.parse_res,
+        ir: prepared.ir,
+        type_units: prepared.type_units,
+        errors: prepared.errors,
+    }
+}
+
+pub fn compile(req: CompileReq) -> CompileRes {
+    let prepared = prepare(req);
+
+    if !prepared.errors.is_empty() {
+        return CompileRes { defs: vec![], type_units: prepared.type_units, errors: prepared.errors };
+    }
+
+    let ctx = asm::lower(&prepared.ir, &prepared.full_ts);
+    CompileRes { defs: ctx.defs, type_units: prepared.type_units, errors: prepared.errors }
 }
 
 // ---------------------------------------------------------------------------

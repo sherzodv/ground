@@ -906,6 +906,7 @@ version = "0.0.0"
 dependencies = [
  "ground_be_terra",
  "ground_compile",
+ "ground_lsp",
  "ground_run",
 ]
 
@@ -933,6 +934,15 @@ version = "0.0.0"
 dependencies = [
  "serde_json",
  "tera",
+]
+
+[[package]]
+name = "ground_lsp"
+version = "0.0.0"
+dependencies = [
+ "ground_compile",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

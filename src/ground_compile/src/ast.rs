@@ -264,7 +264,7 @@ pub struct ParseReq {
 /// `unit_scope_ids[i]` is the leaf pack `AstScopeId` for `ParseReq::units[i]`.
 /// `unit_ts_srcs[i]` is the TypeScript source for `ParseReq::units[i]` (if any).
 /// Both vecs have the same length as `ParseReq::units`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParseRes {
     pub scopes:         Vec<AstScope>,
     pub errors:         Vec<AstParseError>,
