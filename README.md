@@ -4,41 +4,6 @@
 
 Ground helps you define your system and generate infrustructure code from that definition. You focus on the architecture and let ground **derive** low level details: networking, roles, clusterss and other boilerplate.
 
-```ground
-database db-main {
-  engine:  postgres
-}
-
-service users {
-  image: users:latest
-  access: [ database:main ]
-}
-
-service payments {
-  image: payments:latest
-  access: [ database:main ]
-}
-
-service api {
-  image:  api:latest
-  access: [
-    service:users:grpc
-    service:payments:grpc
-  ]
-}
-
-stack shop {
-  database:main
-  service:users
-  service:payments
-  service:api
-}
-
-deploy shop to aws as shop-eu-central {
-  region: eu-central
-}
-```
-
 **Heuristic for std layer:** a concept belongs in `std` if it is (1) consistent across all vendors and (2) architecturally intentional — the architect consciously names and places it, rather than it being auto-generated per-service. IAM roles and security groups fail criterion 2 (derived). CloudWatch log groups fail both. `database`, `bucket`, `secret`, `domain` pass both.
 
 In general we want to keep templates layer dumb: simple foreach, ifs, no new concepts are created in it. The vendor layer must mirror the **complete** Terraform resource structure — every resource type and every attribute, including those that are fully derived (security groups, IAM roles, route tables, CloudWatch log groups, etc.). Templates receive fully-resolved vendor entities and only render them; they never invent structure.
@@ -48,19 +13,45 @@ In general we want to keep templates layer dumb: simple foreach, ifs, no new con
 
 ```
 ground init [--git-ignore]   create .ground/ + settings.json; patch .gitignore
+ground fmt                  format all .grd files in the nearest Ground project
+ground status               print the nearest Ground project root
 ground gen terra             write .ground/terra/<deploy>/main.tf.json
+ground gen types             write .ground/types/*.gen.d.ts
+ground lsp start             start the Ground language server
+ground lsp stop              stop the Ground language server
 ground plan                  plan changes per Ground entity (no apply)
 ground apply                 apply changes
 ```
 ---
 ## Testing
 
-Golden fixtures live in `ground_test/fixtures/` — `.md` files with a *ground* input block and a *json* expected output block.
+Golden fixtures live in `src/ground_test/fixtures/`.
 
-Regenerate expected output after generator changes:
+Each fixture directory contains:
+
+- `test.grd`
+- `test.ts` (optional)
+- `manifest.json.tera`
+- helper `*.tera` files
+- `test.golden`
+- `expected/` rendered files
+
+Regenerate expected output after render changes:
 
 ```
-UPDATE_FIXTURES=1 cargo test -- files
+UPDATE_GOLDENS=1 cargo test -p ground_test
 ```
 ---
 
+## Future Ideas
+
+- Split vendor derivation into explicit node-level and edge-level transforms.
+  A node transform would derive resources intrinsic to one entity (`service`, `database`, `bucket`, ...). An edge transform would derive resources produced by relationships between entities, especially `access` links.
+- Make cross-entity effects first-class, especially for access links.
+  For example, `service -> database` access should be modeled explicitly as something that produces database-side ingress rules, rather than as a hidden side effect inside one large deploy mapper.
+- Keep transformation inputs small and explicit instead of relying on one large deploy mapper.
+  Each transform should take only the context it actually needs, so the computation is easier to reason about, test, and evolve.
+- Keep templates dumb: rendering only, no new concepts or structural derivation.
+  Templates should receive fully derived vendor-facing entities and only serialize them into the target format.
+
+---

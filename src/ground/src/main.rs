@@ -23,8 +23,9 @@ fn main() {
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
         [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
         [cmd, sub] if cmd == "gen" && sub == "types"                              => cmd_gen_types(),
-        [cmd] if cmd == "fmt"                                                     => cmd_fmt(&[]),
-        [cmd, rest @ ..] if cmd == "fmt"                                          => cmd_fmt(rest),
+        [cmd] if cmd == "fmt"                                                     => cmd_fmt(),
+        [cmd, ..] if cmd == "fmt"                                                 => cmd_fmt(),
+        [cmd] if cmd == "status"                                                  => cmd_status(),
         [cmd, sub] if cmd == "lsp" && sub == "start"                              => cmd_lsp_start(),
         [cmd, sub] if cmd == "lsp" && sub == "stop"                               => cmd_lsp_stop(),
         [cmd] if cmd == "plan"                                                     => cmd_plan(false),
@@ -36,7 +37,8 @@ fn main() {
             eprintln!("  ground init [--git-ignore]");
             eprintln!("  ground gen terra");
             eprintln!("  ground gen types");
-            eprintln!("  ground fmt [path ... | ./...]");
+            eprintln!("  ground fmt");
+            eprintln!("  ground status");
             eprintln!("  ground lsp start");
             eprintln!("  ground lsp stop");
             eprintln!("  ground plan [--verbose]");
@@ -259,21 +261,6 @@ fn collect_grd_paths_recursive(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn collect_grd_paths_shallow(dir: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => { eprintln!("warning: cannot read {:?}: {e}", dir); return paths; }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().map_or(false, |e| e == "grd") {
-            paths.push(path);
-        }
-    }
-    paths
-}
-
 fn collect_grd_path_recursive(root: &Path, dir: &Path, paths: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -290,44 +277,32 @@ fn collect_grd_path_recursive(root: &Path, dir: &Path, paths: &mut Vec<PathBuf>)
     }
 }
 
-fn collect_fmt_targets(args: &[String]) -> Vec<PathBuf> {
-    if args.is_empty() {
-        return collect_grd_paths_shallow(Path::new("."));
-    }
-
-    let mut files = Vec::new();
-    for arg in args {
-        if let Some(prefix) = arg.strip_suffix("/...").or_else(|| arg.strip_suffix("...")) {
-            let base = if prefix.is_empty() { "." } else { prefix.trim_end_matches('/') };
-            files.extend(collect_grd_paths_recursive(Path::new(base)));
-            continue;
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.canonicalize().ok()?;
+    loop {
+        if cur.join(".ground").is_dir() {
+            return Some(cur);
         }
-
-        let path = Path::new(arg);
-        if path.is_dir() {
-            files.extend(collect_grd_paths_shallow(path));
-        } else if path.is_file() {
-            if path.extension().map_or(false, |e| e == "grd") {
-                files.push(path.to_path_buf());
-            }
-        } else {
-            eprintln!("warning: {}: no such file or directory", path.display());
+        if !cur.pop() {
+            return None;
         }
     }
-
-    files.sort();
-    files.dedup();
-    files
 }
 
-fn cmd_fmt(args: &[String]) {
-    let files = collect_fmt_targets(args);
+fn cmd_fmt() {
+    let Some(root) = find_project_root(Path::new(".")) else {
+        eprintln!("warning: no project found");
+        return;
+    };
+
+    let files = collect_grd_paths_recursive(&root);
     if files.is_empty() {
-        eprintln!("no .grd files found for the given targets");
-        process::exit(1);
+        eprintln!("warning: no .grd files found in project");
+        return;
     }
 
-    for path in files {
+    for rel in files {
+        let path = root.join(&rel);
         let src = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -349,9 +324,17 @@ fn cmd_fmt(args: &[String]) {
                 eprintln!("error: {}: {e}", path.display());
                 process::exit(1);
             }
-            println!("{}", path.display());
+            println!("{}", rel.display());
         }
     }
+}
+
+fn cmd_status() {
+    let Some(root) = find_project_root(Path::new(".")) else {
+        eprintln!("warning: no project found");
+        return;
+    };
+    println!("{}", root.display());
 }
 
 fn cmd_lsp_start() {
