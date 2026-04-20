@@ -133,6 +133,10 @@ fn push_lexical_ground_tokens(src: &str, tokens: &mut Vec<Token>) {
         let mut i = 0usize;
         while i < chars.len() {
             let c = chars[i];
+            if c == '#' {
+                tokens.push(Token { line: line_idx as u32, start: i as u32, len: (chars.len() - i) as u32, token_type: TOK_COMMENT });
+                break;
+            }
             if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
                 tokens.push(Token { line: line_idx as u32, start: i as u32, len: (chars.len() - i) as u32, token_type: TOK_COMMENT });
                 break;
