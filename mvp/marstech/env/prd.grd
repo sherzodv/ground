@@ -1,94 +1,84 @@
-use pack:std
-use pack:marstech
 use pack:app
+use pack:marstech
 use pack:ops
 use pack:poc
 use pack:routing
+use pack:std
 
 app = std:space {
-    host: "app"
-    services: [
-        app:media
-        app:pay
-        app:core
-        app:hubspot
-        app:notify
-    ]
+  host: "app"
+  services: [
+    app:media
+    app:pay
+    app:core
+    app:hubspot
+    app:notify
+  ]
 }
 
 poc = std:space {
-    host: "poc"
-    services: [
-        poc:product-wf
-    ]
+  host: "poc"
+  services: [ poc:product-wf ]
 }
 
 api = std:space {
-    host: "api"
-    services: [
-        app:api-gen
-        app:hub
-        ops:metrics
-    ]
+  host: "api"
+  services: [
+    app:api-gen
+    app:hub
+    ops:metrics
+  ]
 }
 
 marstech = std:compute_pool {
-    services: [
-        app:api-gen
-        app:hub
-        poc:product-wf
-        ops:metrics
-        app:media
-        app:pay
-        app:core
-        app:hubspot
-        app:notify
-    ]
-    databases: [
-        app:main
-    ]
-    service_defaults: {
-        size: small
-        scaling: {
-            min: 1
-            max: 1
-        }
+  services: [
+    app:api-gen
+    app:hub
+    poc:product-wf
+    ops:metrics
+    app:media
+    app:pay
+    app:core
+    app:hubspot
+    app:notify
+  ]
+  databases: [ app:main ]
+  service_defaults: {
+    size: small
+    scaling: {
+      min: 1
+      max: 1
     }
-    database_defaults: {
-        size: small
-        storage: 20
-    }
+  }
+  database_defaults: {
+    size: small
+    storage: 20
+  }
 }
 
 plan prd-eu = std:aws:tf:deploy {
-    pool: marstech
-    region: [
-        eu-central:1
-        eu-central:2
-        eu-central:3
-    ]
-    database_overrides: [
-        {
-            database: app:main
-            size: medium
-            storage: 20
-        }
-    ]
-    service_overrides: [
-        {
-            service: app:api-gen
-            size: large
-            scaling: {
-                min: 1
-                max: 4
-            }
-        }
-    ]
+  pool: marstech
+  region: [
+    eu-central:1
+    eu-central:2
+    eu-central:3
+  ]
+  database_overrides: [ {
+    database: app:main
+    size: medium
+    storage: 20
+  } ]
+  service_overrides: [ {
+    service: app:api-gen
+    size: large
+    scaling: {
+      min: 1
+      max: 4
+    }
+  } ]
 }
 
 plan prd-me = std:aws:tf:deploy {
-    pool: marstech
-    region: [
-        me-central:1
-    ]
+  pool: marstech
+  region: [ me-central:1 ]
 }

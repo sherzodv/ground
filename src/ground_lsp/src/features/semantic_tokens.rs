@@ -209,6 +209,7 @@ fn collect_item_tokens(
         AstItem::Def(def) => collect_def_tokens(&def.inner, unit, src, ir, scope, out),
         AstItem::Pack(pack) => collect_ref_tokens(&pack.inner.path.inner, RefContext::Use, unit, src, ir, scope, out),
         AstItem::Use(use_) => collect_use_tokens(&use_.inner, unit, src, ir, scope, out),
+        AstItem::Comment(_) => {}
     }
 }
 
@@ -297,6 +298,7 @@ fn collect_struct_item_tokens(
         }
         AstStructItem::Anon(value) => collect_value_tokens(&value.inner, unit, src, ir, scope, out),
         AstStructItem::Def(def) => collect_def_tokens(&def.inner, unit, src, ir, scope, out),
+        AstStructItem::Comment(_) => {}
     }
 }
 
@@ -327,6 +329,7 @@ fn collect_value_tokens(
                         collect_value_tokens(&value.inner, unit, src, ir, scope, out);
                     }
                     AstField::Anon(value) => collect_value_tokens(&value.inner, unit, src, ir, scope, out),
+                    AstField::Comment(_) => {}
                 }
             }
         }

@@ -265,6 +265,7 @@ fn output_has_schema_items(output: &AstDefO) -> bool {
             AstStructItem::Field(fd) => fd.inner.kind == AstStructFieldKind::Def,
             AstStructItem::Def(_) => true,
             AstStructItem::Anon(_) => false,
+            AstStructItem::Comment(_) => false,
         }),
         _ => false,
     }
@@ -315,6 +316,7 @@ fn collect_apply_fields(items: &[AstNode<AstStructItem>]) -> Vec<AstNode<AstFiel
                 out.push(AstNode { loc: v.loc.clone(), inner: AstField::Anon(v.clone()) });
             }
             AstStructItem::Def(_) => {}
+            AstStructItem::Comment(_) => {}
         }
     }
     out
@@ -1069,6 +1071,7 @@ fn resolve_struct_fields(items: &[AstNode<AstStructItem>], ctx: &mut Ctx, scope:
             }
             AstStructItem::Anon(_) => {}
             AstStructItem::Def(_) => {}
+            AstStructItem::Comment(_) => {}
         }
     }
 

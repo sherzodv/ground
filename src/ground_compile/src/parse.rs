@@ -62,23 +62,27 @@ impl<'a> Parser<'a> {
     // -- whitespace / comments -------------------------------------------
 
     fn skip_ws(&mut self) {
-        loop {
-            let before = self.pos;
-            while self.pos < self.src.len() {
-                let b = self.src.as_bytes()[self.pos];
-                if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
+        while self.pos < self.src.len() {
+            let b = self.src.as_bytes()[self.pos];
+            if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
+                self.pos += 1;
+            } else {
+                break;
             }
-            if self.rest().starts_with('#') {
-                while self.pos < self.src.len() && self.src.as_bytes()[self.pos] != b'\n' {
-                    self.pos += 1;
-                }
-            }
-            if self.pos == before { break; }
         }
+    }
+
+    fn parse_comment(&mut self) -> Option<AstNode<AstComment>> {
+        let start = self.pos;
+        if !self.eat("#") {
+            return None;
+        }
+        let text_start = self.pos;
+        while self.pos < self.src.len() && self.src.as_bytes()[self.pos] != b'\n' {
+            self.pos += 1;
+        }
+        let text = self.src[text_start..self.pos].trim().to_string();
+        Some(self.node(start, AstComment { text }))
     }
 
     // -- lexemes ---------------------------------------------------------
@@ -269,6 +273,10 @@ impl<'a> Parser<'a> {
 
     fn parse_struct_item(&mut self) -> Option<AstNode<AstStructItem>> {
         let start = self.pos;
+
+        if let Some(comment) = self.parse_comment() {
+            return Some(self.node(start, AstStructItem::Comment(comment)));
+        }
 
         // def keyword → nested named def inside struct body
         if self.at_keyword("def") {
@@ -485,6 +493,9 @@ impl<'a> Parser<'a> {
 
     fn parse_inst_item(&mut self) -> Option<AstNode<AstField>> {
         let start = self.pos;
+        if let Some(comment) = self.parse_comment() {
+            return Some(self.node(start, AstField::Comment(comment)));
+        }
         if let Some(f) = self.try_parse_inst_field() { return Some(f); }
         if let Some(v) = self.parse_inst_value() {
             return Some(self.node(start, AstField::Anon(v)));
@@ -784,6 +795,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_def(&mut self) -> Option<AstItem> {
+        if let Some(comment) = self.parse_comment() {
+            return Some(AstItem::Comment(comment));
+        }
         if self.at_keyword("pack") {
             if let Some(p) = self.parse_pack() { return Some(AstItem::Pack(p)); }
         }
@@ -1000,4 +1014,10 @@ pub fn parse(req: ParseReq) -> ParseRes {
     }
 
     ParseRes { scopes, errors, unit_scope_ids, unit_ts_srcs }
+}
+
+pub fn parse_file_items(src: &str, unit: u32) -> (Vec<AstItem>, Vec<AstParseError>) {
+    let mut p = Parser::new(src, unit);
+    let items = p.parse_system();
+    (items, p.errors)
 }

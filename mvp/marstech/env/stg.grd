@@ -1,44 +1,34 @@
-use pack:std
 use pack:app
 use pack:routing
+use pack:std
 
 app = std:space {
-    host: "app"
-    services: [
-        app:api-gen
-    ]
+  host: "app"
+  services: [ app:api-gen ]
 }
 
 api = std:space {
-    host: "api"
-    services: [
-        app:api-gen
-    ]
+  host: "api"
+  services: [ app:api-gen ]
 }
 
 marstech = std:compute_pool {
-    services: [
-        app:api-gen
-    ]
-    databases: [
-        app:main
-    ]
-    service_defaults: {
-        size: small
-        scaling: {
-            min: 1
-            max: 1
-        }
+  services: [ app:api-gen ]
+  databases: [ app:main ]
+  service_defaults: {
+    size: small
+    scaling: {
+      min: 1
+      max: 1
     }
-    database_defaults: {
-        size: small
-        storage: 20
-    }
+  }
+  database_defaults: {
+    size: small
+    storage: 20
+  }
 }
 
 plan stg-eu = std:aws:tf:deploy {
-    pool: marstech
-    region: [
-        eu-central:1
-    ]
+  pool: marstech
+  region: [ eu-central:1 ]
 }

@@ -1,10 +1,10 @@
 use pack:std
 
 metrics = std:service {
-    port: http
-    access: []
-    observe: {
-        tracing: false
-        datadog: false
-    }
+  port: http
+  access: []
+  observe: {
+    tracing: false
+    datadog: false
+  }
 }

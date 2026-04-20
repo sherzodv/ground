@@ -3,9 +3,11 @@ pub mod ir;
 pub mod parse;
 pub mod resolve;
 pub mod asm;
+pub mod fmt;
 mod ts_gen;
 
 pub use asm::{AsmDef, AsmField, AsmValue, AsmVariant, AsmDefRef, asm_value_to_json};
+pub use fmt::format_source;
 
 // ---------------------------------------------------------------------------
 // Embedded stdlib

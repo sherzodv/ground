@@ -30,7 +30,50 @@ fn basic_002() {
         norm(
             r##"
             Scope[pack:test,
+                Comment(this is a comment),
                 Def[x, _, unit, Enum[Ref(a) | Ref(b)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn comment_001() {
+    assert_eq!(
+        show(
+            r##"
+            service = {
+              # service comment
+              port = grpc | http
+            }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[service, _, unit, Struct[Comment(service comment), FieldDef[port, Type[_, Enum[Ref(grpc) | Ref(http)]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn comment_002() {
+    assert_eq!(
+        show(
+            r##"
+            api = service {
+              # endpoint
+              port: http
+            }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[api, service, unit, Struct[Comment(endpoint), FieldSet[port, Ref(http)]]],
             ]
         "##
         ),

@@ -1,36 +1,32 @@
-use pack:std
 use pack:app
 use pack:ops
 use pack:poc
+use pack:std
 
-marstech-co = std:domain {
-    host: "marstech.co"
-}
+marstech-co = std:domain { host: "marstech.co" }
 
-influencer-ae = std:domain {
-    host: "moonadmin.influencer.ae"
-}
+influencer-ae = std:domain { host: "moonadmin.influencer.ae" }
 
 edge-api = std:edge {
-    domain: influencer-ae
-    sub: "api"
-    backend: app:api-gen
+  domain: influencer-ae
+  sub: "api"
+  backend: app:api-gen
 }
 
 edge-hub = std:edge {
-    domain: marstech-co
-    sub: "hub"
-    backend: app:hub
+  domain: marstech-co
+  sub: "hub"
+  backend: app:hub
 }
 
 edge-workflows = std:edge {
-    domain: marstech-co
-    sub: "workflows"
-    backend: poc:product-wf
+  domain: marstech-co
+  sub: "workflows"
+  backend: poc:product-wf
 }
 
 edge-metrics = std:edge {
-    domain: marstech-co
-    sub: "metrics"
-    backend: ops:metrics
+  domain: marstech-co
+  sub: "metrics"
+  backend: ops:metrics
 }

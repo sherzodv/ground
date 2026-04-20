@@ -1,5 +1,5 @@
 use ground_compile::ast::{
-    AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPrimitive, AstRef,
+    AstComment, AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPrimitive, AstRef,
     AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody, AstStructFieldKind,
     AstStructItem, AstTypeExpr, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse,
 };
@@ -146,6 +146,7 @@ pub fn show_struct_item(item: &AstStructItem) -> String {
         AstStructItem::Field(fd)    => show_struct_field(&fd.inner),
         AstStructItem::Anon(v)      => format!("Anon[{}]", show_value(&v.inner)),
         AstStructItem::Def(td)      => show_top_def(&td.inner),
+        AstStructItem::Comment(c)   => show_comment(&c.inner),
     }
 }
 
@@ -171,7 +172,8 @@ pub fn show_value(v: &AstValue) -> String {
 pub fn show_field(f: &AstField) -> String {
     match f {
         AstField::Named { name, value, .. } => format!("Field[{}, {}]", name.inner, show_value(&value.inner)),
-        AstField::Anon(v)               => format!("Anon[{}]", show_value(&v.inner)),
+        AstField::Anon(v)                   => format!("Anon[{}]", show_value(&v.inner)),
+        AstField::Comment(c)                => show_comment(&c.inner),
     }
 }
 
@@ -181,10 +183,15 @@ pub fn show_use(u: &AstUse) -> String {
 
 pub fn show_def(def: &AstItem) -> String {
     match def {
-        AstItem::Def(td)  => show_top_def(&td.inner),
-        AstItem::Pack(p)  => show_pack(&p.inner),
-        AstItem::Use(u)   => show_use(&u.inner),
+        AstItem::Def(td)      => show_top_def(&td.inner),
+        AstItem::Pack(p)      => show_pack(&p.inner),
+        AstItem::Use(u)       => show_use(&u.inner),
+        AstItem::Comment(c)   => show_comment(&c.inner),
     }
+}
+
+pub fn show_comment(c: &AstComment) -> String {
+    format!("Comment({})", c.text)
 }
 
 pub fn show_scope(scopes: &[AstScope], id: AstScopeId) -> String {

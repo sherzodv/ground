@@ -3,7 +3,7 @@ mod ops_display;
 use std::{env, fs, path::{Path, PathBuf}, process};
 
 use ground_be_terra::JsonUnit;
-use ground_compile::{compile, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit, STDLIB_UNIT_COUNT};
+use ground_compile::{compile, format_source, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit, STDLIB_UNIT_COUNT};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
@@ -23,6 +23,7 @@ fn main() {
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
         [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
         [cmd, sub] if cmd == "gen" && sub == "types"                              => cmd_gen_types(),
+        [cmd] if cmd == "fmt"                                                     => cmd_fmt(),
         [cmd, sub] if cmd == "lsp" && sub == "start"                              => cmd_lsp_start(),
         [cmd, sub] if cmd == "lsp" && sub == "stop"                               => cmd_lsp_stop(),
         [cmd] if cmd == "plan"                                                     => cmd_plan(false),
@@ -34,6 +35,7 @@ fn main() {
             eprintln!("  ground init [--git-ignore]");
             eprintln!("  ground gen terra");
             eprintln!("  ground gen types");
+            eprintln!("  ground fmt");
             eprintln!("  ground lsp start");
             eprintln!("  ground lsp stop");
             eprintln!("  ground plan [--verbose]");
@@ -247,6 +249,63 @@ fn cmd_gen_terra() {
     for output in &outputs {
         write_stack_units(std::slice::from_ref(output));
         println!("wrote .ground/terra/{}", output.file);
+    }
+}
+
+fn collect_grd_paths(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    collect_grd_path_recursive(root, root, &mut paths);
+    paths
+}
+
+fn collect_grd_path_recursive(root: &Path, dir: &Path, paths: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => { eprintln!("warning: cannot read {:?}: {e}", dir); return; }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_hidden = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
+        if path.is_dir() && !is_hidden {
+            collect_grd_path_recursive(root, &path, paths);
+        } else if path.extension().map_or(false, |e| e == "grd") {
+            paths.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
+        }
+    }
+}
+
+fn cmd_fmt() {
+    let files = collect_grd_paths(Path::new("."));
+    if files.is_empty() {
+        eprintln!("no .grd files found in current directory");
+        process::exit(1);
+    }
+
+    for rel in files {
+        let path = Path::new(".").join(&rel);
+        let src = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {}: {e}", path.display());
+                process::exit(1);
+            }
+        };
+        let formatted = match format_source(&src) {
+            Ok(s) => s,
+            Err(errors) => {
+                for err in errors {
+                    eprintln!("error: {}: {}", path.display(), err);
+                }
+                process::exit(1);
+            }
+        };
+        if src != formatted {
+            if let Err(e) = fs::write(&path, formatted) {
+                eprintln!("error: {}: {e}", path.display());
+                process::exit(1);
+            }
+            println!("{}", rel.display());
+        }
     }
 }
 

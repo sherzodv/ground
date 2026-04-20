@@ -143,6 +143,11 @@ pub enum AstTypeExpr {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AstComment {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum AstStructItem {
     /// `name = type_expr`, `= type_expr`, or `name: value`
     Field(AstNode<AstStructField>),
@@ -151,6 +156,7 @@ pub enum AstStructItem {
     /// Temporary nested named def inside a struct body; the parse pass hoists these
     /// into an adjacent `ScopeKind::Struct` scope before returning the final AST.
     Def(AstNode<AstDef>),
+    Comment(AstNode<AstComment>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,6 +198,7 @@ pub enum AstField {
     Named { name: AstNode<String>, value: AstNode<AstValue>, via: bool },
     /// Anonymous value (only valid inside `inst`, not `deploy`)
     Anon(AstNode<AstValue>),
+    Comment(AstNode<AstComment>),
 }
 
 
@@ -232,6 +239,7 @@ pub enum AstItem {
     /// `pack ref { … }` namespace declaration
     Pack(AstNode<AstPack>),
     Use(AstNode<AstUse>),
+    Comment(AstNode<AstComment>),
 }
 
 // ---------------------------------------------------------------------------
