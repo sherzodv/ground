@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "ground"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "ground_be_terra",
  "ground_compile",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "ground_be_terra"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "ground_compile",
  "ground_gen",
@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "ground_compile"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "ground_ts",
  "serde_json",
@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "ground_gen"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "serde_json",
  "tera",
@@ -938,7 +938,7 @@ dependencies = [
 
 [[package]]
 name = "ground_lsp"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "ground_compile",
  "serde_json",
@@ -947,11 +947,11 @@ dependencies = [
 
 [[package]]
 name = "ground_run"
-version = "0.0.0"
+version = "0.0.1-alpha"
 
 [[package]]
 name = "ground_test"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "ground_be_terra",
  "ground_compile",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "ground_ts"
-version = "0.0.0"
+version = "0.0.1-alpha"
 dependencies = [
  "anyhow",
  "deno_ast",
