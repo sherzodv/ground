@@ -22,6 +22,7 @@ fn main() {
         [cmd] if cmd == "init"                                 => cmd_init(false),
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
         [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
+        [cmd, sub] if cmd == "gen" && sub == "types"                              => cmd_gen_types(),
         [cmd] if cmd == "plan"                                                     => cmd_plan(false),
         [cmd, flag] if cmd == "plan" && flag == "--verbose"                        => cmd_plan(true),
         [cmd] if cmd == "apply"                                                    => cmd_apply(false),
@@ -30,6 +31,7 @@ fn main() {
             eprintln!("usage:");
             eprintln!("  ground init [--git-ignore]");
             eprintln!("  ground gen terra");
+            eprintln!("  ground gen types");
             eprintln!("  ground plan [--verbose]");
             eprintln!("  ground apply [--verbose]");
             process::exit(1);
@@ -149,7 +151,7 @@ fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
 }
 
 /// Compile all .grd files in the current directory, print errors and exit on failure.
-fn do_compile() -> CompileRes {
+fn do_compile(require_plans: bool) -> CompileRes {
     let units = collect_grd_files(&PathBuf::from("."));
 
     if units.is_empty() {
@@ -160,7 +162,7 @@ fn do_compile() -> CompileRes {
     // stdlib units are prepended by compile(); their display names must come first.
     let mut unit_names: Vec<String> = vec![
         "<std>".into(),
-        "<std:aws>".into(),
+        "<std:aws:tf>".into(),
     ];
     debug_assert_eq!(unit_names.len(), STDLIB_UNIT_COUNT);
     unit_names.extend(units.iter().map(|u| u.name.clone()));
@@ -179,7 +181,7 @@ fn do_compile() -> CompileRes {
         process::exit(1);
     }
 
-    if res.defs.is_empty() {
+    if require_plans && res.defs.is_empty() {
         eprintln!("no plan declarations found — nothing to generate");
         process::exit(1);
     }
@@ -191,7 +193,7 @@ fn do_compile() -> CompileRes {
 /// `ground plan` / `ground apply` operate on one terraform workspace at a time,
 /// so multiple planned defs must use `ground gen terra` instead.
 fn compile_and_gen() -> (CompileRes, Vec<JsonUnit>, String) {
-    let res = do_compile();
+    let res = do_compile(true);
 
     if res.defs.len() != 1 {
         eprintln!(
@@ -231,7 +233,7 @@ fn write_stack_units(outputs: &[JsonUnit]) {
 }
 
 fn cmd_gen_terra() {
-    let res = do_compile();
+    let res = do_compile(true);
 
     let outputs = match ground_be_terra::generate_each(&res) {
         Ok(o)  => o,
@@ -241,6 +243,31 @@ fn cmd_gen_terra() {
     for output in &outputs {
         write_stack_units(std::slice::from_ref(output));
         println!("wrote .ground/terra/{}", output.file);
+    }
+}
+
+fn write_type_units(type_units: &[ground_compile::TypeUnit]) {
+    for unit in type_units {
+        let out_path = Path::new(".ground/types").join(&unit.file);
+        if let Some(parent) = out_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("error: {}: {e}", parent.display());
+                process::exit(1);
+            }
+        }
+        if let Err(e) = fs::write(&out_path, &unit.content) {
+            eprintln!("error: {}: {e}", out_path.display());
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_gen_types() {
+    let res = do_compile(false);
+
+    for unit in &res.type_units {
+        write_type_units(std::slice::from_ref(unit));
+        println!("wrote .ground/types/{}", unit.file);
     }
 }
 

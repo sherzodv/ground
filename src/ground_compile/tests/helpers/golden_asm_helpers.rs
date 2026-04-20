@@ -67,6 +67,19 @@ pub fn show(grd_src: &str) -> String {
     show_with_ts(grd_src, "")
 }
 
+pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
+    let res = parse(ParseReq {
+        units: units.into_iter().map(|(name, path, src)| ParseUnit {
+            name: name.into(),
+            path: path.into_iter().map(|s| s.to_string()).collect(),
+            src: src.to_string(),
+            ts_src: None,
+        }).collect(),
+    });
+    let ir = resolve(res);
+    show_asm(lower(&ir, ""), ir)
+}
+
 /// Parse + resolve + lower `input` with TypeScript source for mapper execution.
 pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
     let res = parse(ParseReq {

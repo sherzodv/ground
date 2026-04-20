@@ -1,6 +1,14 @@
-{%- set aws_region = deploy.aws_region | default(value="us-east-1") -%}
+{%- set provider_region = deploy.provider_region | default(value="us-east-1") -%}
 {%- set root = deploy.root -%}
 {%- set zones = deploy.zones | default(value=[]) -%}
+{%- set services = deploy.services | default(value=[]) -%}
+{%- set databases = deploy.databases | default(value=[]) -%}
+{%- set buckets = deploy.buckets | default(value=[]) -%}
+{%- set secrets = deploy.secrets | default(value=[]) -%}
+{%- set service_service_accesses = deploy.service_service_accesses | default(value=[]) -%}
+{%- set service_database_accesses = deploy.service_database_accesses | default(value=[]) -%}
+{%- set service_bucket_accesses = deploy.service_bucket_accesses | default(value=[]) -%}
+{%- set service_secret_accesses = deploy.service_secret_accesses | default(value=[]) -%}
 {
   "terraform": {
     "required_providers": {
@@ -12,7 +20,7 @@
   },
   "provider": {
     "aws": {
-      "region": "{{ aws_region }}"
+      "region": "{{ provider_region }}"
     }
   },
   "resource": {
@@ -127,6 +135,217 @@
         "route_table_id": "${aws_route_table.{{ zone.rprv_key }}.id}",
         "destination_cidr_block": "0.0.0.0/0",
         "nat_gateway_id": "${aws_nat_gateway.{{ root.nat_key }}.id}"
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_security_group": {
+      {% for svc in services %}
+      "{{ svc.security_group_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "name": "{{ svc.security_group_name }}",
+        "description": "Ground managed service security group for {{ svc.name }}",
+        "tags": {
+          "Name": "{{ svc.security_group_name }}",
+          "ground-managed": "true"
+        }
+      }{% if databases | length > 0 or not loop.last %},{% endif %}
+      {% endfor %}
+      {% for db in databases %}
+      "{{ db.security_group_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "name": "{{ db.security_group_name }}",
+        "description": "Ground managed database security group for {{ db.name }}",
+        "tags": {
+          "Name": "{{ db.security_group_name }}",
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_vpc_security_group_egress_rule": {
+      {% for svc in services %}
+      "{{ svc.security_group_key }}_all": {
+        "security_group_id": "${aws_security_group.{{ svc.security_group_key }}.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_vpc_security_group_ingress_rule": {
+      {% for access in service_service_accesses %}
+      "{{ access.name | replace(from="-", to="_") }}": {
+        "security_group_id": "${aws_security_group.{{ access.target_security_group_key }}.id}",
+        "referenced_security_group_id": "${aws_security_group.{{ access.source_security_group_key }}.id}",
+        "from_port": {{ access.from_port }},
+        "to_port": {{ access.to_port }},
+        "ip_protocol": "tcp"
+      }{% if service_database_accesses | length > 0 or not loop.last %},{% endif %}
+      {% endfor %}
+      {% for access in service_database_accesses %}
+      "{{ access.name | replace(from="-", to="_") }}": {
+        "security_group_id": "${aws_security_group.{{ access.target_security_group_key }}.id}",
+        "referenced_security_group_id": "${aws_security_group.{{ access.source_security_group_key }}.id}",
+        "from_port": {{ access.from_port }},
+        "to_port": {{ access.to_port }},
+        "ip_protocol": "tcp"
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_iam_role": {
+      {% for svc in services %}
+      "{{ svc.task_role_key }}": {
+        "name": "{{ svc.task_role_name }}",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_cloudwatch_log_group": {
+      {% for svc in services %}
+      "{{ svc.log_group_key }}": {
+        "name": "{{ svc.log_group_name }}",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_ecs_task_definition": {
+      {% for svc in services %}
+      "{{ svc.task_definition_key }}": {
+        "family": "{{ svc.task_definition_family }}",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "{{ svc.cpu }}",
+        "memory": "{{ svc.memory }}",
+        "execution_role_arn": "${aws_iam_role.{{ svc.task_role_key }}.arn}",
+        "task_role_arn": "${aws_iam_role.{{ svc.task_role_key }}.arn}",
+        "container_definitions": [
+          {
+            "name": "{{ svc.name }}",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": {{ svc.port }},
+                "hostPort": {{ svc.port }},
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "{{ svc.log_group_name }}",
+                "awslogs-region": "{{ provider_region }}",
+                "awslogs-stream-prefix": "{{ svc.name }}"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_ecs_service": {
+      {% for svc in services %}
+      "{{ svc.service_key }}": {
+        "name": "{{ svc.service_name }}",
+        "cluster": "${aws_ecs_cluster.{{ root.ecs_key }}.id}",
+        "task_definition": "${aws_ecs_task_definition.{{ svc.task_definition_key }}.arn}",
+        "desired_count": {{ svc.desired_count }},
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": [{% for zone in zones %}"${aws_subnet.{{ zone.priv_key }}.id}"{% if not loop.last %}, {% endif %}{% endfor %}],
+          "security_groups": ["${aws_security_group.{{ svc.security_group_key }}.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_iam_role_policy": {
+      {% for access in service_bucket_accesses %}
+      "{{ access.name | replace(from="-", to="_") }}": {
+        "name": "{{ access.policy_name }}",
+        "role": "{{ access.role_name }}",
+        "policy": {{ access.policy_json }}
+      }{% if service_secret_accesses | length > 0 or not loop.last %},{% endif %}
+      {% endfor %}
+      {% for access in service_secret_accesses %}
+      "{{ access.name | replace(from="-", to="_") }}": {
+        "name": "{{ access.policy_name }}",
+        "role": "{{ access.role_name }}",
+        "policy": {{ access.policy_json }}
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_db_subnet_group": {
+      {% for db in databases %}
+      "{{ db.subnet_group_key }}": {
+        "name": "{{ db.subnet_group_name }}",
+        "subnet_ids": [{% for zone in zones %}"${aws_subnet.{{ zone.priv_key }}.id}"{% if not loop.last %}, {% endif %}{% endfor %}],
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_db_instance": {
+      {% for db in databases %}
+      "{{ db.key }}": {
+        "identifier": "{{ db.identifier }}",
+        "engine": "{{ db.engine }}",
+        "engine_version": "{{ db.engine_version }}",
+        "instance_class": "{{ db.instance_class }}",
+        "allocated_storage": {{ db.allocated_storage }},
+        "db_name": "{{ db.db_name }}",
+        "username": "ground",
+        "manage_master_user_password": true,
+        "db_subnet_group_name": "${aws_db_subnet_group.{{ db.subnet_group_key }}.name}",
+        "vpc_security_group_ids": ["${aws_security_group.{{ db.security_group_key }}.id}"],
+        "skip_final_snapshot": true,
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_s3_bucket": {
+      {% for bucket in buckets %}
+      "{{ bucket.key }}": {
+        "bucket": "{{ bucket.bucket }}",
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_secretsmanager_secret": {
+      {% for secret in secrets %}
+      "{{ secret.key }}": {
+        "name": "{{ secret.name }}",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
       }{% if not loop.last %},{% endif %}
       {% endfor %}
     }

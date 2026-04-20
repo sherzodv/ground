@@ -80,8 +80,7 @@ pub struct IrScope {
     pub packs:     HashMap<String, ScopeId>,
     pub ambiguous:     HashSet<String>,
     /// TypeScript function names exported from the co-located `.ts` file
-    /// (same pack scope). Cross-pack imports via `use pack:*`
-    /// copy names here.
+    /// in this pack scope.
     pub ts_fns:        HashSet<String>,
 }
 

@@ -215,13 +215,48 @@ fn lookup_base_shape_and_def(td: &AstDef, ctx: &Ctx, scope: ScopeId) -> (Option<
     let Some(shape_id) = lookup_type_by_ref(&mapper.inner, ctx, scope) else {
         return (None, None);
     };
-    let base_def = mapper.inner.segments.last()
-        .and_then(|seg| seg.inner.as_plain())
-        .and_then(|base_name| {
-            ctx.lookup_def_typed(scope, base_name, shape_id)
-                .or_else(|| ctx.lookup_def(scope, base_name))
-        });
+    let base_def = lookup_def_by_ref_and_shape(&mapper.inner, ctx, scope, shape_id);
     (Some(shape_id), base_def)
+}
+
+fn lookup_def_by_ref_and_shape(ref_: &AstRef, ctx: &Ctx, scope: ScopeId, shape_id: ShapeId) -> Option<DefId> {
+    let segs = &ref_.segments;
+    match segs.len() {
+        0 => None,
+        1 => {
+            let name = segs[0].inner.as_plain()?;
+            ctx.lookup_def_typed(scope, name, shape_id)
+                .or_else(|| ctx.lookup_def(scope, name))
+        }
+        _ => {
+            let mut cur = scope;
+            for seg in &segs[..segs.len() - 1] {
+                cur = ctx.lookup_pack(cur, seg.inner.as_plain()?)?;
+            }
+            let name = segs.last()?.inner.as_plain()?;
+            ctx.lookup_def_typed(cur, name, shape_id)
+                .or_else(|| ctx.lookup_def(cur, name))
+        }
+    }
+}
+
+fn lookup_ts_fn_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<String> {
+    let segs = &ref_.segments;
+    match segs.len() {
+        0 => None,
+        1 => {
+            let name = segs[0].inner.as_plain()?;
+            ctx.scope_has_ts_fn(scope, name).then(|| name.to_string())
+        }
+        _ => {
+            let mut cur = scope;
+            for seg in &segs[..segs.len() - 1] {
+                cur = ctx.lookup_pack(cur, seg.inner.as_plain()?)?;
+            }
+            let name = segs.last()?.inner.as_plain()?;
+            ctx.scopes[cur.0 as usize].ts_fns.contains(name).then(|| name.to_string())
+        }
+    }
 }
 
 fn output_has_schema_items(output: &AstDefO) -> bool {
@@ -391,8 +426,9 @@ fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
 fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> IrRef {
     let mut result    = Vec::new();
     let mut kind_hint: Option<&str> = None;
+    let mut cur_scope = scope;
 
-    for seg in segments {
+    for (idx, seg) in segments.iter().enumerate() {
         // Group segments ({inner:ref}) are not statically resolvable —
         // pass through as Plain preserving the source repr.
         let val = match seg.inner.as_plain() {
@@ -418,21 +454,21 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
         }
 
         let resolved = match kind_hint {
-            Some("def") => ctx.lookup_shape(scope, val)
+            Some("def") => ctx.lookup_shape(cur_scope, val)
                 .map(IrRefSegValue::Shape)
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
-            Some("pack") => ctx.lookup_pack(scope, val)
+            Some("pack") => ctx.lookup_pack(cur_scope, val)
                 .map(IrRefSegValue::Pack)
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
             _ => {
                 // No hint — try def/type, then instance, then pack; else plain.
-                if let Some(id) = ctx.lookup_shape(scope, val) {
+                if let Some(id) = ctx.lookup_shape(cur_scope, val) {
                     IrRefSegValue::Shape(id)
-                } else if let Some(id) = ctx.lookup_def(scope, val) {
+                } else if let Some(id) = ctx.lookup_def(cur_scope, val) {
                     IrRefSegValue::Def(id)
-                } else if let Some(id) = ctx.lookup_pack(scope, val) {
+                } else if let Some(id) = ctx.lookup_pack(cur_scope, val) {
                     IrRefSegValue::Pack(id)
                 } else {
                     IrRefSegValue::Plain(val.to_string())
@@ -440,6 +476,13 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
             }
         };
 
+        if let IrRefSegValue::Pack(next_scope) = resolved {
+            cur_scope = next_scope;
+            if idx + 1 < segments.len() {
+                kind_hint = None;
+                continue;
+            }
+        }
         result.push(IrRefSeg { value: resolved, is_opt: seg.inner.is_opt });
         kind_hint = None;
     }
@@ -551,203 +594,142 @@ fn pass_imports(parse_scopes: &[AstScope], ctx: &mut Ctx, kind: ImportKind) {
     }
 }
 
-fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: ImportKind) {
-    let segs = &path.segments;
-    let mut i = 0;
+#[derive(Clone, Copy)]
+enum UseMode<'a> {
+    Pack,
+    ImportOne { name: &'a str, defs_only: bool },
+    ImportAll { defs_only: bool },
+}
 
-    // Consume optional `pack` keyword.
-    if segs.get(i).map(|s| s.inner.as_plain().unwrap_or("")) == Some("pack") {
-        i += 1;
+fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: ImportKind) {
+    let mut names: Vec<&str> = path.segments.iter()
+        .filter_map(|s| s.inner.as_plain())
+        .collect();
+    if names.first().copied() == Some("pack") {
+        names.remove(0);
     }
 
-    let pack_name = match segs.get(i) {
-        Some(s) => s.inner.as_plain().unwrap_or("").to_string(),
-        None => {
-            if kind == ImportKind::TypesLinksAndPacks {
-                ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
-            }
-            return;
-        }
-    };
-    i += 1;
-
-    let src = match ctx.lookup_pack(into, &pack_name) {
-        Some(s) => s,
-        None => {
-            if kind == ImportKind::TypesLinksAndPacks {
-                ctx.errors.push(IrError {
-                    message: format!("use: pack '{}' not found", pack_name),
-                    loc: loc.clone(),
-                });
-            }
-            return;
-        }
-    };
-
-    // `use pack:std` — register the pack name itself, then done.
-    if i >= segs.len() {
+    if names.is_empty() {
         if kind == ImportKind::TypesLinksAndPacks {
-            try_import_pack(&pack_name, src, into, ctx, loc);
+            ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
         }
         return;
     }
 
-    // Parse optional kind hint.
-    let kind_hint = match segs.get(i).map(|s| s.inner.as_plain().unwrap_or("")) {
-        Some("def") => { i += 1; Some("def") }
-        _ => None,
+    let (pack_path, mode) = if names.last().copied() == Some("*") {
+        if names.len() >= 2 && names[names.len() - 2] == "def" {
+            (&names[..names.len() - 2], UseMode::ImportAll { defs_only: true })
+        } else {
+            (&names[..names.len() - 1], UseMode::ImportAll { defs_only: false })
+        }
+    } else if names.len() >= 2 && names[names.len() - 2] == "def" {
+        (&names[..names.len() - 2], UseMode::ImportOne { name: names[names.len() - 1], defs_only: true })
+    } else if lookup_pack_path(ctx, into, &names).is_some() {
+        (&names[..], UseMode::Pack)
+    } else if names.len() >= 2 {
+        (&names[..names.len() - 1], UseMode::ImportOne { name: names[names.len() - 1], defs_only: false })
+    } else {
+        (&names[..], UseMode::Pack)
     };
 
-    let name = match segs.get(i) {
-        Some(s) => s.inner.as_plain().unwrap_or("").to_string(),
+    if pack_path.is_empty() {
+        if kind == ImportKind::TypesLinksAndPacks {
+            ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
+        }
+        return;
+    }
+
+    let src = match lookup_pack_path(ctx, into, pack_path) {
+        Some(s) => s,
         None => {
             if kind == ImportKind::TypesLinksAndPacks {
                 ctx.errors.push(IrError {
-                    message: "use: expected name or '*' after kind specifier".into(),
+                    message: format!("use: pack '{}' not found", pack_path.join(":")),
                     loc: loc.clone(),
                 });
             }
             return;
         }
     };
+    let alias = *pack_path.last().unwrap();
 
-    if name == "*" {
-        do_wildcard_import(src, into, kind_hint, ctx, loc, kind);
-    } else {
-        do_specific_import(&name, src, into, kind_hint, ctx, loc, kind);
-    }
-}
-
-fn do_wildcard_import(
-    src:       ScopeId,
-    into:      ScopeId,
-    kind_hint: Option<&str>,
-    ctx:       &mut Ctx,
-    loc:       &IrLoc,
-    kind:      ImportKind,
-) {
-    let src_scope = ctx.scopes[src.0 as usize].clone();
-
-    if kind == ImportKind::TypesLinksAndPacks {
-        if kind_hint.is_none() || kind_hint == Some("def") {
-            for (name, &tid) in &src_scope.shapes {
-                if !ctx.is_planned_name(src, name) {
-                    try_import_type(name, tid, into, ctx, loc);
+    match mode {
+        UseMode::Pack => {
+            if kind == ImportKind::TypesLinksAndPacks {
+                try_import_pack(alias, src, into, ctx, loc);
+            }
+        }
+        UseMode::ImportOne { name, defs_only } => match kind {
+            ImportKind::TypesLinksAndPacks => {
+                if !defs_only {
+                    if let Some(shape_id) = ctx.scopes[src.0 as usize].shapes.get(name).copied() {
+                        try_import_shape(name, shape_id, into, ctx, loc);
+                    }
+                    if let Some(pack_id) = ctx.scopes[src.0 as usize].packs.get(name).copied() {
+                        try_import_pack(name, pack_id, into, ctx, loc);
+                    }
+                } else if let Some(shape_id) = ctx.scopes[src.0 as usize].shapes.get(name).copied() {
+                    try_import_shape(name, shape_id, into, ctx, loc);
                 }
             }
-        }
-        if kind_hint.is_none() {
-            for (name, &sid) in &src_scope.packs {
-                try_import_pack(name, sid, into, ctx, loc);
-            }
-            for name in &src_scope.ts_fns {
-                ctx.scopes[into.0 as usize].ts_fns.insert(name.clone());
-            }
-        }
-    }
-    if kind == ImportKind::Insts {
-        if kind_hint.is_none() || kind_hint == Some("def") {
-            for (name, fids) in &src_scope.defs {
-                for &fid in fids {
-                    if !ctx.defs[fid.0 as usize].planned {
-                        try_import_fun(name, fid, into, ctx, loc);
+            ImportKind::Insts => {
+                if let Some(ids) = ctx.scopes[src.0 as usize].defs.get(name).cloned() {
+                    let visible: Vec<DefId> = ids.into_iter()
+                        .filter(|id| !ctx.defs[id.0 as usize].planned)
+                        .collect();
+                    for id in visible {
+                        try_import_def(name, id, into, ctx, loc);
                     }
                 }
             }
-        }
-    }
-}
-
-fn do_specific_import(
-    name:      &str,
-    src:       ScopeId,
-    into:      ScopeId,
-    kind_hint: Option<&str>,
-    ctx:       &mut Ctx,
-    loc:       &IrLoc,
-    kind:      ImportKind,
-) {
-    let src_scope = ctx.scopes[src.0 as usize].clone();
-    let mut found = false;
-
-    if kind == ImportKind::TypesLinksAndPacks {
-        if kind_hint.is_none() || kind_hint == Some("def") {
-            if !ctx.is_planned_name(src, name) {
-                if let Some(&tid) = src_scope.shapes.get(name) {
-                    try_import_type(name, tid, into, ctx, loc);
-                    found = true;
+        },
+        UseMode::ImportAll { defs_only } => match kind {
+            ImportKind::TypesLinksAndPacks => {
+                let shape_names: Vec<(String, ShapeId)> = ctx.scopes[src.0 as usize].shapes.iter()
+                    .map(|(k, v)| (k.clone(), *v))
+                    .collect();
+                for (name, sid) in shape_names {
+                    try_import_shape(&name, sid, into, ctx, loc);
                 }
-            }
-        }
-        if kind_hint.is_none() {
-            if let Some(&sid) = src_scope.packs.get(name) {
-                try_import_pack(name, sid, into, ctx, loc);
-                found = true;
-            }
-            if src_scope.ts_fns.contains(name) {
-                ctx.scopes[into.0 as usize].ts_fns.insert(name.to_string());
-                found = true;
-            }
-        }
-        // Only emit "not found" for explicit def imports in the type/pack pass.
-        if !found && kind_hint.is_some() {
-            ctx.errors.push(IrError {
-                message: format!("use: '{}' not found in pack", name),
-                loc: loc.clone(),
-            });
-        }
-    }
-    if kind == ImportKind::Insts {
-        if kind_hint.is_none() || kind_hint == Some("def") {
-            if let Some(fids) = src_scope.defs.get(name) {
-                for &fid in fids {
-                    if !ctx.defs[fid.0 as usize].planned {
-                        try_import_fun(name, fid, into, ctx, loc);
-                        found = true;
+                if !defs_only {
+                    let pack_names: Vec<(String, ScopeId)> = ctx.scopes[src.0 as usize].packs.iter()
+                        .map(|(k, v)| (k.clone(), *v))
+                        .collect();
+                    for (name, sid) in pack_names {
+                        try_import_pack(&name, sid, into, ctx, loc);
                     }
                 }
             }
-        }
-        if !found && kind_hint == Some("def") {
-            ctx.errors.push(IrError {
-                message: format!("use: '{}' not found in pack", name),
-                loc: loc.clone(),
-            });
-        }
+            ImportKind::Insts => {
+                let def_names: Vec<(String, Vec<DefId>)> = ctx.scopes[src.0 as usize].defs.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                for (name, ids) in def_names {
+                    let visible: Vec<DefId> = ids.into_iter()
+                        .filter(|id| !ctx.defs[id.0 as usize].planned)
+                        .collect();
+                    for id in visible {
+                        try_import_def(&name, id, into, ctx, loc);
+                    }
+                }
+            }
+        },
     }
+}
+
+fn lookup_pack_path(ctx: &Ctx, scope: ScopeId, path: &[&str]) -> Option<ScopeId> {
+    let (first, rest) = path.split_first()?;
+    let mut cur = ctx.lookup_pack(scope, first)?;
+    for name in rest {
+        cur = *ctx.scopes[cur.0 as usize].packs.get(*name)?;
+    }
+    Some(cur)
 }
 
 // ---------------------------------------------------------------------------
 // Import helpers — insert a single name into the destination scope,
 // detecting and marking ambiguity if a conflict exists.
 // ---------------------------------------------------------------------------
-
-fn try_import_type(name: &str, tid: ShapeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
-    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
-    // Idempotent: same type already imported from the same source — skip silently.
-    if let Some(&existing) = ctx.scopes[into.0 as usize].shapes.get(name) {
-        if existing == tid { return; }
-        // Local definition in this scope — it wins, skip the import silently.
-        if ctx.shapes[existing.0 as usize].scope == into { return; }
-        // Two different imports conflict.
-        ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
-            loc: loc.clone(),
-        });
-        ctx.mark_ambiguous(into, name);
-        return;
-    }
-    let conflict = ctx.scopes[into.0 as usize].packs.contains_key(name);
-    if conflict {
-        ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
-            loc: loc.clone(),
-        });
-        ctx.mark_ambiguous(into, name);
-    } else {
-        ctx.scopes[into.0 as usize].shapes.insert(name.to_string(), tid);
-    }
-}
 
 fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
@@ -773,18 +755,42 @@ fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: 
     }
 }
 
-fn try_import_fun(name: &str, fid: DefId, into: ScopeId, ctx: &mut Ctx, _loc: &IrLoc) {
+fn try_import_shape(name: &str, sid: ShapeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
     if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
-    if let Some(existing) = ctx.scopes[into.0 as usize].defs.get(name) {
-        // Idempotent: same fun already present — skip.
-        if existing.contains(&fid) { return; }
-        // Local definition in this scope wins — skip the import silently.
-        if existing.iter().any(|&eid| ctx.defs[eid.0 as usize].scope == into) { return; }
+    if let Some(&existing) = ctx.scopes[into.0 as usize].shapes.get(name) {
+        if existing == sid { return; }
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+        return;
     }
-    ctx.scopes[into.0 as usize].defs
-        .entry(name.to_string())
-        .or_default()
-        .push(fid);
+    let conflict = ctx.scopes[into.0 as usize].packs.contains_key(name);
+    if conflict {
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+    } else {
+        ctx.scopes[into.0 as usize].shapes.insert(name.to_string(), sid);
+    }
+}
+
+fn try_import_def(name: &str, fid: DefId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    let defs = &mut ctx.scopes[into.0 as usize].defs;
+    if let Some(existing) = defs.get(name) {
+        if existing.contains(&fid) { return; }
+        ctx.errors.push(IrError {
+            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            loc: loc.clone(),
+        });
+        ctx.mark_ambiguous(into, name);
+        return;
+    }
+    defs.insert(name.to_string(), vec![fid]);
 }
 
 // ---------------------------------------------------------------------------
@@ -898,17 +904,31 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             }
         }
 
-        if let Some(mapper_name) = &mapper_fn {
-            // Validate that the mapper function is visible in scope.
-            if !ctx.scope_has_ts_fn(scope, mapper_name) {
-                ctx.errors.push(IrError {
-                    message: format!(
-                        "mapper function '{}' not in scope; define it in a co-located \
-                         .ts file or import it with `use pack:fn_name`",
-                        mapper_name
-                    ),
-                    loc: _loc.clone(),
-                });
+        if let Some(mapper_name) = mapper_fn.clone() {
+            if !ctx.scope_has_ts_fn(scope, &mapper_name) {
+                if let Some(explicit) = &td.inner.mapper {
+                    if let Some(ts_name) = lookup_ts_fn_by_ref(&explicit.inner, ctx, scope) {
+                        mapper_fn = Some(ts_name);
+                    } else {
+                        ctx.errors.push(IrError {
+                            message: format!(
+                                "mapper function '{}' not in scope; define it in a co-located \
+                                 .ts file or import its pack with `use pack:<name>`",
+                                mapper_name
+                            ),
+                            loc: _loc.clone(),
+                        });
+                    }
+                } else {
+                    ctx.errors.push(IrError {
+                        message: format!(
+                            "mapper function '{}' not in scope; define it in a co-located \
+                             .ts file or import its pack with `use pack:<name>`",
+                            mapper_name
+                        ),
+                        loc: _loc.clone(),
+                    });
+                }
             }
         }
 
@@ -1203,6 +1223,29 @@ fn lookup_type_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<ShapeI
             ctx.lookup_shape(cur, segs.last().unwrap().inner.as_plain()?)
         }
     }
+}
+
+fn split_pack_prefix<'a>(segs: &'a [AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> (ScopeId, &'a [AstNode<AstRefSeg>]) {
+    let mut cur = scope;
+    let mut i = 0;
+    while i + 1 < segs.len() {
+        let Some(name) = segs[i].inner.as_plain() else { break };
+        let Some(next) = ctx.lookup_pack(cur, name) else { break };
+        cur = next;
+        i += 1;
+    }
+    (cur, &segs[i..])
+}
+
+fn scope_and_value_segs<'a>(segs: &'a [AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> (ScopeId, &'a [AstNode<AstRefSeg>]) {
+    if segs.len() > 1 {
+        if let Some(first) = segs[0].inner.as_plain() {
+            if ctx.lookup_shape(scope, first).is_some() {
+                return (scope, segs);
+            }
+        }
+    }
+    split_pack_prefix(segs, ctx, scope)
 }
 
 fn pass4_register_defs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
@@ -1662,9 +1705,18 @@ fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope
         }
         _ => { ctx.errors.push(IrError { message: "expected ref value".into(), loc: loc.clone() }); return IrValue::Ref(String::new()); }
     };
+    let (value_scope, segs) = scope_and_value_segs(segs, ctx, scope);
 
     if pattern.segments.len() == 1 {
-        return resolve_single_seg_value(segs[0].inner.as_plain().unwrap_or(""), &pattern.segments[0], ctx, scope, loc);
+        if segs.len() == 1 {
+            return resolve_single_seg_value(segs[0].inner.as_plain().unwrap_or(""), &pattern.segments[0], ctx, value_scope, loc);
+        }
+        let is_typed_path = segs.len() > 1
+            && segs[0].inner.as_plain().map_or(false, |v| ctx.lookup_shape(value_scope, v).is_some());
+        if is_typed_path {
+            let inst_name = segs.last().and_then(|s| s.inner.as_plain()).unwrap_or("");
+            return resolve_single_seg_value(inst_name, &pattern.segments[0], ctx, value_scope, loc);
+        }
     }
 
     // Multi-segment typed path — segment counts must match.
@@ -1679,7 +1731,7 @@ fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope
     }
 
     let vals: Vec<IrValue> = pattern.segments.iter().zip(segs.iter()).map(|(pat_seg, val_seg)| {
-        resolve_single_seg_value(val_seg.inner.as_plain().unwrap_or(""), pat_seg, ctx, scope, loc)
+        resolve_single_seg_value(val_seg.inner.as_plain().unwrap_or(""), pat_seg, ctx, value_scope, loc)
     }).collect();
     IrValue::Path(vals)
 }
@@ -1795,15 +1847,16 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
         return IrValue::Ref(String::new());
     };
     if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+    let (value_scope, segs) = scope_and_value_segs(&r.segments, ctx, scope);
 
     // `def:TYPE:NAME` — explicit type-qualified instance reference.
     // Resolve directly by type+name, bypassing pattern matching.
-    if r.segments.len() >= 2 && r.segments[0].inner.as_plain() == Some("def") {
-        let type_name = r.segments[1].inner.as_plain().unwrap_or("");
-        let inst_name_seg = r.segments.get(2);
-        if let Some(shape_id) = ctx.lookup_shape(scope, type_name) {
+    if segs.len() >= 2 && segs[0].inner.as_plain() == Some("def") {
+        let type_name = segs[1].inner.as_plain().unwrap_or("");
+        let inst_name_seg = segs.get(2);
+        if let Some(shape_id) = ctx.lookup_shape(value_scope, type_name) {
             let name = inst_name_seg.and_then(|s| s.inner.as_plain()).unwrap_or(type_name);
-            if let Some(fid) = ctx.lookup_def_typed(scope, name, shape_id) {
+            if let Some(fid) = ctx.lookup_def_typed(value_scope, name, shape_id) {
                 return IrValue::Inst(fid);
             }
             ctx.errors.push(IrError {
@@ -1821,19 +1874,19 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
 
     // For typed-path values like `service:api`, the first segment is a type qualifier
     // and the last segment is the actual instance name.
-    let is_typed_path = r.segments.len() > 1
-        && r.segments[0].inner.as_plain().map_or(false, |v| ctx.lookup_shape(scope, v).is_some());
+    let is_typed_path = segs.len() > 1
+        && segs[0].inner.as_plain().map_or(false, |v| ctx.lookup_shape(value_scope, v).is_some());
     let inst_name = if is_typed_path {
-        r.segments.last().unwrap().inner.as_plain().unwrap_or("")
+        segs.last().unwrap().inner.as_plain().unwrap_or("")
     } else {
-        r.segments[0].inner.as_plain().unwrap_or("")
+        segs[0].inner.as_plain().unwrap_or("")
     };
 
     // Find which element pattern matches this instance's type.
     let matched_pattern = patterns.iter().find(|pattern| {
         if let Some(base_seg) = pattern.segments.first() {
             if let IrRefSegValue::Shape(tid) = &base_seg.value {
-                return ctx.lookup_def_typed(scope, inst_name, *tid).is_some();
+                return ctx.lookup_def_typed(value_scope, inst_name, *tid).is_some();
             }
         }
         false
@@ -1844,7 +1897,7 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
         if pattern.segments.len() == 1 {
             if let IrRefSegValue::Shape(tid) = &pattern.segments[0].value {
                 if let Some(IrShapeBody::Primitive(_)) = ctx.shapes.get(tid.0 as usize).map(|t| &t.body) {
-                    let s = r.segments.iter()
+                    let s = segs.iter()
                         .filter_map(|s| s.inner.as_plain())
                         .collect::<Vec<_>>()
                         .join(":");
@@ -1858,7 +1911,7 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     if is_typed_path {
         if let Some(pattern) = matched_pattern {
             if pattern.segments.len() == 1 {
-                return resolve_single_seg_value(inst_name, &pattern.segments[0], ctx, scope, loc);
+                return resolve_single_seg_value(inst_name, &pattern.segments[0], ctx, value_scope, loc);
             }
         }
     }

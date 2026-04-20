@@ -1,57 +1,97 @@
-use std:*
-media-secret   secret
-pay-secret     secret
-core-secret    secret
-hubspot-secret secret
-notify-secret  secret
+use pack:std
+use pack:marstech
+media-secret   std:secret
+pay-secret     std:secret
+core-secret    std:secret
+hubspot-secret std:secret
+notify-secret  std:secret
 
-main = database {
+main = std:database {
     engine: postgres
 }
 
-media-bucket = bucket {
+media-bucket = std:bucket {
     name: "media-content"
     access: write
 }
 
-api-gen = service {
+api-gen = std:service {
     port: http
-    access: [ database:main  media:http  pay:http  core:http ]
-    observe: { tracing: false  datadog: false }
+    access: [
+        main
+        media:http
+        pay:http
+        core:http
+    ]
+    observe: {
+        tracing: false
+        datadog: false
+    }
 }
 
-hub = service {
+hub = std:service {
     port: http
     access: []
-    observe: { tracing: false  datadog: false }
+    observe: {
+        tracing: false
+        datadog: false
+    }
 }
 
-media = service {
+media = std:service {
     port: http
-    access: [ database:main  media-bucket:write  media-secret ]
-    observe: { tracing: false  datadog: false }
+    access: [
+        main
+        media-bucket:write
+        media-secret
+    ]
+    observe: {
+        tracing: false
+        datadog: false
+    }
 }
 
-pay = service {
+pay = std:service {
     port: http
-    access: [ database:main  pay-secret ]
-    observe: { tracing: false  datadog: false }
+    access: [
+        main
+        pay-secret
+    ]
+    observe: {
+        tracing: false
+        datadog: false
+    }
 }
 
-core = service {
+core = std:service {
     port: http
     access: [ core-secret ]
-    observe: { tracing: true  datadog: false }
+    observe: {
+        tracing: true
+        datadog: false
+    }
 }
 
-hubspot = service {
+hubspot = std:service {
     port: http
-    access: [ hubspot-secret  datadog ]
-    observe: { tracing: true  datadog: true }
+    access: [
+        hubspot-secret
+        marstech:datadog
+    ]
+    observe: {
+        tracing: true
+        datadog: true
+    }
 }
 
-notify = service {
+notify = std:service {
     port: http
-    access: [ notify-secret  datadog ]
-    observe: { tracing: true  datadog: true }
+    access: [
+        notify-secret
+        marstech:datadog
+    ]
+    observe: {
+        tracing: true
+        datadog: true
+    }
 }

@@ -1,88 +1,94 @@
-use std:*
-use pack:marstech:def:*
-use app:*
-use ops:*
-use poc:*
-use routing:*
+use pack:std
+use pack:marstech
+use pack:app
+use pack:ops
+use pack:poc
+use pack:routing
 
-app = space {
+app = std:space {
     host: "app"
-    services: [ media  pay  core  hubspot  notify ]
+    services: [
+        app:media
+        app:pay
+        app:core
+        app:hubspot
+        app:notify
+    ]
 }
 
-poc = space {
+poc = std:space {
     host: "poc"
-    services: [ product-wf ]
+    services: [
+        poc:product-wf
+    ]
 }
 
-api = space {
+api = std:space {
     host: "api"
-    services: [ api-gen  hub  metrics ]
-}
-
-marstech = stack {
-    api-gen
-    hub
-    product-wf
-    metrics
-    media
-    pay
-    core
-    hubspot
-    notify
-    main
-    media-bucket
-    datadog
-    media-secret
-    pay-secret
-    core-secret
-    hubspot-secret
-    notify-secret
-    marstech-co
-    influencer-ae
-    app
-    poc
-    api
-    edge-api
-    edge-hub
-    edge-workflows
-    edge-metrics
-}
-
-plan prd-eu = deploy {
-    stack: marstech
-    region: [ eu-central:1  eu-central:2  eu-central:3 ]
-    databases: [
-        { database: main  size: medium  storage: 20 }
-    ]
     services: [
-        { service: api-gen     size: large   scaling: { min: 1  max: 4 } }
-        { service: hub         size: medium  scaling: { min: 1  max: 2 } }
-        { service: product-wf  size: medium  scaling: { min: 1  max: 2 } }
-        { service: metrics     size: small   scaling: { min: 1  max: 1 } }
-        { service: media       size: medium  scaling: { min: 1  max: 2 } }
-        { service: pay         size: small   scaling: { min: 1  max: 2 } }
-        { service: core        size: medium  scaling: { min: 1  max: 2 } }
-        { service: hubspot     size: medium  scaling: { min: 1  max: 2 } }
-        { service: notify      size: medium  scaling: { min: 1  max: 2 } }
+        app:api-gen
+        app:hub
+        ops:metrics
     ]
 }
 
-plan prd-me = deploy {
-    stack: marstech
-    region: [ me-central:1 ]
-    databases: [
-        { database: main  size: small  storage: 20 }
-    ]
+marstech = std:compute_pool {
     services: [
-        { service: api-gen     size: medium  scaling: { min: 1  max: 2 } }
-        { service: hub         size: small   scaling: { min: 1  max: 1 } }
-        { service: product-wf  size: small   scaling: { min: 1  max: 1 } }
-        { service: metrics     size: small   scaling: { min: 1  max: 1 } }
-        { service: media       size: small   scaling: { min: 1  max: 1 } }
-        { service: pay         size: small   scaling: { min: 1  max: 1 } }
-        { service: core        size: small   scaling: { min: 1  max: 1 } }
-        { service: hubspot     size: small   scaling: { min: 1  max: 1 } }
-        { service: notify      size: small   scaling: { min: 1  max: 1 } }
+        app:api-gen
+        app:hub
+        poc:product-wf
+        ops:metrics
+        app:media
+        app:pay
+        app:core
+        app:hubspot
+        app:notify
+    ]
+    databases: [
+        app:main
+    ]
+    service_defaults: {
+        size: small
+        scaling: {
+            min: 1
+            max: 1
+        }
+    }
+    database_defaults: {
+        size: small
+        storage: 20
+    }
+}
+
+plan prd-eu = std:aws:tf:deploy {
+    pool: marstech
+    region: [
+        eu-central:1
+        eu-central:2
+        eu-central:3
+    ]
+    database_overrides: [
+        {
+            database: app:main
+            size: medium
+            storage: 20
+        }
+    ]
+    service_overrides: [
+        {
+            service: app:api-gen
+            size: large
+            scaling: {
+                min: 1
+                max: 4
+            }
+        }
+    ]
+}
+
+plan prd-me = std:aws:tf:deploy {
+    pool: marstech
+    region: [
+        me-central:1
     ]
 }

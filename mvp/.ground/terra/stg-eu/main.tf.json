@@ -14,35 +14,35 @@
   },
   "resource": {
     "aws_ecs_cluster": {
-      "deploy_ecs": {
-        "name": "deploy-ecs",
+      "marstech_ecs": {
+        "name": "marstech-ecs",
         "tags": {
           "ground-managed": "true"
         }
       }
     },
     "aws_vpc": {
-      "deploy_vpc": {
+      "marstech_vpc": {
         "cidr_block": "10.0.0.0/16",
         "enable_dns_hostnames": true,
         "enable_dns_support": true,
         "tags": {
-          "Name": "deploy-vpc",
+          "Name": "marstech-vpc",
           "ground-managed": "true"
         }
       }
     },
     "aws_internet_gateway": {
-      "deploy_gw": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_gw": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-gw",
+          "Name": "marstech-gw",
           "ground-managed": "true"
         }
       }
     },
     "aws_eip": {
-      "deploy_nat_eip": {
+      "marstech_nat_eip": {
         "domain": "vpc",
         "tags": {
           "ground-managed": "true"
@@ -50,34 +50,34 @@
       }
     },
     "aws_nat_gateway": {
-      "deploy_nat": {
-        "allocation_id": "${aws_eip.deploy_nat_eip.id}",
-        "subnet_id": "${aws_subnet.deploy_npub_1.id}",
+      "marstech_nat": {
+        "allocation_id": "${aws_eip.marstech_nat_eip.id}",
+        "subnet_id": "${aws_subnet.marstech_npub_1.id}",
         "tags": {
-          "Name": "deploy-nat",
+          "Name": "marstech-nat",
           "ground-managed": "true"
         }
       }
     },
     "aws_subnet": {
       
-      "deploy_npub_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_npub_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.0.0/24",
         "availability_zone": "eu-central-1a",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "deploy-npub-1",
+          "Name": "marstech-npub-1",
           "ground-managed": "true"
         }
       },
-      "deploy_nprv_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_nprv_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.1.0/24",
         "availability_zone": "eu-central-1a",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "deploy-nprv-1",
+          "Name": "marstech-nprv-1",
           "ground-managed": "true"
         }
       }
@@ -85,17 +85,17 @@
     },
     "aws_route_table": {
       
-      "deploy_rpub_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_rpub_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-rpub-1",
+          "Name": "marstech-rpub-1",
           "ground-managed": "true"
         }
       },
-      "deploy_rprv_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_rprv_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-rprv-1",
+          "Name": "marstech-rprv-1",
           "ground-managed": "true"
         }
       }
@@ -103,28 +103,204 @@
     },
     "aws_route_table_association": {
       
-      "deploy_rpub_1": {
-        "subnet_id": "${aws_subnet.deploy_npub_1.id}",
-        "route_table_id": "${aws_route_table.deploy_rpub_1.id}"
+      "marstech_rpub_1": {
+        "subnet_id": "${aws_subnet.marstech_npub_1.id}",
+        "route_table_id": "${aws_route_table.marstech_rpub_1.id}"
       },
-      "deploy_rprv_1": {
-        "subnet_id": "${aws_subnet.deploy_nprv_1.id}",
-        "route_table_id": "${aws_route_table.deploy_rprv_1.id}"
+      "marstech_rprv_1": {
+        "subnet_id": "${aws_subnet.marstech_nprv_1.id}",
+        "route_table_id": "${aws_route_table.marstech_rprv_1.id}"
       }
       
     },
     "aws_route": {
       
-      "deploy_rpub_1_default": {
-        "route_table_id": "${aws_route_table.deploy_rpub_1.id}",
+      "marstech_rpub_1_default": {
+        "route_table_id": "${aws_route_table.marstech_rpub_1.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "gateway_id": "${aws_internet_gateway.deploy_gw.id}"
+        "gateway_id": "${aws_internet_gateway.marstech_gw.id}"
       },
-      "deploy_rprv_1_default": {
-        "route_table_id": "${aws_route_table.deploy_rprv_1.id}",
+      "marstech_rprv_1_default": {
+        "route_table_id": "${aws_route_table.marstech_rprv_1.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "nat_gateway_id": "${aws_nat_gateway.deploy_nat.id}"
+        "nat_gateway_id": "${aws_nat_gateway.marstech_nat.id}"
       }
+      
+    },
+    "aws_security_group": {
+      
+      "marstech_api_gen_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-api-gen-sg",
+        "description": "Ground managed service security group for api-gen",
+        "tags": {
+          "Name": "marstech-api-gen-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      
+      "marstech_main_db_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-main-db-sg",
+        "description": "Ground managed database security group for main",
+        "tags": {
+          "Name": "marstech-main-db-sg",
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_vpc_security_group_egress_rule": {
+      
+      "marstech_api_gen_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      }
+      
+    },
+    "aws_vpc_security_group_ingress_rule": {
+      
+      
+      "api_gen_main_db": {
+        "security_group_id": "${aws_security_group.marstech_main_db_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "from_port": 5432,
+        "to_port": 5432,
+        "ip_protocol": "tcp"
+      }
+      
+    },
+    "aws_iam_role": {
+      
+      "marstech_api_gen_task_role": {
+        "name": "marstech-api-gen-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_cloudwatch_log_group": {
+      
+      "marstech_api_gen_logs": {
+        "name": "/ground/marstech/api-gen",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_ecs_task_definition": {
+      
+      "marstech_api_gen_task_def": {
+        "family": "marstech-api-gen",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_api_gen_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_api_gen_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "api-gen",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/api-gen",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "api-gen"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_ecs_service": {
+      
+      "marstech_api_gen_svc": {
+        "name": "marstech-api-gen",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_api_gen_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}"],
+          "security_groups": ["${aws_security_group.marstech_api_gen_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_iam_role_policy": {
+      
+      
+    },
+    "aws_db_subnet_group": {
+      
+      "marstech_main_db_subnets": {
+        "name": "marstech-main-db-subnets",
+        "subnet_ids": ["${aws_subnet.marstech_nprv_1.id}"],
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_db_instance": {
+      
+      "marstech_main_db": {
+        "identifier": "marstech-main",
+        "engine": "postgres",
+        "engine_version": "15",
+        "instance_class": "db.t3.micro",
+        "allocated_storage": 20,
+        "db_name": "main",
+        "username": "ground",
+        "manage_master_user_password": true,
+        "db_subnet_group_name": "${aws_db_subnet_group.marstech_main_db_subnets.name}",
+        "vpc_security_group_ids": ["${aws_security_group.marstech_main_db_sg.id}"],
+        "skip_final_snapshot": true,
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_s3_bucket": {
+      
+    },
+    "aws_secretsmanager_secret": {
       
     }
   }

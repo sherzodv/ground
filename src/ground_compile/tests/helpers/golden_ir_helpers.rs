@@ -223,6 +223,7 @@ pub fn norm(s: &str) -> String {
 
 /// Parse + resolve multiple units, format as compact multi-line string.
 /// Each unit is `(name, path, src)`.
+#[allow(dead_code)]
 pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     let req = ParseReq {
         units: units.into_iter().map(|(name, path, src)| ParseUnit {

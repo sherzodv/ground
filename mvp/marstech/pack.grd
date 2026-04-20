@@ -1,3 +1,3 @@
-use std:*
+use pack:std
 
-datadog secret
+datadog std:secret

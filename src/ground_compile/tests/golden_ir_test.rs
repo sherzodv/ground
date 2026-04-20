@@ -379,8 +379,8 @@ fn import_002() {
                 "app",
                 vec![],
                 r##"
-                use pack:std:def:service
-                my-svc = service { image: nginx }
+                use pack:std
+                my-svc = std:service { image: nginx }
             "##,
             ),
         ]),
@@ -414,9 +414,9 @@ fn import_003() {
                 "app",
                 vec![],
                 r##"
-                use pack:std:def:*
-                my-svc = service { image: nginx }
-                my-db = database { engine: "pg" }
+                use pack:std
+                my-svc = std:service { image: nginx }
+                my-db = std:database { engine: "pg" }
             "##,
             ),
         ]),
@@ -453,9 +453,9 @@ fn import_004() {
                 "prd",
                 vec!["env"],
                 r##"
-                use app:*
-                space = { services = [ service ] }
-                api = space { services: [ api-gen ] }
+                use pack:app
+                space = { services = [ app:service ] }
+                api = space { services: [ app:api-gen ] }
             "##,
             ),
         ]),
@@ -482,6 +482,27 @@ fn import_004() {
 fn import_005() {
     assert_eq!(
         show_multi(vec![
+            ("", vec!["lib".into()], "service = { image = reference }"),
+            ("test", vec![], "api = lib:service { image: nginx }"),
+        ]),
+        norm(
+            r##"
+            Scope[pack:lib,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Def#0[service, Shape#0],
+            ]
+            Scope[pack:test,
+                Def#1[api, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_006() {
+    assert_eq!(
+        show_multi(vec![
             (
                 "app",
                 vec![],
@@ -494,9 +515,9 @@ fn import_005() {
                 "routing",
                 vec![],
                 r##"
-                use app:*
-                edge = { backend = service }
-                api = edge { backend: api-gen }
+                use pack:app
+                edge = { backend = app:service }
+                api = edge { backend: app:api-gen }
             "##,
             ),
         ]),
@@ -518,7 +539,7 @@ fn import_005() {
 }
 
 #[test]
-fn import_006() {
+fn import_007() {
     assert_eq!(
         show_multi(vec![
             (
@@ -533,9 +554,9 @@ fn import_006() {
                 "routing",
                 vec![],
                 r##"
-                use app:*
-                edge = { backend = service }
-                api = edge { backend: api-gen }
+                use pack:app
+                edge = { backend = app:service }
+                api = edge { backend: app:api-gen }
             "##,
             ),
         ]),
@@ -551,6 +572,73 @@ fn import_006() {
                 Shape#2[edge, Struct[Field#0[backend, IrRef[Struct(Shape#0)]]]],
                 Def#2[edge, Shape#2],
                 Def#3[api, Shape#2, base=Def#2, Set[Field#0, Inst(Def#1)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_008() {
+    assert_eq!(
+        show_multi(vec![
+            ("std", vec![], "service = { image = reference }"),
+            (
+                "app",
+                vec![],
+                r##"
+                use std:service
+                api = service { image: nginx }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:std,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Def#0[service, Shape#0],
+            ]
+            Scope[pack:app,
+                Def#1[api, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_009() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "std",
+                vec![],
+                r##"
+                service  = { image = reference }
+                database = { engine = string }
+            "##,
+            ),
+            (
+                "app",
+                vec![],
+                r##"
+                use std:*
+                my-svc = service { image: nginx }
+                my-db = database { engine: "pg" }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:std,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Shape#1[database, Struct[Field#0[engine, Prim(string)]]],
+                Def#0[service, Shape#0],
+                Def#1[database, Shape#1],
+            ]
+            Scope[pack:app,
+                Def#2[my-svc, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
+                Def#3[my-db, Shape#1, base=Def#1, Set[Field#0, Str("pg")]],
             ]
         "##
         ),
@@ -589,8 +677,8 @@ fn mapper_002() {
         (
             "main",
             vec![],
-            r#"use pack:mappers:make_label
-            def label { key = string } = make_label { value = string }"#,
+            r#"use pack:mappers
+            def label { key = string } = mappers:make_label { value = string }"#,
             None,
         ),
     ]);

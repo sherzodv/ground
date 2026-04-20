@@ -84,3 +84,31 @@ fn ts_gen_boolean_output() {
     let field = def.fields.iter().find(|f| f.name == "enabled").expect("enabled field missing");
     assert_eq!(format!("{:?}", field.value), "Bool(true)", "mapper should produce enabled=true");
 }
+
+#[test]
+fn ts_gen_type_units_include_named_shapes() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                endpoint = { host = string  port = integer }
+                def node { name = string } = make_node { endpoint = endpoint }
+            "#.into(),
+            ts_src: Some(r#"
+                function make_node(i) { return { endpoint: { host: i.name + ".internal", port: 8080 } }; }
+            "#.into()),
+        }],
+    });
+
+    assert!(res.errors.is_empty(),
+        "compile errors: {:?}", res.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+
+    let unit = res.type_units.iter()
+        .find(|u| u.file == "test.gen.d.ts")
+        .expect("test.gen.d.ts missing");
+
+    assert!(unit.content.contains("interface TestEndpoint"));
+    assert!(unit.content.contains("endpoint: TestEndpoint;"));
+    assert!(unit.content.contains("declare function make_node(i: MakeNodeInput): MakeNodeOutput;"));
+}

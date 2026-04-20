@@ -1,7 +1,10 @@
-use std:*
+use pack:std
 
-metrics = service {
+metrics = std:service {
     port: http
     access: []
-    observe: { tracing: false  datadog: false }
+    observe: {
+        tracing: false
+        datadog: false
+    }
 }

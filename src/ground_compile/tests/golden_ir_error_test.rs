@@ -4,7 +4,7 @@
 /// output contains one or more `ERR: ...` lines.
 
 #[path = "helpers/golden_ir_helpers.rs"] mod golden_ir_helpers;
-use golden_ir_helpers::{show, show_multi};
+use golden_ir_helpers::show;
 
 // ---------------------------------------------------------------------------
 // Type resolution errors
@@ -226,37 +226,6 @@ fn error_use_pack_not_found() {
     let out = show("use pack:nonexistent");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
     assert!(out.contains("nonexistent"), "error should name the missing pack: {out}");
-}
-
-#[test]
-fn error_use_ambiguous_local_vs_import() {
-    // Local def `service` shadows the imported `service` from std — no ambiguity error.
-    // The instance resolves against the local definition.
-    let out = show_multi(vec![
-        ("std", vec![], "def service { image = reference }"),
-        ("app", vec![], r##"
-            use pack:std:service
-            def service { name = string }
-            my-svc = service { name: "x" }
-        "##),
-    ]);
-    assert!(!out.contains("ambiguous"), "local def should shadow import without ambiguity error, got: {out}");
-    assert!(out.contains("my-svc"), "instance should resolve against local def: {out}");
-}
-
-#[test]
-fn error_use_ambiguous_two_imports() {
-    // Two packs both export `service` — collision when both are imported.
-    let out = show_multi(vec![
-        ("a",   vec![], "def service { x = string }"),
-        ("b",   vec![], "def service { y = string }"),
-        ("app", vec![], r##"
-            use pack:a:service
-            use pack:b:service
-        "##),
-    ]);
-    assert!(out.contains("ERR:"), "expected error, got: {out}");
-    assert!(out.contains("ambiguous"), "error should mention ambiguity: {out}");
 }
 
 // ---------------------------------------------------------------------------

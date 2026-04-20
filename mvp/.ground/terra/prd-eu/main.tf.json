@@ -14,35 +14,35 @@
   },
   "resource": {
     "aws_ecs_cluster": {
-      "deploy_ecs": {
-        "name": "deploy-ecs",
+      "marstech_ecs": {
+        "name": "marstech-ecs",
         "tags": {
           "ground-managed": "true"
         }
       }
     },
     "aws_vpc": {
-      "deploy_vpc": {
+      "marstech_vpc": {
         "cidr_block": "10.0.0.0/16",
         "enable_dns_hostnames": true,
         "enable_dns_support": true,
         "tags": {
-          "Name": "deploy-vpc",
+          "Name": "marstech-vpc",
           "ground-managed": "true"
         }
       }
     },
     "aws_internet_gateway": {
-      "deploy_gw": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_gw": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-gw",
+          "Name": "marstech-gw",
           "ground-managed": "true"
         }
       }
     },
     "aws_eip": {
-      "deploy_nat_eip": {
+      "marstech_nat_eip": {
         "domain": "vpc",
         "tags": {
           "ground-managed": "true"
@@ -50,76 +50,76 @@
       }
     },
     "aws_nat_gateway": {
-      "deploy_nat": {
-        "allocation_id": "${aws_eip.deploy_nat_eip.id}",
-        "subnet_id": "${aws_subnet.deploy_npub_1.id}",
+      "marstech_nat": {
+        "allocation_id": "${aws_eip.marstech_nat_eip.id}",
+        "subnet_id": "${aws_subnet.marstech_npub_1.id}",
         "tags": {
-          "Name": "deploy-nat",
+          "Name": "marstech-nat",
           "ground-managed": "true"
         }
       }
     },
     "aws_subnet": {
       
-      "deploy_npub_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_npub_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.0.0/24",
         "availability_zone": "eu-central-1a",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "deploy-npub-1",
+          "Name": "marstech-npub-1",
           "ground-managed": "true"
         }
       },
-      "deploy_nprv_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_nprv_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.1.0/24",
         "availability_zone": "eu-central-1a",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "deploy-nprv-1",
+          "Name": "marstech-nprv-1",
           "ground-managed": "true"
         }
       },
       
-      "deploy_npub_2": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_npub_2": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.2.0/24",
         "availability_zone": "eu-central-1b",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "deploy-npub-2",
+          "Name": "marstech-npub-2",
           "ground-managed": "true"
         }
       },
-      "deploy_nprv_2": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_nprv_2": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.3.0/24",
         "availability_zone": "eu-central-1b",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "deploy-nprv-2",
+          "Name": "marstech-nprv-2",
           "ground-managed": "true"
         }
       },
       
-      "deploy_npub_3": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_npub_3": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.4.0/24",
         "availability_zone": "eu-central-1c",
         "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "deploy-npub-3",
+          "Name": "marstech-npub-3",
           "ground-managed": "true"
         }
       },
-      "deploy_nprv_3": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_nprv_3": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "cidr_block": "10.0.5.0/24",
         "availability_zone": "eu-central-1c",
         "map_public_ip_on_launch": false,
         "tags": {
-          "Name": "deploy-nprv-3",
+          "Name": "marstech-nprv-3",
           "ground-managed": "true"
         }
       }
@@ -127,47 +127,47 @@
     },
     "aws_route_table": {
       
-      "deploy_rpub_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_rpub_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-rpub-1",
+          "Name": "marstech-rpub-1",
           "ground-managed": "true"
         }
       },
-      "deploy_rprv_1": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_rprv_1": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-rprv-1",
-          "ground-managed": "true"
-        }
-      },
-      
-      "deploy_rpub_2": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
-        "tags": {
-          "Name": "deploy-rpub-2",
-          "ground-managed": "true"
-        }
-      },
-      "deploy_rprv_2": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
-        "tags": {
-          "Name": "deploy-rprv-2",
+          "Name": "marstech-rprv-1",
           "ground-managed": "true"
         }
       },
       
-      "deploy_rpub_3": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_rpub_2": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-rpub-3",
+          "Name": "marstech-rpub-2",
           "ground-managed": "true"
         }
       },
-      "deploy_rprv_3": {
-        "vpc_id": "${aws_vpc.deploy_vpc.id}",
+      "marstech_rprv_2": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
         "tags": {
-          "Name": "deploy-rprv-3",
+          "Name": "marstech-rprv-2",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_rpub_3": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "tags": {
+          "Name": "marstech-rpub-3",
+          "ground-managed": "true"
+        }
+      },
+      "marstech_rprv_3": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "tags": {
+          "Name": "marstech-rprv-3",
           "ground-managed": "true"
         }
       }
@@ -175,67 +175,1138 @@
     },
     "aws_route_table_association": {
       
-      "deploy_rpub_1": {
-        "subnet_id": "${aws_subnet.deploy_npub_1.id}",
-        "route_table_id": "${aws_route_table.deploy_rpub_1.id}"
+      "marstech_rpub_1": {
+        "subnet_id": "${aws_subnet.marstech_npub_1.id}",
+        "route_table_id": "${aws_route_table.marstech_rpub_1.id}"
       },
-      "deploy_rprv_1": {
-        "subnet_id": "${aws_subnet.deploy_nprv_1.id}",
-        "route_table_id": "${aws_route_table.deploy_rprv_1.id}"
-      },
-      
-      "deploy_rpub_2": {
-        "subnet_id": "${aws_subnet.deploy_npub_2.id}",
-        "route_table_id": "${aws_route_table.deploy_rpub_2.id}"
-      },
-      "deploy_rprv_2": {
-        "subnet_id": "${aws_subnet.deploy_nprv_2.id}",
-        "route_table_id": "${aws_route_table.deploy_rprv_2.id}"
+      "marstech_rprv_1": {
+        "subnet_id": "${aws_subnet.marstech_nprv_1.id}",
+        "route_table_id": "${aws_route_table.marstech_rprv_1.id}"
       },
       
-      "deploy_rpub_3": {
-        "subnet_id": "${aws_subnet.deploy_npub_3.id}",
-        "route_table_id": "${aws_route_table.deploy_rpub_3.id}"
+      "marstech_rpub_2": {
+        "subnet_id": "${aws_subnet.marstech_npub_2.id}",
+        "route_table_id": "${aws_route_table.marstech_rpub_2.id}"
       },
-      "deploy_rprv_3": {
-        "subnet_id": "${aws_subnet.deploy_nprv_3.id}",
-        "route_table_id": "${aws_route_table.deploy_rprv_3.id}"
+      "marstech_rprv_2": {
+        "subnet_id": "${aws_subnet.marstech_nprv_2.id}",
+        "route_table_id": "${aws_route_table.marstech_rprv_2.id}"
+      },
+      
+      "marstech_rpub_3": {
+        "subnet_id": "${aws_subnet.marstech_npub_3.id}",
+        "route_table_id": "${aws_route_table.marstech_rpub_3.id}"
+      },
+      "marstech_rprv_3": {
+        "subnet_id": "${aws_subnet.marstech_nprv_3.id}",
+        "route_table_id": "${aws_route_table.marstech_rprv_3.id}"
       }
       
     },
     "aws_route": {
       
-      "deploy_rpub_1_default": {
-        "route_table_id": "${aws_route_table.deploy_rpub_1.id}",
+      "marstech_rpub_1_default": {
+        "route_table_id": "${aws_route_table.marstech_rpub_1.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "gateway_id": "${aws_internet_gateway.deploy_gw.id}"
+        "gateway_id": "${aws_internet_gateway.marstech_gw.id}"
       },
-      "deploy_rprv_1_default": {
-        "route_table_id": "${aws_route_table.deploy_rprv_1.id}",
+      "marstech_rprv_1_default": {
+        "route_table_id": "${aws_route_table.marstech_rprv_1.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "nat_gateway_id": "${aws_nat_gateway.deploy_nat.id}"
-      },
-      
-      "deploy_rpub_2_default": {
-        "route_table_id": "${aws_route_table.deploy_rpub_2.id}",
-        "destination_cidr_block": "0.0.0.0/0",
-        "gateway_id": "${aws_internet_gateway.deploy_gw.id}"
-      },
-      "deploy_rprv_2_default": {
-        "route_table_id": "${aws_route_table.deploy_rprv_2.id}",
-        "destination_cidr_block": "0.0.0.0/0",
-        "nat_gateway_id": "${aws_nat_gateway.deploy_nat.id}"
+        "nat_gateway_id": "${aws_nat_gateway.marstech_nat.id}"
       },
       
-      "deploy_rpub_3_default": {
-        "route_table_id": "${aws_route_table.deploy_rpub_3.id}",
+      "marstech_rpub_2_default": {
+        "route_table_id": "${aws_route_table.marstech_rpub_2.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "gateway_id": "${aws_internet_gateway.deploy_gw.id}"
+        "gateway_id": "${aws_internet_gateway.marstech_gw.id}"
       },
-      "deploy_rprv_3_default": {
-        "route_table_id": "${aws_route_table.deploy_rprv_3.id}",
+      "marstech_rprv_2_default": {
+        "route_table_id": "${aws_route_table.marstech_rprv_2.id}",
         "destination_cidr_block": "0.0.0.0/0",
-        "nat_gateway_id": "${aws_nat_gateway.deploy_nat.id}"
+        "nat_gateway_id": "${aws_nat_gateway.marstech_nat.id}"
+      },
+      
+      "marstech_rpub_3_default": {
+        "route_table_id": "${aws_route_table.marstech_rpub_3.id}",
+        "destination_cidr_block": "0.0.0.0/0",
+        "gateway_id": "${aws_internet_gateway.marstech_gw.id}"
+      },
+      "marstech_rprv_3_default": {
+        "route_table_id": "${aws_route_table.marstech_rprv_3.id}",
+        "destination_cidr_block": "0.0.0.0/0",
+        "nat_gateway_id": "${aws_nat_gateway.marstech_nat.id}"
+      }
+      
+    },
+    "aws_security_group": {
+      
+      "marstech_api_gen_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-api-gen-sg",
+        "description": "Ground managed service security group for api-gen",
+        "tags": {
+          "Name": "marstech-api-gen-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hub_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-hub-sg",
+        "description": "Ground managed service security group for hub",
+        "tags": {
+          "Name": "marstech-hub-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_product_wf_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-product-wf-sg",
+        "description": "Ground managed service security group for product-wf",
+        "tags": {
+          "Name": "marstech-product-wf-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_metrics_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-metrics-sg",
+        "description": "Ground managed service security group for metrics",
+        "tags": {
+          "Name": "marstech-metrics-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_media_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-media-sg",
+        "description": "Ground managed service security group for media",
+        "tags": {
+          "Name": "marstech-media-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_pay_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-pay-sg",
+        "description": "Ground managed service security group for pay",
+        "tags": {
+          "Name": "marstech-pay-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_core_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-core-sg",
+        "description": "Ground managed service security group for core",
+        "tags": {
+          "Name": "marstech-core-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hubspot_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-hubspot-sg",
+        "description": "Ground managed service security group for hubspot",
+        "tags": {
+          "Name": "marstech-hubspot-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_notify_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-notify-sg",
+        "description": "Ground managed service security group for notify",
+        "tags": {
+          "Name": "marstech-notify-sg",
+          "ground-managed": "true"
+        }
+      },
+      
+      
+      "marstech_main_db_sg": {
+        "vpc_id": "${aws_vpc.marstech_vpc.id}",
+        "name": "marstech-main-db-sg",
+        "description": "Ground managed database security group for main",
+        "tags": {
+          "Name": "marstech-main-db-sg",
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_vpc_security_group_egress_rule": {
+      
+      "marstech_api_gen_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_hub_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_hub_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_product_wf_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_product_wf_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_metrics_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_metrics_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_media_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_media_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_pay_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_pay_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_core_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_core_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_hubspot_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_hubspot_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      },
+      
+      "marstech_notify_sg_all": {
+        "security_group_id": "${aws_security_group.marstech_notify_sg.id}",
+        "cidr_ipv4": "0.0.0.0/0",
+        "ip_protocol": "-1"
+      }
+      
+    },
+    "aws_vpc_security_group_ingress_rule": {
+      
+      "api_gen_media_http": {
+        "security_group_id": "${aws_security_group.marstech_media_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "from_port": 80,
+        "to_port": 80,
+        "ip_protocol": "tcp"
+      },
+      
+      "api_gen_pay_http": {
+        "security_group_id": "${aws_security_group.marstech_pay_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "from_port": 80,
+        "to_port": 80,
+        "ip_protocol": "tcp"
+      },
+      
+      "api_gen_core_http": {
+        "security_group_id": "${aws_security_group.marstech_core_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "from_port": 80,
+        "to_port": 80,
+        "ip_protocol": "tcp"
+      },
+      
+      
+      "api_gen_main_db": {
+        "security_group_id": "${aws_security_group.marstech_main_db_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_api_gen_sg.id}",
+        "from_port": 5432,
+        "to_port": 5432,
+        "ip_protocol": "tcp"
+      },
+      
+      "media_main_db": {
+        "security_group_id": "${aws_security_group.marstech_main_db_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_media_sg.id}",
+        "from_port": 5432,
+        "to_port": 5432,
+        "ip_protocol": "tcp"
+      },
+      
+      "pay_main_db": {
+        "security_group_id": "${aws_security_group.marstech_main_db_sg.id}",
+        "referenced_security_group_id": "${aws_security_group.marstech_pay_sg.id}",
+        "from_port": 5432,
+        "to_port": 5432,
+        "ip_protocol": "tcp"
+      }
+      
+    },
+    "aws_iam_role": {
+      
+      "marstech_api_gen_task_role": {
+        "name": "marstech-api-gen-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hub_task_role": {
+        "name": "marstech-hub-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_product_wf_task_role": {
+        "name": "marstech-product-wf-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_metrics_task_role": {
+        "name": "marstech-metrics-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_media_task_role": {
+        "name": "marstech-media-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_pay_task_role": {
+        "name": "marstech-pay-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_core_task_role": {
+        "name": "marstech-core-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hubspot_task_role": {
+        "name": "marstech-hubspot-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_notify_task_role": {
+        "name": "marstech-notify-task",
+        "assume_role_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_cloudwatch_log_group": {
+      
+      "marstech_api_gen_logs": {
+        "name": "/ground/marstech/api-gen",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hub_logs": {
+        "name": "/ground/marstech/hub",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_product_wf_logs": {
+        "name": "/ground/marstech/product-wf",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_metrics_logs": {
+        "name": "/ground/marstech/metrics",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_media_logs": {
+        "name": "/ground/marstech/media",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_pay_logs": {
+        "name": "/ground/marstech/pay",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_core_logs": {
+        "name": "/ground/marstech/core",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hubspot_logs": {
+        "name": "/ground/marstech/hubspot",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_notify_logs": {
+        "name": "/ground/marstech/notify",
+        "retention_in_days": 14,
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_ecs_task_definition": {
+      
+      "marstech_api_gen_task_def": {
+        "family": "marstech-api-gen",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "1024",
+        "memory": "2048",
+        "execution_role_arn": "${aws_iam_role.marstech_api_gen_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_api_gen_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "api-gen",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/api-gen",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "api-gen"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hub_task_def": {
+        "family": "marstech-hub",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_hub_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_hub_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "hub",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/hub",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "hub"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_product_wf_task_def": {
+        "family": "marstech-product-wf",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_product_wf_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_product_wf_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "product-wf",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/product-wf",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "product-wf"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_metrics_task_def": {
+        "family": "marstech-metrics",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_metrics_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_metrics_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "metrics",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/metrics",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "metrics"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_media_task_def": {
+        "family": "marstech-media",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_media_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_media_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "media",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/media",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "media"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_pay_task_def": {
+        "family": "marstech-pay",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_pay_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_pay_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "pay",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/pay",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "pay"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_core_task_def": {
+        "family": "marstech-core",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_core_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_core_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "core",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/core",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "core"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hubspot_task_def": {
+        "family": "marstech-hubspot",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_hubspot_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_hubspot_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "hubspot",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/hubspot",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "hubspot"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_notify_task_def": {
+        "family": "marstech-notify",
+        "network_mode": "awsvpc",
+        "requires_compatibilities": ["FARGATE"],
+        "cpu": "256",
+        "memory": "512",
+        "execution_role_arn": "${aws_iam_role.marstech_notify_task_role.arn}",
+        "task_role_arn": "${aws_iam_role.marstech_notify_task_role.arn}",
+        "container_definitions": [
+          {
+            "name": "notify",
+            "image": "public.ecr.aws/docker/library/nginx:stable",
+            "essential": true,
+            "portMappings": [
+              {
+                "containerPort": 80,
+                "hostPort": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-group": "/ground/marstech/notify",
+                "awslogs-region": "eu-central-1",
+                "awslogs-stream-prefix": "notify"
+              }
+            }
+          }
+        ],
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_ecs_service": {
+      
+      "marstech_api_gen_svc": {
+        "name": "marstech-api-gen",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_api_gen_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_api_gen_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hub_svc": {
+        "name": "marstech-hub",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_hub_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_hub_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_product_wf_svc": {
+        "name": "marstech-product-wf",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_product_wf_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_product_wf_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_metrics_svc": {
+        "name": "marstech-metrics",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_metrics_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_metrics_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_media_svc": {
+        "name": "marstech-media",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_media_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_media_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_pay_svc": {
+        "name": "marstech-pay",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_pay_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_pay_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_core_svc": {
+        "name": "marstech-core",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_core_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_core_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hubspot_svc": {
+        "name": "marstech-hubspot",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_hubspot_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_hubspot_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_notify_svc": {
+        "name": "marstech-notify",
+        "cluster": "${aws_ecs_cluster.marstech_ecs.id}",
+        "task_definition": "${aws_ecs_task_definition.marstech_notify_task_def.arn}",
+        "desired_count": 1,
+        "launch_type": "FARGATE",
+        "network_configuration": {
+          "subnets": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+          "security_groups": ["${aws_security_group.marstech_notify_sg.id}"],
+          "assign_public_ip": false
+        },
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_iam_role_policy": {
+      
+      "media_media_bucket_write": {
+        "name": "marstech-media-media-bucket-write",
+        "role": "marstech-media-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],"Resource":["arn:aws:s3:::media-content","arn:aws:s3:::media-content/*"]}]}
+      },
+      
+      
+      "media_media_secret_secret": {
+        "name": "marstech-media-media-secret-secret",
+        "role": "marstech-media-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-media-secret*"}]}
+      },
+      
+      "pay_pay_secret_secret": {
+        "name": "marstech-pay-pay-secret-secret",
+        "role": "marstech-pay-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-pay-secret*"}]}
+      },
+      
+      "core_core_secret_secret": {
+        "name": "marstech-core-core-secret-secret",
+        "role": "marstech-core-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-core-secret*"}]}
+      },
+      
+      "hubspot_hubspot_secret_secret": {
+        "name": "marstech-hubspot-hubspot-secret-secret",
+        "role": "marstech-hubspot-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-hubspot-secret*"}]}
+      },
+      
+      "hubspot_datadog_secret": {
+        "name": "marstech-hubspot-datadog-secret",
+        "role": "marstech-hubspot-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-datadog*"}]}
+      },
+      
+      "notify_notify_secret_secret": {
+        "name": "marstech-notify-notify-secret-secret",
+        "role": "marstech-notify-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-notify-secret*"}]}
+      },
+      
+      "notify_datadog_secret": {
+        "name": "marstech-notify-datadog-secret",
+        "role": "marstech-notify-task",
+        "policy": {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue"],"Resource":"arn:aws:secretsmanager:*:*:secret:marstech-datadog*"}]}
+      }
+      
+    },
+    "aws_db_subnet_group": {
+      
+      "marstech_main_db_subnets": {
+        "name": "marstech-main-db-subnets",
+        "subnet_ids": ["${aws_subnet.marstech_nprv_1.id}", "${aws_subnet.marstech_nprv_2.id}", "${aws_subnet.marstech_nprv_3.id}"],
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_db_instance": {
+      
+      "marstech_main_db": {
+        "identifier": "marstech-main",
+        "engine": "postgres",
+        "engine_version": "15",
+        "instance_class": "db.t3.small",
+        "allocated_storage": 20,
+        "db_name": "main",
+        "username": "ground",
+        "manage_master_user_password": true,
+        "db_subnet_group_name": "${aws_db_subnet_group.marstech_main_db_subnets.name}",
+        "vpc_security_group_ids": ["${aws_security_group.marstech_main_db_sg.id}"],
+        "skip_final_snapshot": true,
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_s3_bucket": {
+      
+      "marstech_media_bucket_bucket": {
+        "bucket": "media-content",
+        "tags": {
+          "ground-managed": "true"
+        }
+      }
+      
+    },
+    "aws_secretsmanager_secret": {
+      
+      "marstech_media_secret_secret": {
+        "name": "marstech-media-secret",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_pay_secret_secret": {
+        "name": "marstech-pay-secret",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_core_secret_secret": {
+        "name": "marstech-core-secret",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_hubspot_secret_secret": {
+        "name": "marstech-hubspot-secret",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_datadog_secret": {
+        "name": "marstech-datadog",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
+      },
+      
+      "marstech_notify_secret_secret": {
+        "name": "marstech-notify-secret",
+        "recovery_window_in_days": 0,
+        "tags": {
+          "ground-managed": "true"
+        }
       }
       
     }

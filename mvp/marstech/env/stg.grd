@@ -1,36 +1,44 @@
-use std:*
-use app:*
-use routing:*
+use pack:std
+use pack:app
+use pack:routing
 
-app = space {
+app = std:space {
     host: "app"
-    services: [ api-gen ]
-}
-
-api = space {
-    host: "api"
-    services: [ api-gen ]
-}
-
-marstech = stack {
-    api-gen
-    main
-    core-secret
-    pay-secret
-    media-secret
-    influencer-ae
-    edge-api
-    app
-    api
-}
-
-plan stg-eu = deploy {
-    stack: marstech
-    region: [ eu-central:1 ]
-    databases: [
-        { database: main  size: small  storage: 20 }
-    ]
     services: [
-        { service: api-gen  size: small  scaling: { min: 1  max: 1 } }
+        app:api-gen
+    ]
+}
+
+api = std:space {
+    host: "api"
+    services: [
+        app:api-gen
+    ]
+}
+
+marstech = std:compute_pool {
+    services: [
+        app:api-gen
+    ]
+    databases: [
+        app:main
+    ]
+    service_defaults: {
+        size: small
+        scaling: {
+            min: 1
+            max: 1
+        }
+    }
+    database_defaults: {
+        size: small
+        storage: 20
+    }
+}
+
+plan stg-eu = std:aws:tf:deploy {
+    pool: marstech
+    region: [
+        eu-central:1
     ]
 }

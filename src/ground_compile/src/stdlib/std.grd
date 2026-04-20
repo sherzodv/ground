@@ -39,17 +39,21 @@ service = {
 
 def secret
 
-# Stack is a typed heterogeneous bag.
-# Its anonymous field carries only typed members, not named fields.
-stack = {
-    = [ def:service | def:database | def:bucket | def:edge | def:domain | def:space | def:secret ]
-}
-
 size = small | medium | large | xlarge
 
 scaling = {
     min = integer
     max = integer
+}
+
+service_defaults = {
+    size    = size
+    scaling = scaling
+}
+
+database_defaults = {
+    size    = size
+    storage = integer
 }
 
 service_config = {
@@ -64,9 +68,17 @@ database_config = {
     storage  = integer
 }
 
+compute_pool = {
+    services          = [ service ]
+    databases         = [ database ]
+    service_defaults  = service_defaults
+    database_defaults = database_defaults
+}
+
 deploy = {
-    stack     = stack
-    region    = [ string ]
-    services  = [ service_config ]
-    databases = [ database_config ]
+    prefix             = string
+    pool               = compute_pool
+    region             = [ string ]
+    service_overrides  = [ service_config ]
+    database_overrides = [ database_config ]
 }

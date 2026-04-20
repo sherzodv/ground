@@ -938,6 +938,34 @@ fn use_006() {
 }
 
 #[test]
+ fn use_009() {
+    assert_eq!(
+        show("use std:service"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Use[std:service],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+ fn use_010() {
+    assert_eq!(
+        show("use std:*"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Use[std:*],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn use_007() {
     assert_eq!(
         show(

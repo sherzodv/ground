@@ -46,7 +46,7 @@ pub fn render(req: &RenderReq, ctx: &Value) -> Result<Vec<JsonUnit>, GenError> {
         .map_err(|e| GenError::Render { cause: e.to_string() })?;
 
     let manifest = tera.render(&req.entry, &tera_ctx)
-        .map_err(|e| GenError::Render { cause: e.to_string() })?;
+        .map_err(|e| GenError::Render { cause: format!("{e:?}") })?;
     let manifest_value: Value = serde_json::from_str(&manifest)
         .map_err(|e| GenError::Manifest { cause: format!("{e}: {manifest}") })?;
     let files = manifest_value.get("files")
@@ -62,7 +62,7 @@ pub fn render(req: &RenderReq, ctx: &Value) -> Result<Vec<JsonUnit>, GenError> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| GenError::Manifest { cause: "file entry missing string 'template'".into() })?;
             let content = tera.render(template, &tera_ctx)
-                .map_err(|e| GenError::Render { cause: e.to_string() })?;
+                .map_err(|e| GenError::Render { cause: format!("{e:?}") })?;
             Ok(JsonUnit { file: path.into(), content })
         })
         .collect()

@@ -567,3 +567,27 @@ pack smooth { # creates a pack named smooth inside pack shapes, with scoped defi
 }
 ```
 
+Packs may be brought into scope with `use`:
+
+```ground
+use std
+use pack:std
+use std:service
+use pack:std:service
+use pack:std:def:service
+use std:*
+use pack:std:*
+use std:def:*
+use pack:std:def:*
+use pack:std:aws:tf
+```
+
+`pack` and `def` are optional keywords in `use` refs.
+
+`use std` and `use pack:std` bring the pack into scope.
+
+`use std:service`, `use pack:std:service`, and `use pack:std:def:service`
+bring one name into scope.
+
+`use std:*`, `use pack:std:*`, `use std:def:*`, and `use pack:std:def:*`
+bring all visible names from that pack into scope.

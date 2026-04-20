@@ -12,8 +12,8 @@ pub use asm::{AsmDef, AsmField, AsmValue, AsmVariant, AsmDefRef, asm_value_to_js
 // ---------------------------------------------------------------------------
 
 const STD_GRD:               &str = include_str!("stdlib/std.grd");
-const STD_AWS_PACK_GRD:      &str = include_str!("stdlib/aws/pack.grd");
-const STD_AWS_PACK_TS:       &str = include_str!("stdlib/aws/pack.ts");
+const STD_AWS_TF_PACK_GRD:   &str = include_str!("stdlib/aws/tf/pack.grd");
+const STD_AWS_TF_PACK_TS:    &str = include_str!("stdlib/aws/tf/pack.ts");
 
 /// Number of units prepended by the compiler as stdlib.
 /// Callers can use this to offset unit indices in error locations.
@@ -21,8 +21,8 @@ pub const STDLIB_UNIT_COUNT: usize = 2;
 
 fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
     vec![
-        ast::ParseUnit { name: "std".into(),       path: vec![],                                    src: STD_GRD.into(),               ts_src: None },
-        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into()],         src: STD_AWS_PACK_GRD.into(),      ts_src: Some(STD_AWS_PACK_TS.into()) },
+        ast::ParseUnit { name: "std".into(),       path: vec![],                                          src: STD_GRD.into(),                  ts_src: None },
+        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into(), "tf".into()], src: STD_AWS_TF_PACK_GRD.into(),      ts_src: Some(STD_AWS_TF_PACK_TS.into()) },
     ]
 }
 
@@ -60,7 +60,24 @@ pub struct ErrorLoc {
 
 pub struct CompileRes {
     pub defs:    Vec<AsmDef>,
+    pub type_units: Vec<TypeUnit>,
     pub errors:  Vec<CompileError>,
+}
+
+pub struct TypeUnit {
+    pub file:    String,
+    pub content: String,
+}
+
+fn type_unit_file(path: &[String], name: &str) -> String {
+    let mut out = path.join("/");
+    if !out.is_empty() {
+        out.push('/');
+    }
+    let stem = if name.is_empty() { "pack" } else { name };
+    out.push_str(stem);
+    out.push_str(".gen.d.ts");
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +90,10 @@ pub fn compile(req: CompileReq) -> CompileRes {
     units.extend(req.units.into_iter().map(|u| ast::ParseUnit {
         name: u.name, path: u.path, src: u.src, ts_src: u.ts_src,
     }));
+
+    let type_unit_files: Vec<String> = units.iter()
+        .map(|u| type_unit_file(&u.path, &u.name))
+        .collect();
 
     // Keep sources for error location resolution before moving units into parse.
     let srcs: Vec<String> = units.iter().map(|u| u.src.clone()).collect();
@@ -114,11 +135,17 @@ pub fn compile(req: CompileReq) -> CompileRes {
 
     // Don't lower if the IR has errors — it may be in an invalid state.
     if !errors.is_empty() {
-        return CompileRes { defs: vec![], errors };
+        return CompileRes { defs: vec![], type_units: vec![], errors };
     }
 
     // Generate TypeScript interface declarations and type-compatibility assertions.
     let generated_dts    = ts_gen::gen_mapper_interfaces(&ir);
+    let type_units = ts_gen::gen_mapper_interfaces_by_unit(&ir).into_iter()
+        .filter_map(|(unit, content)| {
+            let file = type_unit_files.get(unit as usize)?.clone();
+            Some(TypeUnit { file, content })
+        })
+        .collect();
     let tc_assertions    = ts_gen::gen_typecheck_assertions(&ir, &user_ts);
 
     // Append assertions to user_ts so TypeScript verifies each mapper implementation
@@ -139,12 +166,12 @@ pub fn compile(req: CompileReq) -> CompileRes {
                     .map(|d| CompileError { message: d.message.clone(), loc: None })
                     .collect();
                 if !ts_errors.is_empty() {
-                    return CompileRes { defs: vec![], errors: ts_errors };
+                    return CompileRes { defs: vec![], type_units: vec![], errors: ts_errors };
                 }
             }
             Err(e) => {
                 let msg = format!("TypeScript type-check engine error: {e}");
-                return CompileRes { defs: vec![], errors: vec![CompileError { message: msg, loc: None }] };
+                return CompileRes { defs: vec![], type_units: vec![], errors: vec![CompileError { message: msg, loc: None }] };
             }
         }
     }
@@ -157,7 +184,7 @@ pub fn compile(req: CompileReq) -> CompileRes {
 
     let ctx = asm::lower(&ir, &full_ts);
 
-    CompileRes { defs: ctx.defs, errors }
+    CompileRes { defs: ctx.defs, type_units, errors }
 }
 
 // ---------------------------------------------------------------------------

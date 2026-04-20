@@ -1,4 +1,4 @@
-use std:*
+use pack:std
 
 # ── Networking ───────────────────────────────────────────────────────────────────
 
@@ -232,14 +232,141 @@ aws_lb_listener_rule = {
     host_header  = string
 }
 
-# ── Deploy ───────────────────────────────────────────────────────────────────────
+# ── Deploy helpers ───────────────────────────────────────────────────────────────
+# These are Ground-side helper shapes for Terraform rendering.
+# They stay in `std:aws:tf` because they are specific to the Terraform AWS backend,
+# but they are not 1:1 Terraform resources, so they intentionally omit the `aws_`
+# prefix.
 
-# Extend std deploy with AWS-provisioned infra fields.
-def deploy {} = std:deploy {
+deploy_root = {
+    ecs_key     = string
+    ecs_name    = string
+    vpc_key     = string
+    vpc_name    = string
+    gw_key      = string
+    gw_name     = string
+    nat_eip_key = string
+    nat_key     = string
+    nat_name    = string
+}
+
+deploy_zone = {
+    n                = string
+    az               = string
+    public_cidr      = string
+    private_cidr     = string
+    pub_key          = string
+    pub_name         = string
+    priv_key         = string
+    priv_name        = string
+    rpub_key         = string
+    rpub_name        = string
+    rprv_key         = string
+    rprv_name        = string
+    rpub_default_key = string
+    rprv_default_key = string
+}
+
+deploy_service = {
+    name                = string
+    port                = integer
+    port_name           = grpc | http
+    cpu                 = integer
+    memory              = integer
+    desired_count       = integer
+    log_group_key       = string
+    log_group_name      = string
+    task_definition_key = string
+    task_definition_family = string
+    service_key         = string
+    service_name        = string
+    security_group_key  = string
+    security_group_name = string
+    task_role_key       = string
+    task_role_name      = string
+}
+
+deploy_database = {
+    key                = string
+    name               = string
+    identifier         = string
+    db_name            = string
+    engine             = postgres | mysql
+    engine_version     = string
+    instance_class     = string
+    allocated_storage  = integer
+    port               = integer
+    security_group_key = string
+    security_group_name = string
+    subnet_group_key   = string
+    subnet_group_name  = string
+}
+
+deploy_bucket = {
+    key    = string
+    name   = string
+    bucket = string
+}
+
+deploy_secret = {
+    key  = string
+    name = string
+}
+
+service_service_access = {
+    name                      = string
+    source_security_group_key = string
+    target_security_group_key = string
+    from_port                 = integer
+    to_port                   = integer
+}
+
+service_database_access = {
+    name                      = string
+    source_security_group_key = string
+    target_security_group_key = string
+    from_port                 = integer
+    to_port                   = integer
+}
+
+service_bucket_access = {
+    name          = string
+    role_name     = string
+    policy_name   = string
+    policy_json   = string
+}
+
+service_secret_access = {
+    name          = string
+    role_name     = string
+    policy_name   = string
+    policy_json   = string
+}
+
+# AWS deploy is an explicit mapper over the standard deploy input shape.
+# Templates only serialize these resolved values.
+def deploy {
+    prefix             = string
+    pool               = std:compute_pool
+    region             = [ string ]
+    service_overrides  = [ std:service_config ]
+    database_overrides = [ std:database_config ]
+} = make_aws_deploy {
+    provider_region = string
+    root            = deploy_root
+    zones           = [ deploy_zone ]
     vpc             = aws_vpc
     public_subnets  = [ aws_subnet ]
     private_subnets = [ aws_subnet ]
     internet_gw     = aws_internet_gateway
     nat_gw          = aws_nat_gateway
     lb              = aws_lb
+    services        = [ deploy_service ]
+    databases       = [ deploy_database ]
+    buckets         = [ deploy_bucket ]
+    secrets         = [ deploy_secret ]
+    service_service_accesses  = [ service_service_access ]
+    service_database_accesses = [ service_database_access ]
+    service_bucket_accesses   = [ service_bucket_access ]
+    service_secret_accesses   = [ service_secret_access ]
 }
