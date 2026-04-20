@@ -1,44 +1,36 @@
 use std:*
-use marstech:*
 use app:*
 use routing:*
 
-space app {
-    host:     app
-    services: [ service:api-gen ]
+app = space {
+    host: "app"
+    services: [ api-gen ]
 }
 
-space api {
-    host:     api
-    services: [ service:api-gen ]
+api = space {
+    host: "api"
+    services: [ api-gen ]
 }
 
-stack marstech {
-    service:api-gen
-    database:main
-    secret:core
-    secret:pay
-    secret:media
-    domain:influencer-ae
-    edge:edge-api
-    space:app
-    space:api
+marstech = stack {
+    api-gen
+    main
+    core-secret
+    pay-secret
+    media-secret
+    influencer-ae
+    edge-api
+    app
+    api
 }
 
-space stg {
-    host: stg.internal
-}
-
-deploy stg-eu {
+plan stg-eu = deploy {
     stack: marstech
-
+    region: [ eu-central:1 ]
     databases: [
         { database: main  size: small  storage: 20 }
     ]
-
     services: [
         { service: api-gen  size: small  scaling: { min: 1  max: 1 } }
     ]
 }
-
-plan stg-eu { region: [ eu-central:1 ] }

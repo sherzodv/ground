@@ -1,53 +1,57 @@
 use std:*
+media-secret   secret
+pay-secret     secret
+core-secret    secret
+hubspot-secret secret
+notify-secret  secret
 
-secret media
-secret pay
-secret core
-secret hubspot
-secret notify
-
-database main {
+main = database {
     engine: postgres
 }
 
-bucket media {
-    name: media-content
+media-bucket = bucket {
+    name: "media-content"
+    access: write
 }
 
-service api-gen {
-    access: [
-        main              # database — unambiguous, only 'main' in scope
-        media:http        # service — :http port disambiguates from bucket:media
-        pay:http          # service — :http port disambiguates from secret:pay
-        core:http         # service — :http port disambiguates from secret:core
-    ]
+api-gen = service {
+    port: http
+    access: [ database:main  media:http  pay:http  core:http ]
+    observe: { tracing: false  datadog: false }
 }
 
-service hub
-
-service media {
-    access: [
-        main
-        media:write          # bucket — :write access disambiguates from service:media
-        def:secret:media     # secret — explicit, 'media' alone would be ambiguous
-    ]
+hub = service {
+    port: http
+    access: []
+    observe: { tracing: false  datadog: false }
 }
 
-service pay {
-    access: [ main  def:secret:pay ]
+media = service {
+    port: http
+    access: [ database:main  media-bucket:write  media-secret ]
+    observe: { tracing: false  datadog: false }
 }
 
-service core {
-    access:  [ def:secret:core ]
-    observe: { tracing: true }
+pay = service {
+    port: http
+    access: [ database:main  pay-secret ]
+    observe: { tracing: false  datadog: false }
 }
 
-service hubspot {
-    access:  [ def:secret:hubspot  datadog ]
+core = service {
+    port: http
+    access: [ core-secret ]
+    observe: { tracing: true  datadog: false }
+}
+
+hubspot = service {
+    port: http
+    access: [ hubspot-secret  datadog ]
     observe: { tracing: true  datadog: true }
 }
 
-service notify {
-    access:  [ def:secret:notify  datadog ]
+notify = service {
+    port: http
+    access: [ notify-secret  datadog ]
     observe: { tracing: true  datadog: true }
 }

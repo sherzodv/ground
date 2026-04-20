@@ -13,18 +13,16 @@ pub use asm::{AsmDef, AsmField, AsmValue, AsmVariant, AsmDefRef, asm_value_to_js
 
 const STD_GRD:               &str = include_str!("stdlib/std.grd");
 const STD_AWS_PACK_GRD:      &str = include_str!("stdlib/aws/pack.grd");
-const STD_AWS_TRANSFORM_GRD: &str = include_str!("stdlib/aws/transform.grd");
-const STD_AWS_TRANSFORM_TS:  &str = include_str!("stdlib/aws/transform.ts");
+const STD_AWS_PACK_TS:       &str = include_str!("stdlib/aws/pack.ts");
 
 /// Number of units prepended by the compiler as stdlib.
 /// Callers can use this to offset unit indices in error locations.
-pub const STDLIB_UNIT_COUNT: usize = 3;
+pub const STDLIB_UNIT_COUNT: usize = 2;
 
 fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
     vec![
         ast::ParseUnit { name: "std".into(),       path: vec![],                                    src: STD_GRD.into(),               ts_src: None },
-        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into()],         src: STD_AWS_PACK_GRD.into(),      ts_src: None },
-        ast::ParseUnit { name: "transform".into(),  path: vec!["std".into(), "aws".into()],         src: STD_AWS_TRANSFORM_GRD.into(), ts_src: Some(STD_AWS_TRANSFORM_TS.into()) },
+        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into()],         src: STD_AWS_PACK_GRD.into(),      ts_src: Some(STD_AWS_PACK_TS.into()) },
     ]
 }
 

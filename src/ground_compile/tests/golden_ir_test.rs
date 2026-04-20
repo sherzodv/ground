@@ -128,6 +128,33 @@ fn def_004() {
     );
 }
 
+#[test]
+fn def_005() {
+    assert_eq!(
+        show(
+            r##"
+            service = { image = reference }
+            api = service { color = string }
+            edge = { backend = service }
+            edge-api = edge { backend: api }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Shape#1[api, Struct[Field#0[image, Prim(reference)], Field#1[color, Prim(string)]]],
+                Shape#2[edge, Struct[Field#0[backend, IrRef[Struct(Shape#0)]]]],
+                Def#0[service, Shape#0],
+                Def#1[api, Shape#1, base=Def#0],
+                Def#2[edge, Shape#2],
+                Def#3[edge-api, Shape#2, base=Def#2, Set[Field#0, Inst(Def#1)]],
+            ]
+        "##
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Shape
 // ---------------------------------------------------------------------------
@@ -269,6 +296,57 @@ fn value_003() {
     );
 }
 
+#[test]
+fn value_004() {
+    assert_eq!(
+        show(
+            r##"
+            access = read | write
+            bucket = { access = access }
+            database = { engine = string }
+            port = grpc | http
+            service = {
+                port = port
+                access = [ service:(port) | database | bucket:(access) | secret ]
+            }
+            def secret
+
+            main = database { engine: "pg" }
+            media-bucket = bucket { access: write }
+            media-secret secret
+            media = service { port: http  access: [] }
+            api = service {
+                port: http
+                access: [ media:http  database:main  media-bucket:write  media-secret ]
+            }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[access, Enum[read|write]],
+                Shape#1[bucket, Struct[Field#0[access, IrRef[Enum(Shape#0)]]]],
+                Shape#2[database, Struct[Field#0[engine, Prim(string)]]],
+                Shape#3[port, Enum[grpc|http]],
+                Shape#4[service, Struct[Field#0[port, IrRef[Enum(Shape#3)]], Field#1[access, List[IrRef[Struct(Shape#4):(Enum(Shape#3))] | IrRef[Struct(Shape#2)] | IrRef[Struct(Shape#1):(Enum(Shape#0))] | IrRef[Unit(Shape#5)]]]]],
+                Shape#5[secret, Unit],
+                Def#0[access, Shape#0],
+                Def#1[bucket, Shape#1],
+                Def#2[database, Shape#2],
+                Def#3[port, Shape#3],
+                Def#4[service, Shape#4],
+                Def#5[secret, Shape#5],
+                Def#6[main, Shape#2, base=Def#2, Set[Field#0, Str("pg")]],
+                Def#7[media-bucket, Shape#1, base=Def#1, Set[Field#0, Variant(Shape#0, "write")]],
+                Def#8[media-secret, Shape#5, base=Def#5],
+                Def#9[media, Shape#4, base=Def#4, Set[Field#0, Variant(Shape#3, "http")], Set[Field#1, List[]]],
+                Def#10[api, Shape#4, base=Def#4, Set[Field#0, Variant(Shape#3, "http")], Set[Field#1, List[Inst(Def#9):Variant(Shape#3, "http"), Inst(Def#6), Inst(Def#7):Variant(Shape#0, "write"), Inst(Def#8)]]],
+            ]
+        "##
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
@@ -313,7 +391,7 @@ fn import_002() {
                 Def#0[service, Shape#0],
             ]
             Scope[pack:app,
-                Def#1[my-svc, Shape#0, Set[Field#0, Ref(nginx)]],
+                Def#1[my-svc, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
             ]
         "##
         ),
@@ -351,8 +429,128 @@ fn import_003() {
                 Def#1[database, Shape#1],
             ]
             Scope[pack:app,
-                Def#2[my-svc, Shape#0, Set[Field#0, Ref(nginx)]],
-                Def#3[my-db, Shape#1, Set[Field#0, Str("pg")]],
+                Def#2[my-svc, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
+                Def#3[my-db, Shape#1, base=Def#1, Set[Field#0, Str("pg")]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_004() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "app",
+                vec![],
+                r##"
+                service = { image = reference }
+                api-gen = service { image: nginx }
+            "##,
+            ),
+            (
+                "prd",
+                vec!["env"],
+                r##"
+                use app:*
+                space = { services = [ service ] }
+                api = space { services: [ api-gen ] }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:app,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Def#0[service, Shape#0],
+                Def#1[api-gen, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
+            ]
+            Scope[pack:env,
+                Scope[pack:prd,
+                    Shape#1[space, Struct[Field#0[services, List[IrRef[Struct(Shape#0)]]]]],
+                    Def#2[space, Shape#1],
+                    Def#3[api, Shape#1, base=Def#2, Set[Field#0, List[Inst(Def#1)]]],
+                ],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_005() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "app",
+                vec![],
+                r##"
+                service = { image = reference }
+                api-gen = service { image: nginx }
+            "##,
+            ),
+            (
+                "routing",
+                vec![],
+                r##"
+                use app:*
+                edge = { backend = service }
+                api = edge { backend: api-gen }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:app,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Def#0[service, Shape#0],
+                Def#1[api-gen, Shape#0, base=Def#0, Set[Field#0, Ref(nginx)]],
+            ]
+            Scope[pack:routing,
+                Shape#1[edge, Struct[Field#0[backend, IrRef[Struct(Shape#0)]]]],
+                Def#2[edge, Shape#1],
+                Def#3[api, Shape#1, base=Def#2, Set[Field#0, Inst(Def#1)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_006() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "app",
+                vec![],
+                r##"
+                service = { image = reference }
+                api-gen = service { color = string }
+            "##,
+            ),
+            (
+                "routing",
+                vec![],
+                r##"
+                use app:*
+                edge = { backend = service }
+                api = edge { backend: api-gen }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:app,
+                Shape#0[service, Struct[Field#0[image, Prim(reference)]]],
+                Shape#1[api-gen, Struct[Field#0[image, Prim(reference)], Field#1[color, Prim(string)]]],
+                Def#0[service, Shape#0],
+                Def#1[api-gen, Shape#1, base=Def#0],
+            ]
+            Scope[pack:routing,
+                Shape#2[edge, Struct[Field#0[backend, IrRef[Struct(Shape#0)]]]],
+                Def#2[edge, Shape#2],
+                Def#3[api, Shape#2, base=Def#2, Set[Field#0, Inst(Def#1)]],
             ]
         "##
         ),

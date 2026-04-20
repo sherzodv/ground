@@ -1,79 +1,60 @@
 use std:*
-use marstech:*
+use pack:marstech:def:*
 use app:*
-use poc:*
 use ops:*
+use poc:*
 use routing:*
 
-space app {
-    host:     app
-    services: [
-        service:media
-        service:pay
-        service:core
-        service:hubspot
-        service:notify
-    ]
+app = space {
+    host: "app"
+    services: [ media  pay  core  hubspot  notify ]
 }
 
-space poc {
-    host:     poc
-    services: [ service:product-wf ]
+poc = space {
+    host: "poc"
+    services: [ product-wf ]
 }
 
-space api {
-    host:     api
-    services: [
-        service:api-gen
-        service:hub
-        service:metrics
-    ]
+api = space {
+    host: "api"
+    services: [ api-gen  hub  metrics ]
 }
 
-stack marstech {
-    service:api-gen
-    service:hub
-    service:product-wf
-    service:metrics
-    service:media
-    service:pay
-    service:core
-    service:hubspot
-    service:notify
-    database:main
-    bucket:media
-    secret:datadog
-    secret:media
-    secret:pay
-    secret:core
-    secret:hubspot
-    secret:notify
-    domain:marstech-co
-    domain:influencer-ae
-    space:app
-    space:poc
-    space:api
-    edge:edge-api
-    edge:edge-hub
-    edge:edge-workflows
-    edge:edge-metrics
+marstech = stack {
+    api-gen
+    hub
+    product-wf
+    metrics
+    media
+    pay
+    core
+    hubspot
+    notify
+    main
+    media-bucket
+    datadog
+    media-secret
+    pay-secret
+    core-secret
+    hubspot-secret
+    notify-secret
+    marstech-co
+    influencer-ae
+    app
+    poc
+    api
+    edge-api
+    edge-hub
+    edge-workflows
+    edge-metrics
 }
 
-space prd {
-    host: prd.internal
-}
-
-# HACK 3: two plan statements, same stack — independent materializations with
-# different regions and sizing. Ground produces two complete outputs from one
-# architecture definition. plan is a typed execution trigger, not a template call.
-
-deploy prd-eu {
+plan prd-eu = deploy {
     stack: marstech
-
+    region: [ eu-central:1  eu-central:2  eu-central:3 ]
     databases: [
         { database: main  size: medium  storage: 20 }
     ]
-
     services: [
         { service: api-gen     size: large   scaling: { min: 1  max: 4 } }
         { service: hub         size: medium  scaling: { min: 1  max: 2 } }
@@ -87,13 +68,12 @@ deploy prd-eu {
     ]
 }
 
-deploy prd-me {
+plan prd-me = deploy {
     stack: marstech
-
+    region: [ me-central:1 ]
     databases: [
         { database: main  size: small  storage: 20 }
     ]
-
     services: [
         { service: api-gen     size: medium  scaling: { min: 1  max: 2 } }
         { service: hub         size: small   scaling: { min: 1  max: 1 } }
@@ -106,6 +86,3 @@ deploy prd-me {
         { service: notify      size: small   scaling: { min: 1  max: 1 } }
     ]
 }
-
-plan prd-eu { region: [ eu-central:1  eu-central:2  eu-central:3 ] }
-plan prd-me { region: [ me-central:1 ] }

@@ -1,3 +1,7 @@
 use std:*
 
-service metrics
+metrics = service {
+    port: http
+    access: []
+    observe: { tracing: false  datadog: false }
+}

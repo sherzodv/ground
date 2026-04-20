@@ -234,8 +234,8 @@ aws_lb_listener_rule = {
 
 # ── Deploy ───────────────────────────────────────────────────────────────────────
 
-# extends std:deploy with AWS-provisioned infra fields
-def deploy = {
+# Extend std deploy with AWS-provisioned infra fields.
+def deploy {} = std:deploy {
     vpc             = aws_vpc
     public_subnets  = [ aws_subnet ]
     private_subnets = [ aws_subnet ]

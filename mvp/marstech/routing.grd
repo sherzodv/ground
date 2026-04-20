@@ -1,36 +1,36 @@
 use std:*
 use app:*
-use poc:*
 use ops:*
+use poc:*
 
-domain marstech-co {
-    host: marstech.co
+marstech-co = domain {
+    host: "marstech.co"
 }
 
-domain influencer-ae {
-    host: moonadmin.influencer.ae
+influencer-ae = domain {
+    host: "moonadmin.influencer.ae"
 }
 
-edge edge-api {
-    domain:  influencer-ae
-    sub:     api
+edge-api = edge {
+    domain: influencer-ae
+    sub: "api"
     backend: api-gen
 }
 
-edge edge-hub {
-    domain:  marstech-co
-    sub:     hub
+edge-hub = edge {
+    domain: marstech-co
+    sub: "hub"
     backend: hub
 }
 
-edge edge-workflows {
-    domain:  marstech-co
-    sub:     workflows
+edge-workflows = edge {
+    domain: marstech-co
+    sub: "workflows"
     backend: product-wf
 }
 
-edge edge-metrics {
-    domain:  marstech-co
-    sub:     metrics
+edge-metrics = edge {
+    domain: marstech-co
+    sub: "metrics"
     backend: metrics
 }

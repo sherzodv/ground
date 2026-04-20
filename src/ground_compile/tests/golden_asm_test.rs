@@ -192,3 +192,30 @@ fn mapper_005() {
         ),
     );
 }
+
+#[test]
+fn mapper_006() {
+    let grd = r#"
+        deploy = { region = [ string ] }
+        plan prd = deploy { region: [ eu-central:1  eu-central:2 ] }
+    "#;
+    let ts = r#"
+        function deploy(resolved, _input) {
+            return {
+                aws_region: "eu-central-1",
+                zones: resolved.region.map((raw, idx) => ({
+                    n: String(idx + 1),
+                    az: "eu-central-1" + String.fromCharCode(97 + idx),
+                })),
+            };
+        }
+    "#;
+    assert_eq!(
+        show_with_ts(grd, ts),
+        norm(
+            r##"
+            Def[prd = deploy { region: List[Str("eu-central:1"), Str("eu-central:2")], aws_region: Str("eu-central-1"), zones: List[Def[_ =  { n: Str("1"), az: Str("eu-central-1a") }], Def[_ =  { n: Str("2"), az: Str("eu-central-1b") }]] }]
+        "##
+        ),
+    );
+}

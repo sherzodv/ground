@@ -161,7 +161,6 @@ fn do_compile() -> CompileRes {
     let mut unit_names: Vec<String> = vec![
         "<std>".into(),
         "<std:aws>".into(),
-        "<std:aws:transform>".into(),
     ];
     debug_assert_eq!(unit_names.len(), STDLIB_UNIT_COUNT);
     unit_names.extend(units.iter().map(|u| u.name.clone()));

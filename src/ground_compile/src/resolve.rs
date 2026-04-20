@@ -115,7 +115,7 @@ impl Ctx {
         if let Some(ids) = s.defs.get(name) {
             if let Some(&fid) = ids.iter().find(|&&fid| {
                 let def = &self.defs[fid.0 as usize];
-                !def.planned && def.shape_id == shape_id
+                !def.planned && self.def_satisfies_shape(fid, shape_id)
             }) {
                 return Some(fid);
             }
@@ -137,11 +137,23 @@ impl Ctx {
         let s = &self.scopes[scope.0 as usize];
         if s.ambiguous.contains(name) { return None; }
         if let Some(ids) = s.defs.get(name) {
-            if let Some(&fid) = ids.iter().find(|&&fid| self.defs[fid.0 as usize].shape_id == shape_id) {
+            if let Some(&fid) = ids.iter().find(|&&fid| self.def_satisfies_shape(fid, shape_id)) {
                 return Some(fid);
             }
         }
         s.parent.and_then(|p| self.lookup_def_typed_any(p, name, shape_id))
+    }
+
+    fn def_satisfies_shape(&self, def_id: DefId, shape_id: ShapeId) -> bool {
+        let mut cur = Some(def_id);
+        while let Some(fid) = cur {
+            let def = &self.defs[fid.0 as usize];
+            if def.shape_id == shape_id {
+                return true;
+            }
+            cur = def.base_def;
+        }
+        false
     }
 
     fn lookup_pack(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
@@ -902,7 +914,7 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 
         // Find the mapping registered for this def in pass4 and attach the mapper fields.
         let fids = ctx.scopes[scope.0 as usize].defs.get(&name).cloned().unwrap_or_default();
-        let fid = fids.iter().copied().find(|&fid| ctx.defs[fid.0 as usize].shape_id == shape_id);
+        let fid = fids.iter().copied().find(|&fid| ctx.def_satisfies_shape(fid, shape_id));
         if let Some(fid) = fid {
             ctx.defs[fid.0 as usize].mapper_fn = mapper_fn;
             ctx.defs[fid.0 as usize].inputs   = inputs;
@@ -1312,6 +1324,31 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     }
 }
 
+fn pass_bind_imported_bases(parse_scopes: &[AstScope], ctx: &mut Ctx) {
+    for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
+        let scope = ScopeId(scope_idx as u32);
+        for def in &ast_scope.defs {
+            let AstItem::Def(td) = def else { continue };
+            if !matches!(classify_def(&td.inner), DefKind::Apply | DefKind::ComposedShape) {
+                continue;
+            }
+            let name = &td.inner.name.inner;
+            let own_shape_id = ctx.scopes[scope.0 as usize].shapes.get(name).copied();
+            let fid = own_shape_id
+                .and_then(|shape_id| ctx.lookup_def_typed_any(scope, name, shape_id))
+                .or_else(|| ctx.lookup_def_any(scope, name));
+            let Some(fid) = fid else { continue };
+            if ctx.defs[fid.0 as usize].base_def.is_some() {
+                continue;
+            }
+            let (_, base_def) = lookup_base_shape_and_def(&td.inner, ctx, scope);
+            if let Some(base_def) = base_def {
+                ctx.defs[fid.0 as usize].base_def = Some(base_def);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Named field resolution (shared by pass5 and inline struct values)
 // ---------------------------------------------------------------------------
@@ -1663,7 +1700,7 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                                     // Use typed lookup to find instances of the inner type by name.
                                     let iid = ctx.lookup_def_typed(scope, raw, *inner_tid)
                                         .or_else(|| ctx.lookup_def(scope, raw)
-                                            .filter(|&i| ctx.defs[i.0 as usize].shape_id == *inner_tid));
+                                            .filter(|&i| ctx.def_satisfies_shape(i, *inner_tid)));
                                     if let Some(iid) = iid {
                                         return IrValue::Variant(*tid, idx as u32, Some(Box::new(IrValue::Inst(iid))));
                                     }
@@ -1848,6 +1885,7 @@ pub fn resolve(res: ParseRes) -> IrRes {
     pass3_resolve_types_and_links(&res.scopes, &mut ctx);
     pass3b_flatten_alias_types(&mut ctx);
     pass_imports(&res.scopes, &mut ctx, ImportKind::Insts);
+    pass_bind_imported_bases(&res.scopes, &mut ctx);
     pass5_resolve_def_fields(&res.scopes, &mut ctx);
 
     let mut errors = ctx.errors;

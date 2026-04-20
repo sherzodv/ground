@@ -29,8 +29,8 @@ observe = {
     datadog = boolean
 }
 
-# HACK 1: access encodes a typed permission graph — (port) and (access) optional
-# qualifiers give each edge semantic type, making this an adjacency schema, not a list of strings
+# Access is a typed permission graph.
+# Optional qualifiers like `(port)` and `(access)` carry edge-specific meaning.
 service = {
     port    = grpc | http
     access  = [ service:(port) | database | bucket:(access) | secret ]
@@ -39,8 +39,8 @@ service = {
 
 def secret
 
-# HACK 2: stack uses an anonymous field — a typed heterogeneous bag with no field names,
-# just typed slots. The membership list has no keys, only types.
+# Stack is a typed heterogeneous bag.
+# Its anonymous field carries only typed members, not named fields.
 stack = {
     = [ def:service | def:database | def:bucket | def:edge | def:domain | def:space | def:secret ]
 }
