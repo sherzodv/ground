@@ -1,40 +1,36 @@
 boolean = true | false
 
 bucket = {
-    name   = string
-    access = read | write
+  name = string
+  access = read | write
 }
 
-database = {
-    engine = postgres | mysql
-}
+database = { engine = postgres | mysql }
 
-domain = {
-    host = string
-}
+domain = { host = string }
 
 space = {
-    host     = string
-    services = [ service ]
+  host = string
+  services = [ service ]
 }
 
 edge = {
-    domain  = domain
-    sub     = string
-    backend = service
+  domain = domain
+  sub = string
+  backend = service
 }
 
 observe = {
-    tracing = boolean
-    datadog = boolean
+  tracing = boolean
+  datadog = boolean
 }
 
 # Access is a typed permission graph.
 # Optional qualifiers like `(port)` and `(access)` carry edge-specific meaning.
 service = {
-    port    = grpc | http
-    access  = [ service:(port) | database | bucket:(access) | secret ]
-    observe = observe
+  port = grpc | http
+  access = [ service:port? | database | bucket:access? | secret ]
+  observe = observe
 }
 
 def secret
@@ -42,43 +38,43 @@ def secret
 size = small | medium | large | xlarge
 
 scaling = {
-    min = integer
-    max = integer
+  min = integer
+  max = integer
 }
 
 service_defaults = {
-    size    = size
-    scaling = scaling
+  size = size
+  scaling = scaling
 }
 
 database_defaults = {
-    size    = size
-    storage = integer
+  size = size
+  storage = integer
 }
 
 service_config = {
-    service = service
-    size    = size
-    scaling = scaling
+  service = service
+  size = size
+  scaling = scaling
 }
 
 database_config = {
-    database = database
-    size     = size
-    storage  = integer
+  database = database
+  size = size
+  storage = integer
 }
 
 compute_pool = {
-    services          = [ service ]
-    databases         = [ database ]
-    service_defaults  = service_defaults
-    database_defaults = database_defaults
+  services = [ service ]
+  databases = [ database ]
+  service_defaults = service_defaults
+  database_defaults = database_defaults
 }
 
 deploy = {
-    prefix             = string
-    pool               = compute_pool
-    region             = [ string ]
-    service_overrides  = [ service_config ]
-    database_overrides = [ database_config ]
+  prefix = string
+  pool = compute_pool
+  region = [ string ]
+  service_overrides = [ service_config ]
+  database_overrides = [ database_config ]
 }

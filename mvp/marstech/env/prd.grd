@@ -5,8 +5,10 @@ use pack:poc
 use pack:routing
 use pack:std
 
+# boo foo
 app = std:space {
   host: "app"
+  # boo goo
   services: [
     app:media
     app:pay

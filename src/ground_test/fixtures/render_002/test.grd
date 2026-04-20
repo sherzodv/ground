@@ -4,9 +4,17 @@ def endpoint {
   tls = boolean
 }
 
-def service { name = string  port = integer  enabled = boolean } = mk_demo_service {
+def service {
+  name = string
+  port = integer
+  enabled = boolean
+} = mk_demo_service {
   endpoint = endpoint
-  tags = [string]
+  tags = [ string ]
 }
 
-plan api = service { name: "api"  port: 8080  enabled: true }
+plan api = service {
+  name: "api"
+  port: 8080
+  enabled: true
+}

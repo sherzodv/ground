@@ -1,7 +1,7 @@
 use crate::ast::{
-    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstPrimitive, AstRef, AstRefSegVal,
-    AstStructField, AstStructFieldBody, AstStructFieldKind, AstStructItem, AstTypeExpr, AstValue,
-    AstUse,
+    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstNodeLoc, AstPrimitive, AstRef,
+    AstRefSegVal, AstStructField, AstStructFieldBody, AstStructFieldKind, AstStructItem,
+    AstTypeExpr, AstUse, AstValue,
 };
 use crate::parse::parse_file_items;
 
@@ -10,10 +10,10 @@ pub fn format_source(src: &str) -> Result<String, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.message).collect());
     }
-    Ok(render_items(&items, 0, true))
+    Ok(render_items(&items, 0, true, src))
 }
 
-fn render_items(items: &[AstItem], indent: usize, top_level: bool) -> String {
+fn render_items(items: &[AstItem], indent: usize, top_level: bool, src: &str) -> String {
     if top_level {
         let mut uses: Vec<String> = items.iter()
             .filter_map(|item| match item {
@@ -23,10 +23,7 @@ fn render_items(items: &[AstItem], indent: usize, top_level: bool) -> String {
             .collect();
         uses.sort();
 
-        let others: Vec<String> = items.iter()
-            .filter(|item| !matches!(item, AstItem::Use(_)))
-            .map(|item| render_item(item, indent))
-            .collect();
+        let others = render_top_level_non_use_blocks(items, indent, src);
 
         let mut blocks = vec![];
         if !uses.is_empty() {
@@ -42,13 +39,66 @@ fn render_items(items: &[AstItem], indent: usize, top_level: bool) -> String {
     rendered.join("\n")
 }
 
+fn render_top_level_non_use_blocks(items: &[AstItem], indent: usize, src: &str) -> Vec<String> {
+    let mut blocks = vec![];
+    let mut pending_comments: Vec<(String, AstNodeLoc)> = vec![];
+
+    for item in items.iter().filter(|item| !matches!(item, AstItem::Use(_))) {
+        match item {
+            AstItem::Comment(c) => pending_comments.push((render_item(item, indent), c.loc.clone())),
+            _ => {
+                let rendered = render_item(item, indent);
+                if pending_comments.is_empty() {
+                    blocks.push(rendered);
+                } else if pending_comments.last().map(|(_, loc)| comment_attaches(src, loc, &item_loc(item))).unwrap_or(false) {
+                    let mut lines: Vec<String> = pending_comments.iter().map(|(s, _)| s.clone()).collect();
+                    lines.push(rendered);
+                    blocks.push(lines.join("\n"));
+                    pending_comments.clear();
+                } else {
+                    for (comment, _) in pending_comments.drain(..) {
+                        blocks.push(comment);
+                    }
+                    blocks.push(rendered);
+                }
+            }
+        }
+    }
+
+    if !pending_comments.is_empty() {
+        for (comment, _) in pending_comments {
+            blocks.push(comment);
+        }
+    }
+
+    blocks
+}
+
+fn item_loc(item: &AstItem) -> AstNodeLoc {
+    match item {
+        AstItem::Def(d) => d.loc.clone(),
+        AstItem::Pack(p) => p.loc.clone(),
+        AstItem::Use(u) => u.loc.clone(),
+        AstItem::Comment(c) => c.loc.clone(),
+    }
+}
+
+fn comment_attaches(src: &str, comment_loc: &AstNodeLoc, next_loc: &AstNodeLoc) -> bool {
+    let start = comment_loc.end as usize;
+    let end = next_loc.start as usize;
+    if end <= start || end > src.len() {
+        return true;
+    }
+    src[start..end].bytes().filter(|&b| b == b'\n').count() <= 1
+}
+
 fn render_item(item: &AstItem, indent: usize) -> String {
     match item {
         AstItem::Def(def) => render_def(&def.inner, indent),
         AstItem::Pack(pack) => {
             let head = format!("{}pack {}", spaces(indent), render_ref(&pack.inner.path.inner));
             match &pack.inner.defs {
-                Some(defs) if !defs.is_empty() => format!("{head} {{\n{}\n{}}}", render_items(defs, indent + 2, false), spaces(indent)),
+                Some(defs) if !defs.is_empty() => format!("{head} {{\n{}\n{}}}", render_items(defs, indent + 2, false, ""), spaces(indent)),
                 Some(_) => format!("{head} {{}}"),
                 None => head,
             }
@@ -307,7 +357,7 @@ port=grpc|http
 }
 "#;
         let got = format_source(src).unwrap();
-        assert_eq!(got, "# top\n\nservice = {\n  # doc\n  port = grpc | http\n}");
+        assert_eq!(got, "# top\nservice = {\n  # doc\n  port = grpc | http\n}");
     }
 
     #[test]
@@ -327,5 +377,26 @@ use pack:std
 "#;
         let got = format_source(src).unwrap();
         assert_eq!(got, "use pack:app\nuse pack:ops\nuse pack:std\n\nservice = { port = grpc | http }");
+    }
+
+    #[test]
+    fn fmt_keeps_leading_comment_with_next_item() {
+        let src = r#"
+# service mapper
+service = { port = grpc | http }
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(got, "# service mapper\nservice = { port = grpc | http }");
+    }
+
+    #[test]
+    fn fmt_preserves_blank_line_after_comment_when_present() {
+        let src = r#"
+# service mapper
+
+service = { port = grpc | http }
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(got, "# service mapper\n\nservice = { port = grpc | http }");
     }
 }
