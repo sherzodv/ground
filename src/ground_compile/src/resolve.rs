@@ -220,43 +220,32 @@ fn lookup_base_shape_and_def(td: &AstDef, ctx: &Ctx, scope: ScopeId) -> (Option<
 }
 
 fn lookup_def_by_ref_and_shape(ref_: &AstRef, ctx: &Ctx, scope: ScopeId, shape_id: ShapeId) -> Option<DefId> {
-    let segs = &ref_.segments;
-    match segs.len() {
-        0 => None,
-        1 => {
-            let name = segs[0].inner.as_plain()?;
-            ctx.lookup_def_typed(scope, name, shape_id)
-                .or_else(|| ctx.lookup_def(scope, name))
-        }
-        _ => {
-            let mut cur = scope;
-            for seg in &segs[..segs.len() - 1] {
-                cur = ctx.lookup_pack(cur, seg.inner.as_plain()?)?;
-            }
-            let name = segs.last()?.inner.as_plain()?;
-            ctx.lookup_def_typed(cur, name, shape_id)
-                .or_else(|| ctx.lookup_def(cur, name))
-        }
-    }
+    let parts = qualified_plain_segments(&ref_.segments);
+    let (last_qual, name) = *parts.last()?;
+    if last_qual == Some("pack") { return None; }
+
+    let cur = if parts.len() == 1 {
+        scope
+    } else {
+        lookup_pack_path_qualified(ctx, scope, &parts[..parts.len() - 1])?
+    };
+
+    ctx.lookup_def_typed(cur, name, shape_id)
+        .or_else(|| ctx.lookup_def(cur, name))
 }
 
 fn lookup_ts_fn_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<String> {
-    let segs = &ref_.segments;
-    match segs.len() {
-        0 => None,
-        1 => {
-            let name = segs[0].inner.as_plain()?;
-            ctx.scope_has_ts_fn(scope, name).then(|| name.to_string())
-        }
-        _ => {
-            let mut cur = scope;
-            for seg in &segs[..segs.len() - 1] {
-                cur = ctx.lookup_pack(cur, seg.inner.as_plain()?)?;
-            }
-            let name = segs.last()?.inner.as_plain()?;
-            ctx.scopes[cur.0 as usize].ts_fns.contains(name).then(|| name.to_string())
-        }
-    }
+    let parts = qualified_plain_segments(&ref_.segments);
+    let (last_qual, name) = *parts.last()?;
+    if last_qual == Some("pack") || last_qual == Some("def") { return None; }
+
+    let cur = if parts.len() == 1 {
+        scope
+    } else {
+        lookup_pack_path_qualified(ctx, scope, &parts[..parts.len() - 1])?
+    };
+
+    ctx.scopes[cur.0 as usize].ts_fns.contains(name).then(|| name.to_string())
 }
 
 fn output_has_schema_items(output: &AstDefO) -> bool {
@@ -1214,17 +1203,63 @@ fn convert_primitive(p: &AstPrimitive) -> IrPrimitive {
 // ---------------------------------------------------------------------------
 
 fn lookup_type_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<ShapeId> {
-    let segs = &ref_.segments;
-    match segs.len() {
-        0 => None,
-        1 => ctx.lookup_shape(scope, segs[0].inner.as_plain()?),
-        _ => {
-            let mut cur = scope;
-            for seg in &segs[..segs.len() - 1] {
-                cur = ctx.lookup_pack(cur, seg.inner.as_plain()?)?;
-            }
-            ctx.lookup_shape(cur, segs.last().unwrap().inner.as_plain()?)
+    let parts = qualified_plain_segments(&ref_.segments);
+    let (last_qual, name) = *parts.last()?;
+    if last_qual == Some("pack") { return None; }
+
+    let cur = if parts.len() == 1 {
+        scope
+    } else {
+        lookup_pack_path_qualified(ctx, scope, &parts[..parts.len() - 1])?
+    };
+
+    ctx.lookup_shape(cur, name)
+}
+
+fn qualified_plain_segments<'a>(segs: &'a [AstNode<AstRefSeg>]) -> Vec<(Option<&'a str>, &'a str)> {
+    let mut out = Vec::new();
+    let mut pending: Option<&'a str> = None;
+
+    for seg in segs {
+        let Some(name) = seg.inner.as_plain() else {
+            pending = None;
+            continue;
+        };
+
+        if pending.is_none() && (name == "pack" || name == "def") {
+            pending = Some(name);
+            continue;
         }
+
+        out.push((pending.take(), name));
+    }
+
+    out
+}
+
+fn lookup_pack_path_qualified(
+    ctx: &Ctx,
+    scope: ScopeId,
+    parts: &[(Option<&str>, &str)],
+) -> Option<ScopeId> {
+    let (first_qual, first) = *parts.first()?;
+    if first_qual == Some("def") { return None; }
+
+    let mut cur = ctx.lookup_pack(scope, first)?;
+    for (qual, name) in &parts[1..] {
+        if *qual == Some("def") { return None; }
+        cur = *ctx.scopes[cur.0 as usize].packs.get(*name)?;
+    }
+    Some(cur)
+}
+
+fn target_shape_from_ir_ref(pattern: &IrRef) -> Option<ShapeId> {
+    let last = pattern.segments.last()?;
+    let IrRefSegValue::Shape(shape_id) = last.value else { return None; };
+    if pattern.segments[..pattern.segments.len().saturating_sub(1)].iter().all(|seg| matches!(seg.value, IrRefSegValue::Pack(_))) {
+        Some(shape_id)
+    } else {
+        None
     }
 }
 
@@ -1568,117 +1603,116 @@ fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: S
         IrFieldType::Ref(pattern) => {
             // Inline struct literal `{ field: value ... }` — allocate an anonymous instance.
             if let AstValue::Struct { type_hint, fields: ast_fields } = v {
-                if pattern.segments.len() == 1 {
-                    if let IrRefSegValue::Shape(tid) = &pattern.segments[0].value {
-                        let shape_id  = *tid;
-                        match ctx.shapes.get(shape_id.0 as usize).map(|t| t.body.clone()) {
-                            Some(IrShapeBody::Struct(field_defs)) => {
-                                // Validate and extract shape hint if present.
-                                let resolved_hint = if let Some(hint) = type_hint {
-                                    let hint_name = hint.inner.segments.last()
-                                        .and_then(|s| s.inner.as_plain())
-                                        .unwrap_or("");
-                                    let expected = ctx.shapes[shape_id.0 as usize].name.clone()
-                                        .unwrap_or_else(|| "?".into());
-                                    if let Some(hint_tid) = lookup_type_by_ref(&hint.inner, ctx, scope)
-                                        .or_else(|| ctx.lookup_shape(scope, hint_name))
-                                    {
-                                        if hint_tid != shape_id {
-                                            ctx.push_error(format!(
-                                                "shape hint '{}' does not match expected shape '{}'",
-                                                hint_name, expected
-                                            ));
-                                        }
-                                    } else if hint_name != expected {
-                                        ctx.push_error(format!("unknown shape '{}' in type hint", hint_name));
-                                    }
-                                    Some(hint_name.to_string())
-                                } else {
-                                    None
-                                };
-                                let fid = DefId(ctx.defs.len() as u32);
-                                ctx.defs.push(IrDef {
-                                    planned: false,
-                                    shape_id, base_def: None,
-                                    name: "_".into(), type_hint: resolved_hint,
-                                    scope, loc: loc.clone(), fields: vec![],
-                                    mapper_fn: None, inputs: vec![], outputs: vec![],
-                                });
-                                let fields = resolve_named_fields(ast_fields, &field_defs, ctx, scope);
-                                ctx.defs[fid.0 as usize].fields = fields;
-                                return IrValue::Inst(fid);
-                            }
-                            Some(IrShapeBody::Enum(variants)) => {
-                                // Struct literal against an enum type — hint identifies the variant.
-                                let hint = match type_hint {
-                                    None => {
-                                        let enum_name = ctx.shapes[shape_id.0 as usize].name.as_deref()
-                                            .unwrap_or("?");
-                                        ctx.push_error(format!(
-                                            "shape hint required for enum '{}'", enum_name
-                                        ));
-                                        return IrValue::Ref(String::new());
-                                    }
-                                    Some(h) => h,
-                                };
+                if let Some(shape_id) = target_shape_from_ir_ref(pattern) {
+                    match ctx.shapes.get(shape_id.0 as usize).map(|t| t.body.clone()) {
+                        Some(IrShapeBody::Struct(field_defs)) => {
+                            // Validate and extract shape hint if present.
+                            let resolved_hint = if let Some(hint) = type_hint {
                                 let hint_name = hint.inner.segments.last()
                                     .and_then(|s| s.inner.as_plain())
                                     .unwrap_or("");
-                                let hint_tid = match ctx.lookup_shape(scope, hint_name) {
-                                    None => {
-                                        ctx.push_error(format!("unknown shape '{}' in type hint", hint_name));
-                                        return IrValue::Ref(String::new());
-                                    }
-                                    Some(t) => t,
-                                };
-                                let variant_idx = variants.iter().enumerate().find_map(|(i, r)| {
-                                    if let [seg] = r.segments.as_slice() {
-                                        if let IrRefSegValue::Shape(vt) = &seg.value {
-                                            if *vt == hint_tid { return Some(i); }
-                                        }
-                                    }
-                                    None
-                                });
-                                let idx = match variant_idx {
-                                    None => {
-                                        let enum_name = ctx.shapes[shape_id.0 as usize].name.as_deref()
-                                            .unwrap_or("?");
-                                        ctx.push_error(format!(
-                                            "'{}' is not a variant of '{}'", hint_name, enum_name
-                                        ));
-                                        return IrValue::Ref(String::new());
-                                    }
-                                    Some(i) => i,
-                                };
-                                let inner_field_defs = match ctx.shapes.get(hint_tid.0 as usize)
-                                    .map(|t| t.body.clone())
+                                let expected = ctx.shapes[shape_id.0 as usize].name.clone()
+                                    .unwrap_or_else(|| "?".into());
+                                if let Some(hint_tid) = lookup_type_by_ref(&hint.inner, ctx, scope)
+                                    .or_else(|| ctx.lookup_shape(scope, hint_name))
                                 {
-                                    Some(IrShapeBody::Struct(fields)) => fields,
-                                    _ => {
+                                    if hint_tid != shape_id {
                                         ctx.push_error(format!(
-                                            "variant '{}' is not a struct type", hint_name
+                                            "shape hint '{}' does not match expected shape '{}'",
+                                            hint_name, expected
                                         ));
-                                        return IrValue::Ref(String::new());
                                     }
-                                };
-                                let fid = DefId(ctx.defs.len() as u32);
-                                ctx.defs.push(IrDef {
-                                    planned: false,
-                                    shape_id: hint_tid, base_def: None,
-                                    name: "_".into(), type_hint: Some(hint_name.to_string()),
-                                    scope, loc: loc.clone(), fields: vec![],
-                                    mapper_fn: None, inputs: vec![], outputs: vec![],
-                                });
-                                let fields = resolve_named_fields(ast_fields, &inner_field_defs, ctx, scope);
-                                ctx.defs[fid.0 as usize].fields = fields;
-                                return IrValue::Variant(shape_id, idx as u32, Some(Box::new(IrValue::Inst(fid))));
-                            }
-                            _ => {
-                                ctx.push_error("inline struct value requires a struct-typed field".into());
-                                return IrValue::Ref(String::new());
-                            }
-                        };
-                    }
+                                } else if hint_name != expected {
+                                    ctx.push_error(format!("unknown shape '{}' in type hint", hint_name));
+                                }
+                                Some(hint_name.to_string())
+                            } else {
+                                None
+                            };
+                            let fid = DefId(ctx.defs.len() as u32);
+                            ctx.defs.push(IrDef {
+                                planned: false,
+                                shape_id, base_def: None,
+                                name: "_".into(), type_hint: resolved_hint,
+                                scope, loc: loc.clone(), fields: vec![],
+                                mapper_fn: None, inputs: vec![], outputs: vec![],
+                            });
+                            let fields = resolve_named_fields(ast_fields, &field_defs, ctx, scope);
+                            ctx.defs[fid.0 as usize].fields = fields;
+                            return IrValue::Inst(fid);
+                        }
+                        Some(IrShapeBody::Enum(variants)) => {
+                            // Struct literal against an enum type — hint identifies the variant.
+                            let hint = match type_hint {
+                                None => {
+                                    let enum_name = ctx.shapes[shape_id.0 as usize].name.as_deref()
+                                        .unwrap_or("?");
+                                    ctx.push_error(format!(
+                                        "shape hint required for enum '{}'", enum_name
+                                    ));
+                                    return IrValue::Ref(String::new());
+                                }
+                                Some(h) => h,
+                            };
+                            let hint_name = hint.inner.segments.last()
+                                .and_then(|s| s.inner.as_plain())
+                                .unwrap_or("");
+                            let hint_tid = match lookup_type_by_ref(&hint.inner, ctx, scope)
+                                .or_else(|| ctx.lookup_shape(scope, hint_name))
+                            {
+                                None => {
+                                    ctx.push_error(format!("unknown shape '{}' in type hint", hint_name));
+                                    return IrValue::Ref(String::new());
+                                }
+                                Some(t) => t,
+                            };
+                            let variant_idx = variants.iter().enumerate().find_map(|(i, r)| {
+                                if let [seg] = r.segments.as_slice() {
+                                    if let IrRefSegValue::Shape(vt) = &seg.value {
+                                        if *vt == hint_tid { return Some(i); }
+                                    }
+                                }
+                                None
+                            });
+                            let idx = match variant_idx {
+                                None => {
+                                    let enum_name = ctx.shapes[shape_id.0 as usize].name.as_deref()
+                                        .unwrap_or("?");
+                                    ctx.push_error(format!(
+                                        "'{}' is not a variant of '{}'", hint_name, enum_name
+                                    ));
+                                    return IrValue::Ref(String::new());
+                                }
+                                Some(i) => i,
+                            };
+                            let inner_field_defs = match ctx.shapes.get(hint_tid.0 as usize)
+                                .map(|t| t.body.clone())
+                            {
+                                Some(IrShapeBody::Struct(fields)) => fields,
+                                _ => {
+                                    ctx.push_error(format!(
+                                        "variant '{}' is not a struct type", hint_name
+                                    ));
+                                    return IrValue::Ref(String::new());
+                                }
+                            };
+                            let fid = DefId(ctx.defs.len() as u32);
+                            ctx.defs.push(IrDef {
+                                planned: false,
+                                shape_id: hint_tid, base_def: None,
+                                name: "_".into(), type_hint: Some(hint_name.to_string()),
+                                scope, loc: loc.clone(), fields: vec![],
+                                mapper_fn: None, inputs: vec![], outputs: vec![],
+                            });
+                            let fields = resolve_named_fields(ast_fields, &inner_field_defs, ctx, scope);
+                            ctx.defs[fid.0 as usize].fields = fields;
+                            return IrValue::Variant(shape_id, idx as u32, Some(Box::new(IrValue::Inst(fid))));
+                        }
+                        _ => {
+                            ctx.push_error("inline struct value requires a struct-typed field".into());
+                            return IrValue::Ref(String::new());
+                        }
+                    };
                 }
                 ctx.push_error("inline struct value only valid for a single struct-typed field".into());
                 return IrValue::Ref(String::new());

@@ -1,0 +1,8 @@
+{
+  "files": [
+    {
+      "file": "{{ deploy.alias }}/main.tf.json",
+      "template": "state.json.tera"
+    }
+  ]
+}

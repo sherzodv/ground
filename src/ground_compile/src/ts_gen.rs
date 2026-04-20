@@ -2,10 +2,10 @@
 ///
 /// For every root def that carries a mapper (base_def=None, mapper_fn=Some), we emit:
 ///
-///   interface MakeLabelInput  { key: string; }
-///   interface MakeLabelOutput { value: string; }
+///   interface MakeLabelI { key: string; }
+///   interface MakeLabelO { value: string; }
 ///
-/// The naming convention is `PascalCase(mapper_fn) + "Input"` / `"Output"`.
+/// The naming convention is `PascalCase(mapper_fn) + "I"` / `"O"`.
 /// These interfaces are prepended to the TypeScript blob before execution so
 /// mapper authors can reference them for type safety; the transpiler erases them
 /// at runtime so they have no runtime cost.
@@ -29,8 +29,8 @@ pub fn gen_mapper_interfaces(ir: &IrRes) -> String {
         let prefix = to_pascal_case(mapper_fn);
         collect_shapes_from_fields(&fun.inputs, ir, &mut shape_ids);
         collect_shapes_from_fields(&fun.outputs, ir, &mut shape_ids);
-        parts.push(gen_interface(&format!("{}Input",  prefix), &fun.inputs,  ir));
-        parts.push(gen_interface(&format!("{}Output", prefix), &fun.outputs, ir));
+        parts.push(gen_interface(&format!("{}I", prefix), &fun.inputs, ir));
+        parts.push(gen_interface(&format!("{}O", prefix), &fun.outputs, ir));
     }
 
     let mut out: Vec<String> = shape_ids.into_iter()
@@ -83,7 +83,7 @@ pub fn gen_mapper_interfaces_by_unit(ir: &IrRes) -> Vec<(u32, String)> {
 /// For each mapper whose function is defined in `user_ts` (detected via
 /// `function <name>` pattern), emit:
 ///
-///   const __tc0: (i: MakeLabelInput) => MakeLabelOutput = make_label; void __tc0;
+///   const __tc0: (i: MakeLabelI) => MakeLabelO = make_label; void __tc0;
 ///
 /// This causes TypeScript to verify that the user's implementation is compatible
 /// with the generated I/O interfaces, even when the function has no type annotations.
@@ -101,7 +101,7 @@ pub fn gen_typecheck_assertions(ir: &IrRes, user_ts: &str) -> String {
         let prefix   = to_pascal_case(mapper_fn);
         let var_name = format!("__tc{idx}");
         parts.push(format!(
-            "const {var_name}: (i: {prefix}Input) => {prefix}Output = {mapper_fn}; void {var_name};"
+            "const {var_name}: (i: {prefix}I) => {prefix}O = {mapper_fn}; void {var_name};"
         ));
     }
 
@@ -113,22 +113,29 @@ pub fn gen_typecheck_assertions(ir: &IrRes, user_ts: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn gen_interface(name: &str, fields_def: &[IrStructFieldDef], ir: &IrRes) -> String {
-    if fields_def.is_empty() {
+    let mut seen = BTreeSet::new();
+    let fields: Vec<String> = fields_def.iter()
+        .filter_map(|field| {
+            let fname = field.name.as_deref().unwrap_or("_");
+            if !seen.insert(fname.to_string()) {
+                return None;
+            }
+            let ts_type = field_type_to_ts(&field.field_type, ir);
+            Some(format!("  {}: {};", fname, ts_type))
+        })
+        .collect();
+
+    if fields.is_empty() {
         return format!("interface {} {{}}", name);
     }
-    let fields: Vec<String> = fields_def.iter().map(|field| {
-        let fname   = field.name.as_deref().unwrap_or("_");
-        let ts_type = field_type_to_ts(&field.field_type, ir);
-        format!("  {}: {};", fname, ts_type)
-    }).collect();
     format!("interface {} {{\n{}\n}}", name, fields.join("\n"))
 }
 
 fn gen_mapper_dts_decl(fun: &IrDef, ir: &IrRes) -> String {
     let mapper_fn = fun.mapper_fn.as_deref().unwrap_or("_");
     let prefix = to_pascal_case(mapper_fn);
-    let input_name = format!("{prefix}Input");
-    let output_name = format!("{prefix}Output");
+    let input_name = format!("{prefix}I");
+    let output_name = format!("{prefix}O");
     let iface_in = gen_interface(&input_name, &fun.inputs, ir);
     let iface_out = gen_interface(&output_name, &fun.outputs, ir);
     let decl = format!("declare function {mapper_fn}(i: {input_name}): {output_name};");
@@ -151,8 +158,8 @@ fn gen_ascent_mapper_dts_decl(fun: &IrDef, ir: &IrRes) -> String {
     let fn_name = &fun.name;
     let prefix = to_pascal_case(fn_name);
     let resolved_name = format!("{prefix}Resolved");
-    let input_name = format!("{prefix}Input");
-    let output_name = format!("{prefix}Output");
+    let input_name = format!("{prefix}I");
+    let output_name = format!("{prefix}O");
 
     let resolved_fields = fun.base_def
         .and_then(|base_id| ir.shapes.get(ir.defs[base_id.0 as usize].shape_id.0 as usize))

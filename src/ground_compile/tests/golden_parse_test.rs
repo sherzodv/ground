@@ -933,6 +933,20 @@ fn use_003() {
 }
 
 #[test]
+fn use_003a() {
+    assert_eq!(
+        show("use std:aws:tf:def:backend_s3"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Use[std:aws:tf:def:backend_s3],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn use_004() {
     assert_eq!(
         show("use pack:std:*"),
@@ -1452,6 +1466,20 @@ fn qualifier_001() {
             r##"
             Scope[pack:test,
                 Def[stack, _, unit, Struct[FieldDef[_, Type[_, List[Type[_, Enum[Ref(def:service) | Ref(def:database)]]]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn qualifier_002() {
+    assert_eq!(
+        show("backend = std:aws:tf:def:backend_s3"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[backend, _, unit, Ref(std:aws:tf:def:backend_s3)],
             ]
         "##
         ),

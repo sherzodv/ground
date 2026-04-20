@@ -16,7 +16,16 @@
         "source": "hashicorp/aws",
         "version": "~> 5.0"
       }
-    }
+    }{% if deploy.backend is defined %},
+    "backend": {
+      "s3": {
+        "bucket": "{{ deploy.backend.bucket }}",
+        "key": "{{ deploy.backend.key }}",
+        "region": "{{ deploy.backend.region }}",
+        "encrypt": {{ deploy.backend.encrypt | json_encode() }},
+        "use_lockfile": {{ deploy.backend.use_lockfile | json_encode() }}
+      }
+    }{% endif %}
   },
   "provider": {
     "aws": {

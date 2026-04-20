@@ -159,18 +159,19 @@ fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
     }
 }
 
-/// Compile all .grd files in the current directory, print errors and exit on failure.
-fn do_compile(require_plans: bool) -> CompileRes {
-    let units = collect_grd_files(&PathBuf::from("."));
+/// Compile all .grd files under `root`, print errors and exit on failure.
+fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
+    let units = collect_grd_files(root);
 
     if units.is_empty() {
-        eprintln!("no .grd files found in current directory");
+        eprintln!("no .grd files found in project");
         process::exit(1);
     }
 
     // stdlib units are prepended by compile(); their display names must come first.
     let mut unit_names: Vec<String> = vec![
         "<std>".into(),
+        "<std:platform>".into(),
         "<std:aws:tf>".into(),
     ];
     debug_assert_eq!(unit_names.len(), STDLIB_UNIT_COUNT);
@@ -201,8 +202,8 @@ fn do_compile(require_plans: bool) -> CompileRes {
 /// Compile and generate Terraform files for a single planned def.
 /// `ground plan` / `ground apply` operate on one terraform workspace at a time,
 /// so multiple planned defs must use `ground gen terra` instead.
-fn compile_and_gen() -> (CompileRes, Vec<JsonUnit>, String) {
-    let res = do_compile(true);
+fn compile_and_gen(root: &Path) -> (CompileRes, Vec<JsonUnit>, String) {
+    let res = do_compile(root, true);
 
     if res.defs.len() != 1 {
         eprintln!(
@@ -225,9 +226,9 @@ fn compile_and_gen() -> (CompileRes, Vec<JsonUnit>, String) {
     (res, stack_outputs, stack_name)
 }
 
-fn write_stack_units(outputs: &[JsonUnit]) {
+fn write_stack_units(root: &Path, outputs: &[JsonUnit]) {
     for output in outputs {
-        let out_path = Path::new(".ground/terra").join(&output.file);
+        let out_path = root.join(".ground/terra").join(&output.file);
         if let Some(parent) = out_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 eprintln!("error: {}: {e}", parent.display());
@@ -242,17 +243,19 @@ fn write_stack_units(outputs: &[JsonUnit]) {
 }
 
 fn cmd_gen_terra() {
-    let res = do_compile(true);
+    with_project_root(|root| {
+        let res = do_compile(root, true);
 
-    let outputs = match ground_be_terra::generate_each(&res) {
-        Ok(o)  => o,
-        Err(e) => { eprintln!("error: {e}"); process::exit(1); }
-    };
+        let outputs = match ground_be_terra::generate_each(&res) {
+            Ok(o)  => o,
+            Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+        };
 
-    for output in &outputs {
-        write_stack_units(std::slice::from_ref(output));
-        println!("wrote .ground/terra/{}", output.file);
-    }
+        for output in &outputs {
+            write_stack_units(root, std::slice::from_ref(output));
+            println!("wrote .ground/terra/{}", output.file);
+        }
+    });
 }
 
 fn collect_grd_paths_recursive(root: &Path) -> Vec<PathBuf> {
@@ -289,52 +292,53 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-fn cmd_fmt() {
+fn with_project_root(action: impl FnOnce(&Path)) {
     let Some(root) = find_project_root(Path::new(".")) else {
         eprintln!("warning: no project found");
         return;
     };
+    action(&root);
+}
 
-    let files = collect_grd_paths_recursive(&root);
-    if files.is_empty() {
-        eprintln!("warning: no .grd files found in project");
-        return;
-    }
-
-    for rel in files {
-        let path = root.join(&rel);
-        let src = match fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: {}: {e}", path.display());
-                process::exit(1);
-            }
-        };
-        let formatted = match format_source(&src) {
-            Ok(s) => s,
-            Err(errors) => {
-                for err in errors {
-                    eprintln!("error: {}: {}", path.display(), err);
-                }
-                process::exit(1);
-            }
-        };
-        if src != formatted {
-            if let Err(e) = fs::write(&path, formatted) {
-                eprintln!("error: {}: {e}", path.display());
-                process::exit(1);
-            }
-            println!("{}", rel.display());
+fn cmd_fmt() {
+    with_project_root(|root| {
+        let files = collect_grd_paths_recursive(root);
+        if files.is_empty() {
+            eprintln!("warning: no .grd files found in project");
+            return;
         }
-    }
+
+        for rel in files {
+            let path = root.join(&rel);
+            let src = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: {}: {e}", path.display());
+                    process::exit(1);
+                }
+            };
+            let formatted = match format_source(&src) {
+                Ok(s) => s,
+                Err(errors) => {
+                    for err in errors {
+                        eprintln!("error: {}: {}", path.display(), err);
+                    }
+                    process::exit(1);
+                }
+            };
+            if src != formatted {
+                if let Err(e) = fs::write(&path, formatted) {
+                    eprintln!("error: {}: {e}", path.display());
+                    process::exit(1);
+                }
+                println!("{}", rel.display());
+            }
+        }
+    });
 }
 
 fn cmd_status() {
-    let Some(root) = find_project_root(Path::new(".")) else {
-        eprintln!("warning: no project found");
-        return;
-    };
-    println!("{}", root.display());
+    with_project_root(|root| println!("{}", root.display()));
 }
 
 fn cmd_lsp_start() {
@@ -351,9 +355,9 @@ fn cmd_lsp_stop() {
     }
 }
 
-fn write_type_units(type_units: &[ground_compile::TypeUnit]) {
+fn write_type_units(root: &Path, type_units: &[ground_compile::TypeUnit]) {
     for unit in type_units {
-        let out_path = Path::new(".ground/types").join(&unit.file);
+        let out_path = root.join(".ground/types").join(&unit.file);
         if let Some(parent) = out_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 eprintln!("error: {}: {e}", parent.display());
@@ -368,12 +372,14 @@ fn write_type_units(type_units: &[ground_compile::TypeUnit]) {
 }
 
 fn cmd_gen_types() {
-    let res = do_compile(false);
+    with_project_root(|root| {
+        let res = do_compile(root, false);
 
-    for unit in &res.type_units {
-        write_type_units(std::slice::from_ref(unit));
-        println!("wrote .ground/types/{}", unit.file);
-    }
+        for unit in &res.type_units {
+            write_type_units(root, std::slice::from_ref(unit));
+            println!("wrote .ground/types/{}", unit.file);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -598,66 +604,70 @@ fn display_plan_summary(
 fn cmd_apply(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (res, outputs, stack_name) = compile_and_gen();
-    let provider = "aws".to_string();
-    let lookup = build_lookup(&res);
+    with_project_root(|root| {
+        let (res, outputs, stack_name) = compile_and_gen(root);
+        let provider = "aws".to_string();
+        let lookup = build_lookup(&res);
 
-    write_stack_units(&outputs);
+        write_stack_units(root, &outputs);
 
-    let dir = Path::new(".ground/terra").join(&stack_name);
+        let dir = root.join(".ground/terra").join(&stack_name);
 
-    let rx = terra_ops::init(&dir)
-        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
-    if !run_events(rx, &mut enricher) {
-        eprintln!("error: terraform init failed");
-        process::exit(1);
-    }
+        let rx = terra_ops::init(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
+        if !run_events(rx, &mut enricher) {
+            eprintln!("error: terraform init failed");
+            process::exit(1);
+        }
 
-    let rx = terra_ops::apply(&dir)
-        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Apply, provider.clone(), String::new(), lookup, verbose);
-    if !run_events(rx, &mut enricher) {
-        eprintln!("error: terraform apply failed");
-        process::exit(1);
-    }
+        let rx = terra_ops::apply(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Apply, provider.clone(), String::new(), lookup, verbose);
+        if !run_events(rx, &mut enricher) {
+            eprintln!("error: terraform apply failed");
+            process::exit(1);
+        }
+    });
 }
 
 fn cmd_plan(verbose: bool) {
     use ground_be_terra::terra_ops;
 
-    let (res, outputs, stack_name) = compile_and_gen();
-    let provider = "aws".to_string();
-    let lookup = build_lookup(&res);
+    with_project_root(|root| {
+        let (res, outputs, stack_name) = compile_and_gen(root);
+        let provider = "aws".to_string();
+        let lookup = build_lookup(&res);
 
-    write_stack_units(&outputs);
+        write_stack_units(root, &outputs);
 
-    let dir = Path::new(".ground/terra").join(&stack_name);
+        let dir = root.join(".ground/terra").join(&stack_name);
 
-    let rx = terra_ops::init(&dir)
-        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
-    if !run_events(rx, &mut enricher) {
-        eprintln!("error: terraform init failed");
-        process::exit(1);
-    }
+        let rx = terra_ops::init(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
+        if !run_events(rx, &mut enricher) {
+            eprintln!("error: terraform init failed");
+            process::exit(1);
+        }
 
-    let rx = terra_ops::plan(&dir)
-        .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-    let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, provider.clone(), String::new(), lookup, verbose);
+        let rx = terra_ops::plan(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
+        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, provider.clone(), String::new(), lookup, verbose);
 
-    for event in rx {
-        match event {
-            RunEvent::Exited(s) if !s.success => {
-                eprintln!("error: terraform plan failed");
-                process::exit(1);
-            }
-            RunEvent::Line(OpsEvent::PlanReady { summary }) => {
-                display_plan_summary(&summary, &res, &stack_name, &provider, verbose);
-            }
-            other => {
-                for d in enricher.enrich(&other) { render(&d); }
+        for event in rx {
+            match event {
+                RunEvent::Exited(s) if !s.success => {
+                    eprintln!("error: terraform plan failed");
+                    process::exit(1);
+                }
+                RunEvent::Line(OpsEvent::PlanReady { summary }) => {
+                    display_plan_summary(&summary, &res, &stack_name, &provider, verbose);
+                }
+                other => {
+                    for d in enricher.enrich(&other) { render(&d); }
+                }
             }
         }
-    }
+    });
 }

@@ -110,8 +110,8 @@ fn typecheck_simple_hook() {
     use ground_ts::typecheck::typecheck;
     // Declarations: only interfaces, no `declare function` (that would clash with the
     // non-ambient function definition in user.ts and trigger TS2384).
-    let declarations = "interface MakeLabelInput { key: string; }\ninterface MakeLabelOutput { value: string; }";
-    let user_ts = r#"function make_label(i: MakeLabelInput): MakeLabelOutput {
+    let declarations = "interface MakeLabelI { key: string; }\ninterface MakeLabelO { value: string; }";
+    let user_ts = r#"function make_label(i: MakeLabelI): MakeLabelO {
     return { value: i.key + "=prod" };
 }"#;
     let diags = typecheck(declarations, user_ts).expect("typecheck engine error");
@@ -122,9 +122,9 @@ fn typecheck_simple_hook() {
 #[test]
 fn typecheck_catches_type_error() {
     use ground_ts::typecheck::typecheck;
-    let declarations = "interface MakeLabelInput { key: string; }\ninterface MakeLabelOutput { value: string; }";
-    // Return type mismatch: returns { value: number } but MakeLabelOutput needs string
-    let user_ts = r#"function make_label(i: MakeLabelInput): MakeLabelOutput {
+    let declarations = "interface MakeLabelI { key: string; }\ninterface MakeLabelO { value: string; }";
+    // Return type mismatch: returns { value: number } but MakeLabelO needs string
+    let user_ts = r#"function make_label(i: MakeLabelI): MakeLabelO {
     return { value: 42 };
 }"#;
     let diags = typecheck(declarations, user_ts).expect("typecheck engine error");

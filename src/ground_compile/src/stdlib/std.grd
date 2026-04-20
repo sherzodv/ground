@@ -1,5 +1,7 @@
 boolean = true | false
 
+def project
+
 bucket = {
   name = string
   access = read | write

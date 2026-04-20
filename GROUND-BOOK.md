@@ -360,6 +360,14 @@ api = service {
 }
 ```
 
+> [!IMPORTANT]
+> `def` and `pack` qualifiers apply only to the segment immediately following them.
+> For example, `std:aws:tf:def:backend_s3` means:
+> - `std:aws:tf` is a pack path
+> - `def:backend_s3` means `backend_s3` is resolved as a definition/type inside that pack
+>
+> Likewise, `def:database:main-db` qualifies only `database`; `main-db` is then resolved under that type.
+
 Refs can have optional segments surrounded by `()`:
 ```ground
 def service = {
@@ -575,6 +583,7 @@ use pack:std
 use std:service
 use pack:std:service
 use pack:std:def:service
+use std:aws:tf:def:backend_s3
 use std:*
 use pack:std:*
 use std:def:*
@@ -589,5 +598,40 @@ use pack:std:aws:tf
 `use std:service`, `use pack:std:service`, and `use pack:std:def:service`
 bring one name into scope.
 
+In `use std:aws:tf:def:backend_s3`, the `def` qualifier applies only to
+`backend_s3`, not to the whole preceding path.
+
 `use std:*`, `use pack:std:*`, `use std:def:*`, and `use pack:std:def:*`
 bring all visible names from that pack into scope.
+
+## Code style
+
+Prefer narrow `use` statements over `*` imports.
+
+```ground
+use std:def:project
+use std:platform:def:state
+use std:aws:tf:def:deploy
+```
+
+This keeps the active vocabulary small and makes the modeling layer visible at
+the call site.
+
+Use qualifiers to express meaning when they help the reader see the boundary:
+
+```ground
+access: [ database:main service:pay ]
+```
+
+Prefer qualified refs when the type or layer matters more than the local name.
+
+Use pack paths to show the realization layer explicitly:
+
+```ground
+tf:deploy
+platform:state
+```
+
+Prefer the shortest form that is still clear. Omit qualifiers when the local
+scope already makes the meaning obvious, but keep them when they make ownership,
+layer, or type boundaries easier to read.

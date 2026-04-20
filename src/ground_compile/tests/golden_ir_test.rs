@@ -645,6 +645,94 @@ fn import_009() {
     );
 }
 
+#[test]
+fn import_010() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "",
+                vec!["std".into(), "aws".into(), "tf".into()],
+                r##"
+                backend_s3 = { bucket = string }
+            "##,
+            ),
+            (
+                "test",
+                vec![],
+                r##"
+                deploy = { backend = std:aws:tf:def:backend_s3 }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:std,
+                Scope[pack:aws,
+                    Scope[pack:tf,
+                        Shape#0[backend_s3, Struct[Field#0[bucket, Prim(string)]]],
+                        Def#0[backend_s3, Shape#0],
+                    ],
+                ],
+            ]
+            Scope[pack:test,
+                Shape#1[deploy, Struct[Field#0[backend, IrRef[Struct(Shape#0)]]]],
+                Def#1[deploy, Shape#1],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn import_011() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "",
+                vec!["std".into(), "aws".into(), "tf".into()],
+                r##"
+                backend_s3 = {
+                  bucket = string
+                }
+            "##,
+            ),
+            (
+                "test",
+                vec![],
+                r##"
+                deploy = {
+                  backend = std:aws:tf:def:backend_s3
+                }
+
+                plan prod = deploy {
+                  backend: std:aws:tf:def:backend_s3 {
+                    bucket: "demo-tfstate"
+                  }
+                }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:std,
+                Scope[pack:aws,
+                    Scope[pack:tf,
+                        Shape#0[backend_s3, Struct[Field#0[bucket, Prim(string)]]],
+                        Def#0[backend_s3, Shape#0],
+                    ],
+                ],
+            ]
+            Scope[pack:test,
+                Shape#1[deploy, Struct[Field#0[backend, IrRef[Struct(Shape#0)]]]],
+                Def#1[deploy, Shape#1],
+                Def#2[prod, Shape#1, planned, base=Def#1, Set[Field#0, Inst(Def#3)]],
+                Def#3[_, Shape#0, hint=backend_s3, Set[Field#0, Str("demo-tfstate")]],
+            ]
+        "##
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Mapper
 // ---------------------------------------------------------------------------

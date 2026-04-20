@@ -1,6 +1,6 @@
 /// Tests for TypeScript interface generation from mapper defs.
 ///
-/// Ground generates `interface {Mapper}Input` / `interface {Mapper}Output` for
+/// Ground generates `interface {Mapper}I` / `interface {Mapper}O` for
 /// every root def that carries a mapper, prepending them to the TS blob before
 /// execution. These tests verify the full compile+execute path with mappers.
 
@@ -110,5 +110,5 @@ fn ts_gen_type_units_include_named_shapes() {
 
     assert!(unit.content.contains("interface TestEndpoint"));
     assert!(unit.content.contains("endpoint: TestEndpoint;"));
-    assert!(unit.content.contains("declare function make_node(i: MakeNodeInput): MakeNodeOutput;"));
+    assert!(unit.content.contains("declare function make_node(i: MakeNodeI): MakeNodeO;"));
 }

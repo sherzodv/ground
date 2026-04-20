@@ -15,6 +15,7 @@ pub use fmt::format_source;
 
 const STD_GRD:               &str = include_str!("stdlib/std.grd");
 const STD_PLATFORM_PACK_GRD: &str = include_str!("stdlib/platform/pack.grd");
+const STD_PLATFORM_PACK_TS:  &str = include_str!("stdlib/platform/pack.ts");
 const STD_AWS_TF_PACK_GRD:   &str = include_str!("stdlib/aws/tf/pack.grd");
 const STD_AWS_TF_PACK_TS:    &str = include_str!("stdlib/aws/tf/pack.ts");
 
@@ -25,7 +26,7 @@ pub const STDLIB_UNIT_COUNT: usize = 3;
 fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
     vec![
         ast::ParseUnit { name: "std".into(),       path: vec![],                                          src: STD_GRD.into(),                  ts_src: None },
-        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "platform".into()],          src: STD_PLATFORM_PACK_GRD.into(),    ts_src: None },
+        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "platform".into()],          src: STD_PLATFORM_PACK_GRD.into(),    ts_src: Some(STD_PLATFORM_PACK_TS.into()) },
         ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into(), "tf".into()], src: STD_AWS_TF_PACK_GRD.into(),      ts_src: Some(STD_AWS_TF_PACK_TS.into()) },
     ]
 }

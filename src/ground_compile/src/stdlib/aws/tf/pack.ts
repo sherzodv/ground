@@ -30,6 +30,10 @@ interface StdSecret {
   _name: string;
 }
 
+interface StdProject {
+  _name: string;
+}
+
 interface StdServiceDefaults {
   size?: DeploySize;
   scaling?: StdScaling;
@@ -65,12 +69,39 @@ interface StdDatabaseConfig {
   storage?: number;
 }
 
-interface AwsDeployInput {
+interface AwsDeployI {
   prefix?: string;
   region?: string[];
+  state_backend?: BackendS3;
   pool?: StdComputePool;
   service_overrides?: StdServiceConfig[];
   database_overrides?: StdDatabaseConfig[];
+}
+
+interface AwsStateI {
+  project?: StdProject;
+  region?: string[];
+  encrypted?: boolean;
+}
+
+interface BackendS3 {
+  bucket: string;
+  key: string;
+  region: string;
+  encrypt: boolean;
+  use_lockfile: boolean;
+}
+
+interface StateRoot {
+  bucket_key: string;
+  bucket_name: string;
+}
+
+interface AwsStateO {
+  kind: "state";
+  provider_region: string;
+  root: StateRoot;
+  backend: BackendS3;
 }
 
 interface ResolvedServiceConfig {
@@ -193,8 +224,10 @@ interface ServiceSecretAccess {
   policy_json: string;
 }
 
-interface AwsDeployOutput {
+interface AwsDeployO {
+  kind: "deploy";
   provider_region: string;
+  backend?: BackendS3;
   root: DeployRoot;
   zones: DeployZone[];
   services: DeployService[];
@@ -224,6 +257,15 @@ function asString(v: unknown): string | undefined {
 
 function sanitizeKey(raw: string): string {
   return String(raw).replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+function sanitizeBucketName(raw: string): string {
+  const cleaned = String(raw)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/--+/g, "-");
+  return cleaned || "ground-state";
 }
 
 function toAwsRegion(regionPrefix: string): string {
@@ -267,6 +309,12 @@ function parseZone(raw: string): DeployZoneBase {
     public_cidr: `10.0.${pubIdx}.0/24`,
     private_cidr: `10.0.${privIdx}.0/24`,
   };
+}
+
+function firstRegion(input: { region?: string[] }): string | undefined {
+  const region = Array.isArray(input.region) ? input.region : [];
+  if (region.length === 0) return undefined;
+  return String(region[0]);
 }
 
 function servicePortNumber(port: ServicePortName | undefined): number {
@@ -520,11 +568,44 @@ function mergeDatabaseConfigs(
   });
 }
 
-function make_aws_deploy(input: AwsDeployInput): AwsDeployOutput | {} {
-  const region = Array.isArray(input.region) ? input.region : [];
-  if (region.length === 0) return {};
+function stateBackend(projectName: string, regionPrefix: string, encrypted: boolean): BackendS3 {
+  const stem = sanitizeBucketName(projectName);
+  return {
+    bucket: `${stem}-tfstate`,
+    key: `${stem}/terraform.tfstate`,
+    region: toAwsRegion(regionPrefix),
+    encrypt: encrypted,
+    use_lockfile: true,
+  };
+}
 
-  const first = String(region[0]);
+function make_aws_state(input: AwsStateI): AwsStateO | {} {
+  const first = firstRegion(input);
+  if (!first) return {};
+
+  const projectName = String(input.project?._name || "").trim();
+  if (!projectName) return {};
+
+  const regionPrefix = first.split(":", 1)[0];
+  const backend = stateBackend(projectName, regionPrefix, input.encrypted !== false);
+  const rootKeyStem = sanitizeKey(projectName) || "ground_state";
+
+  return {
+    kind: "state",
+    provider_region: backend.region,
+    root: {
+      bucket_key: `${rootKeyStem}_tfstate`,
+      bucket_name: backend.bucket,
+    },
+    backend,
+  };
+}
+
+function make_aws_deploy(input: AwsDeployI): AwsDeployO | {} {
+  const region = Array.isArray(input.region) ? input.region : [];
+  const first = firstRegion(input);
+  if (!first) return {};
+
   const regionPrefix = first.split(":", 1)[0];
   const alias = input.pool?._name || "deploy";
   const prefix = String(input.prefix || "");
@@ -532,6 +613,9 @@ function make_aws_deploy(input: AwsDeployInput): AwsDeployOutput | {} {
   const prefixKey = sanitizeKey(prefix);
   const stem = `${prefixKey}${aliasKey}`;
   const nameStem = `${prefix}${alias}`;
+  const backend = input.state_backend && input.state_backend.bucket && input.state_backend.key && input.state_backend.region
+    ? input.state_backend
+    : undefined;
 
   const serviceConfigs = mergeServiceConfigs(
     input.pool,
@@ -676,7 +760,9 @@ function make_aws_deploy(input: AwsDeployInput): AwsDeployOutput | {} {
   }
 
   return {
+    kind: "deploy",
     provider_region: toAwsRegion(regionPrefix),
+    backend,
     root: {
       ecs_key: `${stem}_ecs`,
       ecs_name: `${nameStem}-ecs`,
