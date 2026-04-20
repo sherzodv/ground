@@ -29,7 +29,7 @@ observe = {
 # Optional qualifiers like `(port)` and `(access)` carry edge-specific meaning.
 service = {
   port = grpc | http
-  access = [ service:port? | database | bucket:access? | secret ]
+  access = [ service:(port) | database | bucket:(access) | secret ]
   observe = observe
 }
 

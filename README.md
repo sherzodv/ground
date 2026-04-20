@@ -53,5 +53,22 @@ UPDATE_GOLDENS=1 cargo test -p ground_test
   Each transform should take only the context it actually needs, so the computation is easier to reason about, test, and evolve.
 - Keep templates dumb: rendering only, no new concepts or structural derivation.
   Templates should receive fully derived vendor-facing entities and only serialize them into the target format.
+- Support layered architecture across teams, repos, and operational views.
+  Different teams should be able to model the same system with different notions of what is architecturally visible and important at their layer. Application teams may think in terms of services, databases, and queues; platform teams in terms of clusters, networks, routing, and state boundaries. Each layer should compose over the previous one rather than redefining it, while allowing some details to remain hidden until they become relevant to the next layer.
+  Example:
+  ```ground
+  # app team repo: defines the service/data architecture
+  payments = space {
+    services: [ api worker ]
+  }
+
+  # platform team repo: imports that space and binds it to ops reality
+  use github.com/my-org/payments
+
+  plan payments:space {
+    cluster: prod-ecs
+    network: prod-vpc
+  }
+  ```
 
 ---
