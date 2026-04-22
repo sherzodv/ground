@@ -1,0 +1,145 @@
+{%- set provider_region = deploy.provider_region | default(value="us-east-1") -%}
+{%- set root = deploy.root -%}
+{%- set zones = deploy.zones | default(value=[]) -%}
+{%- set nat_gateways = deploy.nat_gateways | default(value=[]) -%}
+{
+  "terraform": {
+    "required_providers": {
+      "aws": {
+        "source": "hashicorp/aws",
+        "version": "~> 5.0"
+      }
+    }{% if deploy.backend is defined %},
+    "backend": {
+      "s3": {
+        "bucket": "{{ deploy.backend.bucket }}",
+        "key": "{{ deploy.backend.key }}",
+        "region": "{{ deploy.backend.region }}",
+        "encrypt": {{ deploy.backend.encrypt | json_encode() }},
+        "use_lockfile": {{ deploy.backend.use_lockfile | json_encode() }}
+      }
+    }{% endif %}
+  },
+  "provider": {
+    "aws": {
+      "region": "{{ provider_region }}"
+    }
+  },
+  "resource": {
+    "aws_vpc": {
+      "{{ root.vpc_key }}": {
+        "cidr_block": "{{ root.cidr_block }}",
+        "enable_dns_hostnames": {{ root.enable_dns_hostnames | json_encode() }},
+        "enable_dns_support": {{ root.enable_dns_support | json_encode() }},
+        "tags": {
+          "Name": "{{ root.vpc_name }}",
+          "ground-managed": "true"
+        }
+      }
+    }{% if zones | length > 0 and root.has_internet_gateway %},
+    "aws_internet_gateway": {
+      "{{ root.gw_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "tags": {
+          "Name": "{{ root.gw_name }}",
+          "ground-managed": "true"
+        }
+      }
+    }{% endif %}{% if nat_gateways | length > 0 %},
+    "aws_eip": {
+      {% for nat in nat_gateways %}
+      "{{ nat.eip_key }}": {
+        "domain": "vpc",
+        "tags": {
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_nat_gateway": {
+      {% for nat in nat_gateways %}
+      "{{ nat.nat_key }}": {
+        "allocation_id": "${aws_eip.{{ nat.eip_key }}.id}",
+        "subnet_id": "${aws_subnet.{{ nat.public_subnet_key }}.id}",
+        "tags": {
+          "Name": "{{ nat.nat_name }}",
+          "ground-managed": "true"
+        }
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    }{% endif %},
+    "aws_subnet": {
+      {% for zone in zones %}
+      "{{ zone.priv_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "cidr_block": "{{ zone.private_cidr }}",
+        "availability_zone": "{{ zone.az }}",
+        "map_public_ip_on_launch": false,
+        "tags": {
+          "Name": "{{ zone.priv_name }}",
+          "ground-managed": "true"
+        }
+      }{% if zone.public_cidr is defined %},
+      "{{ zone.pub_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "cidr_block": "{{ zone.public_cidr }}",
+        "availability_zone": "{{ zone.az }}",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "{{ zone.pub_name }}",
+          "ground-managed": "true"
+        }
+      }{% endif %}{% if not loop.last %},{% endif %}
+      {% endfor %}
+    }{% if zones | length > 0 %},
+    "aws_route_table": {
+      {% for zone in zones %}
+      "{{ zone.rprv_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "tags": {
+          "Name": "{{ zone.rprv_name }}",
+          "ground-managed": "true"
+        }
+      }{% if zone.public_cidr is defined %},
+      "{{ zone.rpub_key }}": {
+        "vpc_id": "${aws_vpc.{{ root.vpc_key }}.id}",
+        "tags": {
+          "Name": "{{ zone.rpub_name }}",
+          "ground-managed": "true"
+        }
+      }{% endif %}{% if not loop.last %},{% endif %}
+      {% endfor %}
+    },
+    "aws_route_table_association": {
+      {% for zone in zones %}
+      "{{ zone.rprv_key }}": {
+        "subnet_id": "${aws_subnet.{{ zone.priv_key }}.id}",
+        "route_table_id": "${aws_route_table.{{ zone.rprv_key }}.id}"
+      }{% if zone.public_cidr is defined %},
+      "{{ zone.rpub_key }}": {
+        "subnet_id": "${aws_subnet.{{ zone.pub_key }}.id}",
+        "route_table_id": "${aws_route_table.{{ zone.rpub_key }}.id}"
+      }{% endif %}{% if not loop.last %},{% endif %}
+      {% endfor %}
+    }{% endif %}{% if zones | length > 0 and (root.has_internet_gateway or nat_gateways | length > 0) %},
+    "aws_route": {
+      {% for zone in zones %}
+      {% if zone.public_cidr is defined %}
+      "{{ zone.rpub_default_key }}": {
+        "route_table_id": "${aws_route_table.{{ zone.rpub_key }}.id}",
+        "destination_cidr_block": "0.0.0.0/0",
+        "gateway_id": "${aws_internet_gateway.{{ root.gw_key }}.id}"
+      }{% if zone.private_nat_key is defined or not loop.last %},{% endif %}
+      {% endif %}
+      {% if zone.private_nat_key is defined %}
+      "{{ zone.rprv_default_key }}": {
+        "route_table_id": "${aws_route_table.{{ zone.rprv_key }}.id}",
+        "destination_cidr_block": "0.0.0.0/0",
+        "nat_gateway_id": "${aws_nat_gateway.{{ zone.private_nat_key }}.id}"
+      }{% if not loop.last %},{% endif %}
+      {% endif %}
+      {% endfor %}
+    }
+    {% endif %}
+  }
+}

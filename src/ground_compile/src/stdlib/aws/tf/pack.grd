@@ -258,6 +258,17 @@ deploy_root = {
   nat_name = string
 }
 
+network_root = {
+  vpc_key = string
+  vpc_name = string
+  cidr_block = string
+  enable_dns_support = boolean
+  enable_dns_hostnames = boolean
+  gw_key = string
+  gw_name = string
+  has_internet_gateway = boolean
+}
+
 deploy_zone = {
   n = string
   az = string
@@ -273,6 +284,32 @@ deploy_zone = {
   rprv_name = string
   rpub_default_key = string
   rprv_default_key = string
+}
+
+network_zone = {
+  n = string
+  az = string
+  public_cidr = string
+  private_cidr = string
+  pub_key = string
+  pub_name = string
+  priv_key = string
+  priv_name = string
+  rpub_key = string
+  rpub_name = string
+  rprv_key = string
+  rprv_name = string
+  rpub_default_key = string
+  rprv_default_key = string
+  private_nat_key = string
+}
+
+network_nat = {
+  n = string
+  nat_key = string
+  nat_name = string
+  eip_key = string
+  public_subnet_key = string
 }
 
 deploy_service = {
@@ -351,13 +388,33 @@ service_secret_access = {
   policy_json = string
 }
 
+def vpc {
+  project = std:project
+  cidr = string
+  dns = boolean
+  egress = std:platform:egress
+  zones = [ std:platform:network_zone ]
+  region = [ string ]
+} = make_aws_network {
+  kind = reference
+  provider_region = string
+  backend = backend_s3
+  root = network_root
+  zones = [ network_zone ]
+  nat_gateways = [ network_nat ]
+  vpc = aws_vpc
+  public_subnets = [ aws_subnet ]
+  private_subnets = [ aws_subnet ]
+  internet_gw = aws_internet_gateway
+  nat_gw = [ aws_nat_gateway ]
+}
+
 # AWS deploy is an explicit mapper over the standard deploy input shape.
 # Templates only serialize these resolved values.
 def deploy {
-  prefix = string
+  project = std:project
   pool = std:compute_pool
   region = [ string ]
-  state_backend = backend_s3
   service_overrides = [ std:service_config ]
   database_overrides = [ std:database_config ]
 } = make_aws_deploy {

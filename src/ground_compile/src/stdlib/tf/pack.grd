@@ -1,0 +1,13 @@
+use pack:std
+
+def state_store {
+  project = std:project
+  state = local | remote
+  region = [ string ]
+  encrypted = boolean
+} = make_state_store {
+  kind = reference
+  provider_region = string
+  root = std:aws:tf:state_root
+  backend = std:aws:tf:backend_s3
+}

@@ -126,6 +126,31 @@ fn mapper_002() {
 }
 
 #[test]
+fn mapper_002a_ipv4net_input_is_structured() {
+    let grd = r#"
+        network = { range = ipv4net }
+        def deploy { net = network } = make_deploy { prefix = integer  first = integer }
+        plan prod = deploy { net: def:network { range: "10.42.0.0/16" } }
+    "#;
+    let ts = r#"
+        function make_deploy(i) {
+            return {
+                prefix: i.net.range.prefix,
+                first: i.net.range.addr.a,
+            };
+        }
+    "#;
+    assert_eq!(
+        show_with_ts(grd, ts),
+        norm(
+            r##"
+            Def[prod = deploy { net: Def[_ = network hint: network { range: Str("10.42.0.0/16") }], prefix: Int(16), first: Int(10) }]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn mapper_003() {
     let grd = r#"
         def tags { prefix = string  count = integer } = make_tags { items = string }

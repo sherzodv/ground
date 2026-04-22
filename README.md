@@ -41,7 +41,6 @@ Regenerate expected output after render changes:
 ```
 UPDATE_GOLDENS=1 cargo test -p ground_test
 ```
----
 
 ## Future Ideas
 
@@ -71,4 +70,3 @@ UPDATE_GOLDENS=1 cargo test -p ground_test
   }
   ```
 
----

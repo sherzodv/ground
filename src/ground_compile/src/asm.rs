@@ -6,6 +6,7 @@
 /// Generators walk these defs directly without needing the original `IrRes`.
 
 use std::collections::{HashMap, HashSet};
+use std::net::Ipv4Addr;
 use crate::ir::*;
 use ground_ts::exec::{call_hook, call_hook_args};
 
@@ -241,16 +242,14 @@ fn build_input_json(
     ir: &IrRes,
     cache: &HashMap<DefId, AsmDef>,
 ) -> String {
-    let input_names: HashSet<String> = input_defs.iter().filter_map(|f| f.name.clone()).collect();
+    let input_defs_by_name: HashMap<String, &IrStructFieldDef> = input_defs.iter()
+        .filter_map(|f| f.name.as_ref().map(|name| (name.clone(), f)))
+        .collect();
     let input_map: serde_json::Map<String, serde_json::Value> = fields.iter()
-        .filter(|f| input_names.contains(&f.name))
-        .map(|f| {
-            let json_val = if f.via {
-                ir_value_to_json_via(&f.value, ir, cache)
-            } else {
-                ir_value_to_json(&f.value, ir)
-            };
-            (f.name.clone(), json_val)
+        .filter_map(|f| {
+            let field_def = input_defs_by_name.get(&f.name)?;
+            let json_val = ir_value_to_json_typed(&f.value, &field_def.field_type, ir, cache, f.via);
+            Some((f.name.clone(), json_val))
         })
         .collect();
     serde_json::Value::Object(input_map).to_string()
@@ -281,6 +280,46 @@ fn apply_mapper_output(fields: &mut Vec<AsmField>, ts_src: &str, fn_name: &str, 
 
 fn lower_field(f: &IrField, ir: &IrRes) -> AsmField {
     AsmField { name: f.name.clone(), value: lower_value(&f.value, ir) }
+}
+
+fn ipv4_to_json(ip: &str) -> Option<serde_json::Value> {
+    let addr: Ipv4Addr = ip.parse().ok()?;
+    let octets = addr.octets();
+    let int = u32::from(addr);
+    Some(serde_json::json!({
+        "value": ip,
+        "a": octets[0],
+        "b": octets[1],
+        "c": octets[2],
+        "d": octets[3],
+        "int": int,
+    }))
+}
+
+fn ipv4net_to_json(net: &str) -> Option<serde_json::Value> {
+    let (ip, prefix_raw) = net.split_once('/')?;
+    let prefix = prefix_raw.parse::<u8>().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    Some(serde_json::json!({
+        "value": net,
+        "addr": ipv4_to_json(ip)?,
+        "prefix": prefix,
+    }))
+}
+
+fn target_shape_from_ir_ref(pattern: &IrRef) -> Option<ShapeId> {
+    let last = pattern.segments.last()?;
+    let IrRefSegValue::Shape(shape_id) = last.value else { return None; };
+    if pattern.segments[..pattern.segments.len().saturating_sub(1)]
+        .iter()
+        .all(|seg| matches!(seg.value, IrRefSegValue::Pack(_)))
+    {
+        Some(shape_id)
+    } else {
+        None
+    }
 }
 
 fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
@@ -387,6 +426,80 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
 
         IrValue::List(items) => serde_json::Value::Array(
             items.iter().map(|i| ir_value_to_json(i, ir)).collect()),
+    }
+}
+
+fn ir_value_to_json_typed(
+    v: &IrValue,
+    field_type: &IrFieldType,
+    ir: &IrRes,
+    cache: &HashMap<DefId, AsmDef>,
+    via: bool,
+) -> serde_json::Value {
+    match field_type {
+        IrFieldType::Primitive(IrPrimitive::Ipv4) => match v {
+            IrValue::Str(s) => ipv4_to_json(s).unwrap_or_else(|| serde_json::Value::String(s.clone())),
+            _ => ir_value_to_json(v, ir),
+        },
+        IrFieldType::Primitive(IrPrimitive::Ipv4Net) => match v {
+            IrValue::Str(s) => ipv4net_to_json(s).unwrap_or_else(|| serde_json::Value::String(s.clone())),
+            _ => ir_value_to_json(v, ir),
+        },
+        IrFieldType::Primitive(_) => {
+            if via { ir_value_to_json_via(v, ir, cache) } else { ir_value_to_json(v, ir) }
+        }
+        IrFieldType::Ref(r) => {
+            if let Some(shape_id) = target_shape_from_ir_ref(r) {
+                if let Some(shape) = ir.shapes.get(shape_id.0 as usize) {
+                    return match &shape.body {
+                        IrShapeBody::Primitive(p) => {
+                            ir_value_to_json_typed(v, &IrFieldType::Primitive(p.clone()), ir, cache, via)
+                        }
+                        IrShapeBody::Struct(field_defs) => match v {
+                            IrValue::Inst(fid) => {
+                                let child = &ir.defs[fid.0 as usize];
+                                let mut map = serde_json::Map::new();
+                                map.insert("_name".into(), serde_json::Value::String(child.name.clone()));
+                                for field in &child.fields {
+                                    if let Some(field_def) = field_defs.iter().find(|fd| fd.name.as_deref() == Some(field.name.as_str())) {
+                                        map.insert(
+                                            field.name.clone(),
+                                            ir_value_to_json_typed(&field.value, &field_def.field_type, ir, cache, field.via),
+                                        );
+                                    } else {
+                                        map.insert(
+                                            field.name.clone(),
+                                            if field.via { ir_value_to_json_via(&field.value, ir, cache) } else { ir_value_to_json(&field.value, ir) },
+                                        );
+                                    }
+                                }
+                                serde_json::Value::Object(map)
+                            }
+                            _ => if via { ir_value_to_json_via(v, ir, cache) } else { ir_value_to_json(v, ir) },
+                        },
+                        _ => if via { ir_value_to_json_via(v, ir, cache) } else { ir_value_to_json(v, ir) },
+                    };
+                }
+            }
+            if via { ir_value_to_json_via(v, ir, cache) } else { ir_value_to_json(v, ir) }
+        }
+        IrFieldType::List(patterns) => match v {
+            IrValue::List(items) => {
+                let fallback = if via { ir_value_to_json_via(v, ir, cache) } else { ir_value_to_json(v, ir) };
+                let vals = items.iter().map(|item| {
+                    if patterns.len() == 1 {
+                        ir_value_to_json_typed(item, &IrFieldType::Ref(patterns[0].clone()), ir, cache, false)
+                    } else {
+                        ir_value_to_json(item, ir)
+                    }
+                }).collect();
+                match fallback {
+                    serde_json::Value::Array(_) => serde_json::Value::Array(vals),
+                    _ => serde_json::Value::Array(vals),
+                }
+            }
+            _ => if via { ir_value_to_json_via(v, ir, cache) } else { ir_value_to_json(v, ir) },
+        }
     }
 }
 

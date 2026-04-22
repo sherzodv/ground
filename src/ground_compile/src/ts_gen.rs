@@ -19,7 +19,7 @@ use crate::ir::{IrDef, IrFieldType, IrPrimitive, IrRef, IrRefSegValue, IrRes, Ir
 // ---------------------------------------------------------------------------
 
 pub fn gen_mapper_interfaces(ir: &IrRes) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<String> = vec![ground_builtin_ts_types()];
     let mut shape_ids = BTreeSet::new();
     let preferred_names = preferred_shape_names(ir);
 
@@ -69,9 +69,10 @@ pub fn gen_mapper_interfaces_by_unit(ir: &IrRes) -> Vec<(u32, String)> {
 
     by_unit.into_iter()
         .map(|(unit, parts)| {
-            let mut out: Vec<String> = shapes_by_unit.remove(&unit).unwrap_or_default().into_iter()
+            let mut out: Vec<String> = vec![ground_builtin_ts_types()];
+            out.extend(shapes_by_unit.remove(&unit).unwrap_or_default().into_iter()
                 .filter_map(|tid| gen_shape_decl(crate::ir::ShapeId(tid), ir, &preferred_names))
-                .collect();
+                .collect::<Vec<_>>());
             out.extend(parts);
             (unit, out.join("\n\n"))
         })
@@ -323,7 +324,28 @@ fn prim_to_ts(p: &IrPrimitive) -> &'static str {
         IrPrimitive::Integer   => "number",
         IrPrimitive::Boolean   => "boolean",
         IrPrimitive::Reference => "string",
+        IrPrimitive::Ipv4      => "GroundIpv4",
+        IrPrimitive::Ipv4Net   => "GroundIpv4Net",
     }
+}
+
+fn ground_builtin_ts_types() -> String {
+    [
+        "interface GroundIpv4 {",
+        "  value: string;",
+        "  a: number;",
+        "  b: number;",
+        "  c: number;",
+        "  d: number;",
+        "  int: number;",
+        "}",
+        "",
+        "interface GroundIpv4Net {",
+        "  value: string;",
+        "  addr: GroundIpv4;",
+        "  prefix: number;",
+        "}",
+    ].join("\n")
 }
 
 fn ref_to_ts(r: &IrRef, ir: &IrRes, preferred_names: &BTreeMap<u32, String>) -> String {

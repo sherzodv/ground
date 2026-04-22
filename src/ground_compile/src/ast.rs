@@ -67,7 +67,7 @@ pub struct AstRef {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AstPrimitive { String, Integer, Boolean, Reference }
+pub enum AstPrimitive { String, Integer, Boolean, Reference, Ipv4, Ipv4Net }
 
 // ---------------------------------------------------------------------------
 // Unified def node — the central construct of the language
@@ -126,7 +126,7 @@ pub struct AstPack {
 pub enum AstTypeExpr {
     /// Unit: bare `def name` or `name` with no rhs
     Unit,
-    /// Built-in scalar: `string` | `integer` | `boolean` | `reference`
+    /// Built-in scalar: `string` | `integer` | `boolean` | `reference` | `ipv4` | `ipv4net`
     Primitive(AstPrimitive),
     /// Single reference to an existing type: `postgresql`, `type:region:type:zone`
     Ref(AstRef),

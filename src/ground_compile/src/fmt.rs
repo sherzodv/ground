@@ -337,6 +337,8 @@ fn render_primitive(p: &AstPrimitive) -> &'static str {
         AstPrimitive::Integer => "integer",
         AstPrimitive::Boolean => "boolean",
         AstPrimitive::Reference => "reference",
+        AstPrimitive::Ipv4 => "ipv4",
+        AstPrimitive::Ipv4Net => "ipv4net",
     }
 }
 

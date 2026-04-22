@@ -56,6 +56,21 @@ fn def_001() {
 }
 
 #[test]
+fn def_001a() {
+    assert_eq!(
+        show("network = { cidr = ipv4net  gateway = ipv4 }"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[network, Struct[Field#0[cidr, Prim(ipv4net)], Field#1[gateway, Prim(ipv4)]]],
+                Def#0[network, Shape#0],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn def_002() {
     assert_eq!(
         show(

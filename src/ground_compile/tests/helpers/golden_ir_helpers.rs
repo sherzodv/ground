@@ -13,6 +13,8 @@ pub fn show_primitive(p: &IrPrimitive) -> &'static str {
         IrPrimitive::Integer   => "integer",
         IrPrimitive::Boolean   => "boolean",
         IrPrimitive::Reference => "reference",
+        IrPrimitive::Ipv4      => "ipv4",
+        IrPrimitive::Ipv4Net   => "ipv4net",
     }
 }
 

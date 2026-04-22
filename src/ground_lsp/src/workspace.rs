@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ground_compile::{
     analyze, AnalysisRes, CompileError, CompileReq, ErrorLoc, Unit, STDLIB_UNIT_COUNT,
-    ir::{DefId, IrLoc, IrRes, IrShapeBody, ScopeId},
+    ir::{DefId, IrLoc, IrPrimitive, IrRes, IrShapeBody, ScopeId},
 };
 use serde_json::{json, Value};
 
@@ -205,7 +205,7 @@ pub fn describe_ground_token<'a>(analysis: &'a WorkspaceAnalysis, scope: ScopeId
         let shape = ir.shapes.get(def.shape_id.0 as usize)?;
         let body = match &shape.body {
             IrShapeBody::Unit => "unit".to_string(),
-            IrShapeBody::Primitive(p) => format!("primitive `{p:?}`"),
+            IrShapeBody::Primitive(p) => format!("primitive `{}`", primitive_name(p)),
             IrShapeBody::Enum(vs) => format!("enum with {} variants", vs.len()),
             IrShapeBody::Struct(fs) => format!("struct with {} fields", fs.len()),
         };
@@ -215,7 +215,7 @@ pub fn describe_ground_token<'a>(analysis: &'a WorkspaceAnalysis, scope: ScopeId
         let shape = ir.shapes.get(shape_id.0 as usize)?;
         let body = match &shape.body {
             IrShapeBody::Unit => "unit".to_string(),
-            IrShapeBody::Primitive(p) => format!("primitive `{p:?}`"),
+            IrShapeBody::Primitive(p) => format!("primitive `{}`", primitive_name(p)),
             IrShapeBody::Enum(vs) => format!("enum with {} variants", vs.len()),
             IrShapeBody::Struct(fs) => format!("struct with {} fields", fs.len()),
         };
@@ -225,6 +225,17 @@ pub fn describe_ground_token<'a>(analysis: &'a WorkspaceAnalysis, scope: ScopeId
         return Some(("Pack", format!("`{}`", token)));
     }
     None
+}
+
+fn primitive_name(p: &IrPrimitive) -> &'static str {
+    match p {
+        IrPrimitive::String => "string",
+        IrPrimitive::Integer => "integer",
+        IrPrimitive::Boolean => "boolean",
+        IrPrimitive::Reference => "reference",
+        IrPrimitive::Ipv4 => "ipv4",
+        IrPrimitive::Ipv4Net => "ipv4net",
+    }
 }
 
 pub fn definition_from_ts(analysis: &WorkspaceAnalysis, uri: &str, pos: Position) -> Option<Vec<Value>> {

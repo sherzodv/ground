@@ -217,6 +217,24 @@ fn inst_inline_struct_type_hint_unknown() {
     assert!(out.contains("nonexistent"), "error should name the unknown type: {out}");
 }
 
+#[test]
+fn error_invalid_ipv4_and_ipv4net() {
+    let out = show(r##"
+        def network {
+            cidr = ipv4net
+            gateway = ipv4
+        }
+
+        bad = network {
+            cidr: "10.0.0.0"
+            gateway: "999.1.1.1"
+        }
+    "##);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(out.contains("expected ipv4net"), "expected ipv4net error, got: {out}");
+    assert!(out.contains("expected ipv4"), "expected ipv4 error, got: {out}");
+}
+
 // ---------------------------------------------------------------------------
 // Use / import errors
 // ---------------------------------------------------------------------------

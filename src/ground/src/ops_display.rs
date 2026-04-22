@@ -16,7 +16,7 @@ pub struct DisplayEvent {
 pub enum Op { Init, Plan, Apply }
 
 pub struct TerraEnricher {
-    pub stack:       String,
+    pub plan:        String,
     pub op:          Op,
     pub provider:    String,
     pub region:      String,
@@ -28,8 +28,8 @@ pub struct TerraEnricher {
 }
 
 impl TerraEnricher {
-    pub fn new(stack: String, op: Op, provider: String, region: String, lookup: Vec<(String, String)>, verbose: bool) -> Self {
-        Self { stack, op, provider, region, verbose, lookup, refresh_started: false, refresh_done: false, drift_buffer: vec![] }
+    pub fn new(plan: String, op: Op, provider: String, region: String, lookup: Vec<(String, String)>, verbose: bool) -> Self {
+        Self { plan, op, provider, region, verbose, lookup, refresh_started: false, refresh_done: false, drift_buffer: vec![] }
     }
 
     pub fn enrich(&mut self, event: &RunEvent<OpsEvent>) -> Vec<DisplayEvent> {
@@ -44,7 +44,7 @@ impl TerraEnricher {
                 if matches!(self.op, Op::Plan) {
                     v.push(msg(format!("{DIM}running in plan mode, no changes will be made{RESET}")));
                 }
-                v.push(msg(format!("{op_label} to deploy {GREEN}{BOLD}{}{RESET} stack to {} / {}", self.stack, self.provider, self.region)));
+                v.push(msg(format!("{op_label} for plan {GREEN}{BOLD}{}{RESET} on {} / {}", self.plan, self.provider, self.region)));
                 v.push(msg(format!("{DIM}running {cmd}{RESET}")));
                 v
             }
@@ -167,7 +167,7 @@ impl TerraEnricher {
                 return label.clone();
             }
         }
-        self.stack.clone()
+        format!("plan:{}", self.plan)
     }
 
     fn flush_drift(&mut self) -> Vec<DisplayEvent> {

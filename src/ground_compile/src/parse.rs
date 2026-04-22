@@ -59,6 +59,17 @@ impl<'a> Parser<'a> {
             .map_or(true, |c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
     }
 
+    fn primitive_from_ref(r: &AstRef) -> Option<AstPrimitive> {
+        if r.segments.len() != 1 {
+            return None;
+        }
+        match r.segments[0].inner.as_plain()? {
+            "ipv4" => Some(AstPrimitive::Ipv4),
+            "ipv4net" => Some(AstPrimitive::Ipv4Net),
+            _ => None,
+        }
+    }
+
     // -- whitespace / comments -------------------------------------------
 
     fn skip_ws(&mut self) {
@@ -265,7 +276,11 @@ impl<'a> Parser<'a> {
 
         if refs.len() == 1 {
             let r = refs.remove(0);
-            Some(self.node(start, AstTypeExpr::Ref(r.inner)))
+            if let Some(prim) = Self::primitive_from_ref(&r.inner) {
+                Some(self.node(start, AstTypeExpr::Primitive(prim)))
+            } else {
+                Some(self.node(start, AstTypeExpr::Ref(r.inner)))
+            }
         } else {
             Some(self.node(start, AstTypeExpr::Enum(refs)))
         }

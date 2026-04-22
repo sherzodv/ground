@@ -111,7 +111,7 @@ fn build_lexical_tokens(src: &str, is_ts: bool) -> Vec<u32> {
                     }
                 } else if matches!(word.as_str(), "def" | "plan" | "pack" | "use" | "via") {
                     Some(TOK_KEYWORD)
-                } else if matches!(word.as_str(), "string" | "integer" | "boolean" | "reference") {
+                } else if matches!(word.as_str(), "string" | "integer" | "boolean" | "reference" | "ipv4" | "ipv4net") {
                     Some(TOK_TYPE)
                 } else {
                     None
@@ -171,7 +171,7 @@ fn push_lexical_ground_tokens(src: &str, tokens: &mut Vec<Token>) {
                 let word: String = chars[start..i].iter().collect();
                 if matches!(word.as_str(), "def" | "plan" | "pack" | "use" | "via") {
                     tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_KEYWORD });
-                } else if matches!(word.as_str(), "string" | "integer" | "boolean" | "reference") {
+                } else if matches!(word.as_str(), "string" | "integer" | "boolean" | "reference" | "ipv4" | "ipv4net") {
                     tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_TYPE });
                 }
                 continue;

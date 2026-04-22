@@ -15,7 +15,7 @@ pub fn completion(workspace: &Workspace, params: &Value) -> Vec<Value> {
     for kw in ["def", "plan", "pack", "use", "via"] {
         items.push(completion_item(kw, 14));
     }
-    for builtin in ["string", "integer", "boolean", "reference"] {
+    for builtin in ["string", "integer", "boolean", "reference", "ipv4", "ipv4net"] {
         items.push(completion_item(builtin, 7));
     }
     if let Some((analysis, scope)) = workspace.analysis_and_scope_for_uri(&uri) {

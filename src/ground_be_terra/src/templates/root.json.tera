@@ -180,6 +180,7 @@
       }{% if not loop.last %},{% endif %}
       {% endfor %}
     },
+    {% if service_service_accesses | length > 0 or service_database_accesses | length > 0 %}
     "aws_vpc_security_group_ingress_rule": {
       {% for access in service_service_accesses %}
       "{{ access.name | replace(from="-", to="_") }}": {
@@ -200,22 +201,12 @@
       }{% if not loop.last %},{% endif %}
       {% endfor %}
     },
+    {% endif %}
     "aws_iam_role": {
       {% for svc in services %}
       "{{ svc.task_role_key }}": {
         "name": "{{ svc.task_role_name }}",
-        "assume_role_policy": {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Principal": {
-                "Service": "ecs-tasks.amazonaws.com"
-              },
-              "Action": "sts:AssumeRole"
-            }
-          ]
-        },
+        "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}",
         "tags": {
           "ground-managed": "true"
         }
@@ -243,28 +234,7 @@
         "memory": "{{ svc.memory }}",
         "execution_role_arn": "${aws_iam_role.{{ svc.task_role_key }}.arn}",
         "task_role_arn": "${aws_iam_role.{{ svc.task_role_key }}.arn}",
-        "container_definitions": [
-          {
-            "name": "{{ svc.name }}",
-            "image": "public.ecr.aws/docker/library/nginx:stable",
-            "essential": true,
-            "portMappings": [
-              {
-                "containerPort": {{ svc.port }},
-                "hostPort": {{ svc.port }},
-                "protocol": "tcp"
-              }
-            ],
-            "logConfiguration": {
-              "logDriver": "awslogs",
-              "options": {
-                "awslogs-group": "{{ svc.log_group_name }}",
-                "awslogs-region": "{{ provider_region }}",
-                "awslogs-stream-prefix": "{{ svc.name }}"
-              }
-            }
-          }
-        ],
+        "container_definitions": "[{\"name\":\"{{ svc.name }}\",\"image\":\"{{ svc.image }}\",\"essential\":true,\"portMappings\":[{\"containerPort\":{{ svc.port }},\"hostPort\":{{ svc.port }},\"protocol\":\"tcp\"}],\"logConfiguration\":{\"logDriver\":\"awslogs\",\"options\":{\"awslogs-group\":\"{{ svc.log_group_name }}\",\"awslogs-region\":\"{{ provider_region }}\",\"awslogs-stream-prefix\":\"{{ svc.name }}\"}}}]",
         "tags": {
           "ground-managed": "true"
         }
@@ -289,7 +259,8 @@
         }
       }{% if not loop.last %},{% endif %}
       {% endfor %}
-    },
+    }{% if service_bucket_accesses | length > 0 or service_secret_accesses | length > 0 or databases | length > 0 or buckets | length > 0 or secrets | length > 0 %},{% endif %}
+    {% if service_bucket_accesses | length > 0 or service_secret_accesses | length > 0 %}
     "aws_iam_role_policy": {
       {% for access in service_bucket_accesses %}
       "{{ access.name | replace(from="-", to="_") }}": {
@@ -305,7 +276,9 @@
         "policy": {{ access.policy_json }}
       }{% if not loop.last %},{% endif %}
       {% endfor %}
-    },
+    }{% if databases | length > 0 or buckets | length > 0 or secrets | length > 0 %},{% endif %}
+    {% endif %}
+    {% if databases | length > 0 %}
     "aws_db_subnet_group": {
       {% for db in databases %}
       "{{ db.subnet_group_key }}": {
@@ -336,7 +309,9 @@
         }
       }{% if not loop.last %},{% endif %}
       {% endfor %}
-    },
+    }{% if buckets | length > 0 or secrets | length > 0 %},{% endif %}
+    {% endif %}
+    {% if buckets | length > 0 %}
     "aws_s3_bucket": {
       {% for bucket in buckets %}
       "{{ bucket.key }}": {
@@ -346,7 +321,9 @@
         }
       }{% if not loop.last %},{% endif %}
       {% endfor %}
-    },
+    }{% if secrets | length > 0 %},{% endif %}
+    {% endif %}
+    {% if secrets | length > 0 %}
     "aws_secretsmanager_secret": {
       {% for secret in secrets %}
       "{{ secret.key }}": {
@@ -358,5 +335,6 @@
       }{% if not loop.last %},{% endif %}
       {% endfor %}
     }
+    {% endif %}
   }
 }

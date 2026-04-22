@@ -1,5 +1,6 @@
 mod parser;
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
@@ -93,23 +94,81 @@ impl From<RunError> for OpsError {
 
 // -- public API --------------------------------------------------------------
 
-pub fn init(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
+enum InitMode {
+    Init,
+    MigrateState,
+}
+
+pub fn init_if_needed(dir: &Path) -> Result<Option<Receiver<RunEvent<OpsEvent>>>, OpsError> {
+    let Some(mode) = init_mode(dir) else {
+        return Ok(None);
+    };
+
+    match mode {
+        InitMode::Init => run_init(dir, false).map(Some),
+        InitMode::MigrateState => Err(OpsError::Other(
+            "state migration required".into()
+        )),
+    }
+}
+
+pub fn migrate_state(dir: &Path) -> Result<Option<Receiver<RunEvent<OpsEvent>>>, OpsError> {
+    let Some(mode) = init_mode(dir) else {
+        return Ok(None);
+    };
+
+    match mode {
+        InitMode::MigrateState => run_init(dir, true).map(Some),
+        InitMode::Init => Err(OpsError::Other(
+            "state migration is not available for this plan yet".into()
+        )),
+    }
+}
+
+fn run_init(dir: &Path, migrate_state: bool) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
     let chdir = format!("-chdir={}", dir.to_str().unwrap_or("."));
+    let mut cmd = Command::new("terraform");
+    cmd.arg(&chdir).arg("init");
+    if migrate_state {
+        cmd.arg("-migrate-state").arg("-force-copy");
+    }
+    cmd.arg("-input=false");
     let raw = ground_run::spawn(
-        Command::new("terraform")
-            .args([&chdir, "init", "-input=false"]),
+        &mut cmd,
         TfParser { mode: Mode::Init },
     )?;
 
-    Ok(map_events(raw, |ev| match ev {
-        TfEvent::InitProviderDownload { name, version } =>
-            Some(OpsEvent::ProviderReady { name, version }),
-        TfEvent::InitComplete =>
-            Some(OpsEvent::InitDone),
-        TfEvent::Diagnostic { severity, summary, detail, address } if severity == "error" =>
-            Some(OpsEvent::Warning { message: summary, detail, address }),
-        _ => None,
-    }))
+    let dir = dir.to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for event in raw {
+            let out = match event {
+                RunEvent::Spawned => Some(RunEvent::Spawned),
+                RunEvent::Raw(s) => Some(RunEvent::Raw(s)),
+                RunEvent::Stderr(s) => Some(RunEvent::Stderr(s)),
+                RunEvent::Line(ev) => match ev {
+                    TfEvent::InitProviderDownload { name, version } =>
+                        Some(RunEvent::Line(OpsEvent::ProviderReady { name, version })),
+                    TfEvent::InitComplete =>
+                        Some(RunEvent::Line(OpsEvent::InitDone)),
+                    TfEvent::Diagnostic { severity, summary, detail, address } if severity == "error" =>
+                        Some(RunEvent::Line(OpsEvent::Warning { message: summary, detail, address })),
+                    _ => None,
+                },
+                RunEvent::Exited(status) => {
+                    if status.success {
+                        let _ = write_init_stamp(&dir);
+                    }
+                    Some(RunEvent::Exited(status))
+                }
+            };
+            if let Some(e) = out {
+                if tx.send(e).is_err() { break; }
+            }
+        }
+    });
+
+    Ok(rx)
 }
 
 pub fn plan(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
@@ -160,10 +219,29 @@ pub fn apply(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
         TfParser { mode: Mode::PlanApply },
     )?;
 
-    Ok(map_events(raw, |ev| match ev {
-        TfEvent::ChangeSummary => Some(OpsEvent::ApplyDone),
-        ev => tf_to_ops(ev),
-    }))
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for event in raw {
+            match event {
+                RunEvent::Spawned => { let _ = tx.send(RunEvent::Spawned); }
+                RunEvent::Raw(s) => { let _ = tx.send(RunEvent::Raw(s)); }
+                RunEvent::Stderr(s) => { let _ = tx.send(RunEvent::Stderr(s)); }
+                RunEvent::Line(ev) => {
+                    if let Some(ops) = tf_to_ops(ev) {
+                        let _ = tx.send(RunEvent::Line(ops));
+                    }
+                }
+                RunEvent::Exited(status) => {
+                    if status.success {
+                        let _ = tx.send(RunEvent::Line(OpsEvent::ApplyDone));
+                    }
+                    let _ = tx.send(RunEvent::Exited(status));
+                }
+            }
+        }
+    });
+
+    Ok(rx)
 }
 
 // -- helpers -----------------------------------------------------------------
@@ -194,31 +272,61 @@ fn tf_to_ops(ev: TfEvent) -> Option<OpsEvent> {
     }
 }
 
-/// Wraps a raw `Receiver<RunEvent<TfEvent>>` and maps each `Line` through `f`,
-/// forwarding lifecycle events (Spawned, Stderr, Exited) unchanged.
-fn map_events<F>(
-    raw: Receiver<RunEvent<TfEvent>>,
-    f:   F,
-) -> Receiver<RunEvent<OpsEvent>>
-where
-    F: Fn(TfEvent) -> Option<OpsEvent> + Send + 'static,
-{
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for event in raw {
-            let out = match event {
-                RunEvent::Spawned     => Some(RunEvent::Spawned),
-                RunEvent::Raw(s)      => Some(RunEvent::Raw(s)),
-                RunEvent::Stderr(s)   => Some(RunEvent::Stderr(s)),
-                RunEvent::Line(ev)    => f(ev).map(RunEvent::Line),
-                RunEvent::Exited(s)   => Some(RunEvent::Exited(s)),
-            };
-            if let Some(e) = out {
-                if tx.send(e).is_err() { break; }
-            }
-        }
-    });
-    rx
+const INIT_STAMP_FILE: &str = ".ground-init.json";
+
+fn init_mode(dir: &Path) -> Option<InitMode> {
+    if !dir.join(".terraform").is_dir() {
+        return Some(InitMode::Init);
+    }
+
+    let Some(current) = load_terraform_block(dir) else {
+        return Some(InitMode::Init);
+    };
+
+    let stamp_path = dir.join(INIT_STAMP_FILE);
+    let Ok(saved) = fs::read_to_string(stamp_path) else {
+        return Some(InitMode::Init);
+    };
+
+    let Ok(saved_json) = serde_json::from_str::<Value>(&saved) else {
+        return Some(InitMode::Init);
+    };
+
+    if saved_json == current {
+        return None;
+    }
+
+    if should_migrate_state(dir, &saved_json, &current) {
+        return Some(InitMode::MigrateState);
+    }
+
+    Some(InitMode::Init)
+}
+
+fn write_init_stamp(dir: &Path) -> Result<(), String> {
+    let Some(current) = load_terraform_block(dir) else {
+        return Err("missing terraform config for init stamp".into());
+    };
+    let current = serde_json::to_string(&current)
+        .map_err(|e| format!("failed to encode init stamp: {e}"))?;
+    fs::write(dir.join(INIT_STAMP_FILE), current)
+        .map_err(|e| format!("failed to write init stamp: {e}"))
+}
+
+fn load_terraform_block(dir: &Path) -> Option<Value> {
+    let main_tf = fs::read_to_string(dir.join("main.tf.json")).ok()?;
+    let json: Value = serde_json::from_str(&main_tf).ok()?;
+    Some(json.get("terraform").cloned().unwrap_or(Value::Null))
+}
+
+fn has_backend(terraform: &Value) -> bool {
+    terraform.get("backend").is_some_and(|v| v.is_object())
+}
+
+fn should_migrate_state(dir: &Path, previous: &Value, current: &Value) -> bool {
+    has_backend(current)
+        && !has_backend(previous)
+        && dir.join("terraform.tfstate").is_file()
 }
 
 /// Converts a JSON value into an `AttrVal`, resolving unknowns and sensitives.
@@ -316,4 +424,82 @@ fn show_json(dir: &PathBuf) -> Result<PlanSummary, String> {
     }
 
     Ok(PlanSummary { changes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_backend, init_mode, write_init_stamp, InitMode};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("ground-be-terra-{name}-{nonce}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_main_tf(dir: &PathBuf, backend_key: Option<&str>) {
+        let backend = backend_key.map(|backend_key| format!(r#",
+    "backend": {{
+      "s3": {{ "bucket": "b", "key": "{backend_key}", "region": "us-east-1" }}
+    }}"#)).unwrap_or_default();
+        fs::write(dir.join("main.tf.json"), format!(r#"{{
+  "terraform": {{
+    "required_providers": {{
+      "aws": {{ "source": "hashicorp/aws", "version": "~> 5.0" }}
+    }}{backend}
+  }}
+}}"#)).unwrap();
+    }
+
+    #[test]
+    fn init_needed_when_uninitialized() {
+        let dir = temp_dir("uninit");
+        write_main_tf(&dir, Some("demo/a.tfstate"));
+        assert!(matches!(init_mode(&dir), Some(InitMode::Init)));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn skips_init_when_stamp_matches() {
+        let dir = temp_dir("cached");
+        write_main_tf(&dir, Some("demo/a.tfstate"));
+        fs::create_dir_all(dir.join(".terraform")).unwrap();
+        write_init_stamp(&dir).unwrap();
+        assert!(init_mode(&dir).is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reruns_init_when_backend_changes() {
+        let dir = temp_dir("changed");
+        write_main_tf(&dir, Some("demo/a.tfstate"));
+        fs::create_dir_all(dir.join(".terraform")).unwrap();
+        write_init_stamp(&dir).unwrap();
+        write_main_tf(&dir, Some("demo/b.tfstate"));
+        assert!(matches!(init_mode(&dir), Some(InitMode::Init)));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn migrates_state_when_backend_is_new() {
+        let dir = temp_dir("migrate");
+        write_main_tf(&dir, None);
+        fs::create_dir_all(dir.join(".terraform")).unwrap();
+        fs::write(dir.join("terraform.tfstate"), "{}").unwrap();
+        write_init_stamp(&dir).unwrap();
+        write_main_tf(&dir, Some("demo/bootstrap.tfstate"));
+        assert!(matches!(init_mode(&dir), Some(InitMode::MigrateState)));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn backend_helper_detects_backend_block() {
+        let with_backend = serde_json::json!({ "backend": { "s3": {} } });
+        let without_backend = serde_json::json!({ "required_providers": {} });
+        assert!(has_backend(&with_backend));
+        assert!(!has_backend(&without_backend));
+    }
 }

@@ -908,6 +908,7 @@ dependencies = [
  "ground_compile",
  "ground_lsp",
  "ground_run",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,12 +1,13 @@
-use pack:std
+egress = none | shared | zone
 
-def state {
-  project = std:project
-  region = [ string ]
-  encrypted = boolean
-} = make_state {
-  kind = reference
-  provider_region = string
-  root = std:aws:tf:state_root
-  backend = std:aws:tf:backend_s3
+network_zone = {
+  private = string
+  public = string
+}
+
+network = {
+  cidr = string
+  dns = boolean
+  egress = egress
+  zones = [ network_zone ]
 }

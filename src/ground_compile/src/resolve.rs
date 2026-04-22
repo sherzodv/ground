@@ -187,6 +187,8 @@ fn builtin_primitive_from_ref(r: &AstRef) -> Option<IrPrimitive> {
         "integer" => Some(IrPrimitive::Integer),
         "boolean" => Some(IrPrimitive::Boolean),
         "reference" => Some(IrPrimitive::Reference),
+        "ipv4" => Some(IrPrimitive::Ipv4),
+        "ipv4net" => Some(IrPrimitive::Ipv4Net),
         _ => None,
     }
 }
@@ -1195,7 +1197,19 @@ fn convert_primitive(p: &AstPrimitive) -> IrPrimitive {
         AstPrimitive::Integer   => IrPrimitive::Integer,
         AstPrimitive::Boolean   => IrPrimitive::Boolean,
         AstPrimitive::Reference => IrPrimitive::Reference,
+        AstPrimitive::Ipv4      => IrPrimitive::Ipv4,
+        AstPrimitive::Ipv4Net   => IrPrimitive::Ipv4Net,
     }
+}
+
+fn parse_ipv4(raw: &str) -> Option<Ipv4Addr> {
+    raw.parse::<Ipv4Addr>().ok()
+}
+
+fn is_valid_ipv4net(raw: &str) -> bool {
+    let Some((addr, prefix)) = raw.split_once('/') else { return false };
+    let Ok(prefix) = prefix.parse::<u8>() else { return false };
+    prefix <= 32 && parse_ipv4(addr).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -1575,6 +1589,34 @@ fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: S
             }
         }
 
+        IrFieldType::Primitive(IrPrimitive::Ipv4) => {
+            match v {
+                AstValue::Str(s) => {
+                    if parse_ipv4(s).is_some() {
+                        IrValue::Str(s.clone())
+                    } else {
+                        ctx.errors.push(IrError { message: format!("expected ipv4, got '{}'", s), loc: loc.clone() });
+                        IrValue::Str(String::new())
+                    }
+                }
+                _ => { ctx.errors.push(IrError { message: "expected ipv4".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
+            }
+        }
+
+        IrFieldType::Primitive(IrPrimitive::Ipv4Net) => {
+            match v {
+                AstValue::Str(s) => {
+                    if is_valid_ipv4net(s) {
+                        IrValue::Str(s.clone())
+                    } else {
+                        ctx.errors.push(IrError { message: format!("expected ipv4net, got '{}'", s), loc: loc.clone() });
+                        IrValue::Str(String::new())
+                    }
+                }
+                _ => { ctx.errors.push(IrError { message: "expected ipv4net".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
+            }
+        }
+
         IrFieldType::Primitive(IrPrimitive::Boolean) => {
             match v {
                 AstValue::Ref(r) if r.segments.len() == 1 => {
@@ -1854,6 +1896,22 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                         }
                     }
                 }
+                Some(IrShapeBody::Primitive(IrPrimitive::Ipv4)) => {
+                    if parse_ipv4(raw).is_some() {
+                        IrValue::Str(raw.to_string())
+                    } else {
+                        ctx.errors.push(IrError { message: format!("expected ipv4, got '{}'", raw), loc: loc.clone() });
+                        IrValue::Str(String::new())
+                    }
+                }
+                Some(IrShapeBody::Primitive(IrPrimitive::Ipv4Net)) => {
+                    if is_valid_ipv4net(raw) {
+                        IrValue::Str(raw.to_string())
+                    } else {
+                        ctx.errors.push(IrError { message: format!("expected ipv4net, got '{}'", raw), loc: loc.clone() });
+                        IrValue::Str(String::new())
+                    }
+                }
                 Some(IrShapeBody::Primitive(_)) => IrValue::Str(raw.to_string()),
                 None => IrValue::Ref(raw.to_string()),
             }
@@ -1991,3 +2049,4 @@ pub fn resolve(res: ParseRes) -> IrRes {
         errors,
     }
 }
+use std::net::Ipv4Addr;

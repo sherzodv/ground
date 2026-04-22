@@ -513,8 +513,8 @@ With `via`, `make_fw` supplies it — `make_node` receives it and passes it thro
 
 All defs are pure, deferred descriptions. Nothing resolves until a `plan` declaration names a symbol as a resolution root. Ground produces output only for what is planned.
 ```ground
-prd-eu = aws_deploy {
-    stack: marstech
+prd-eu = deploy {
+    name: marstech
 }
 
 plan prd-eu
@@ -524,8 +524,8 @@ When the symbol has an input def, `plan` supplies the args:
 ```ground
 prd-eu {
     region = string
-} = aws_deploy {
-    stack: marstech
+} = deploy {
+    name: marstech
 }
 
 plan prd-eu {
@@ -610,7 +610,7 @@ Prefer narrow `use` statements over `*` imports.
 
 ```ground
 use std:def:project
-use std:platform:def:state
+use std:tf:def:state_store
 use std:aws:tf:def:deploy
 ```
 
@@ -629,7 +629,7 @@ Use pack paths to show the realization layer explicitly:
 
 ```ground
 tf:deploy
-platform:state
+tf:state_store
 ```
 
 Prefer the shortest form that is still clear. Omit qualifiers when the local

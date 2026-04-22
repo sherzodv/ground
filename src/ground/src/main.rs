@@ -1,12 +1,13 @@
 mod ops_display;
 
-use std::{env, fs, path::{Path, PathBuf}, process};
+use std::{env, fs, io, path::{Path, PathBuf}, process};
 
 use ground_be_terra::JsonUnit;
 use ground_compile::{compile, format_source, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit, STDLIB_UNIT_COUNT};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
+use serde_json::Value;
 
 const GREEN:  &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
@@ -19,8 +20,9 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     match args.as_slice() {
-        [cmd] if cmd == "init"                                 => cmd_init(false),
-        [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
+        [cmd, sub] if cmd == "tf" && sub == "init"                                => cmd_tf_init(false),
+        [cmd, sub, flag] if cmd == "tf" && sub == "init" && flag == "--git-ignore" => cmd_tf_init(true),
+        [cmd, sub] if cmd == "tf" && sub == "migrate"                              => cmd_tf_migrate(),
         [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
         [cmd, sub] if cmd == "gen" && sub == "types"                              => cmd_gen_types(),
         [cmd] if cmd == "fmt"                                                     => cmd_fmt(),
@@ -28,27 +30,31 @@ fn main() {
         [cmd] if cmd == "status"                                                  => cmd_status(),
         [cmd, sub] if cmd == "lsp" && sub == "start"                              => cmd_lsp_start(),
         [cmd, sub] if cmd == "lsp" && sub == "stop"                               => cmd_lsp_stop(),
-        [cmd] if cmd == "plan"                                                     => cmd_plan(false),
-        [cmd, flag] if cmd == "plan" && flag == "--verbose"                        => cmd_plan(true),
-        [cmd] if cmd == "apply"                                                    => cmd_apply(false),
-        [cmd, flag] if cmd == "apply" && flag == "--verbose"                       => cmd_apply(true),
+        [cmd] if cmd == "plan"                                                     => cmd_plan_ls(),
+        [cmd, sub] if cmd == "plan" && sub == "ls"                                 => cmd_plan_ls(),
+        [cmd, name] if cmd == "plan"                                               => cmd_plan(name, false),
+        [cmd, name, flag] if cmd == "plan" && (flag == "--verbose" || flag == "-v") => cmd_plan(name, true),
+        [cmd, name] if cmd == "apply"                                              => cmd_apply(name, false),
+        [cmd, name, flag] if cmd == "apply" && (flag == "--verbose" || flag == "-v") => cmd_apply(name, true),
         _ => {
             eprintln!("usage:");
-            eprintln!("  ground init [--git-ignore]");
+            eprintln!("  ground tf init [--git-ignore]");
+            eprintln!("  ground tf migrate");
             eprintln!("  ground gen terra");
             eprintln!("  ground gen types");
             eprintln!("  ground fmt");
             eprintln!("  ground status");
             eprintln!("  ground lsp start");
             eprintln!("  ground lsp stop");
-            eprintln!("  ground plan [--verbose]");
-            eprintln!("  ground apply [--verbose]");
+            eprintln!("  ground plan ls");
+            eprintln!("  ground plan <name> [--verbose|-v]");
+            eprintln!("  ground apply <name> [--verbose|-v]");
             process::exit(1);
         }
     }
 }
 
-fn cmd_init(git_ignore: bool) {
+fn cmd_tf_init(git_ignore: bool) {
     if let Err(e) = fs::create_dir(".ground") {
         if e.kind() != std::io::ErrorKind::AlreadyExists {
             eprintln!("error: {e}");
@@ -98,6 +104,106 @@ fn cmd_init(git_ignore: bool) {
             }
         }
     }
+}
+
+struct PlanStamp {
+    alias: String,
+    kind: String,
+    state: Option<String>,
+    backend_present: bool,
+}
+
+fn cmd_tf_migrate() {
+    with_project_root(|root| {
+        let res = do_compile(root, true);
+        let outputs = match ground_be_terra::generate_each(&res) {
+            Ok(o)  => o,
+            Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+        };
+        write_plan_units(root, &outputs);
+
+        let stamps = read_plan_stamps(&root.join(".ground/terra"));
+        let migratable: Vec<&PlanStamp> = stamps.iter()
+            .filter(|stamp| stamp.kind == "state_store" && stamp.state.as_deref() == Some("remote") && stamp.backend_present)
+            .collect();
+
+        match migratable.len() {
+            0 => {
+                eprintln!("error: no migratable state found");
+                process::exit(1);
+            }
+            1 => {}
+            _ => {
+                eprintln!("error: multiple migratable states found");
+                for stamp in migratable {
+                    eprintln!("  {}", stamp.alias);
+                }
+                process::exit(1);
+            }
+        }
+
+        let stamp = migratable[0];
+        println!("state migration candidate: {}", stamp.alias);
+        println!("this will migrate local terraform state to the configured remote backend");
+        print!("type yes to continue: ");
+        let _ = io::Write::flush(&mut io::stdout());
+
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() || answer.trim() != "yes" {
+            eprintln!("aborted");
+            process::exit(1);
+        }
+
+        let (res, outputs, plan_name) = compile_and_gen(root, &stamp.alias);
+        let provider = "aws".to_string();
+        let lookup = build_lookup(&res);
+        write_plan_units(root, &outputs);
+
+        let dir = root.join(".ground/terra").join(&plan_name);
+        let Some(rx) = terra_ops::migrate_state(&dir)
+            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); })
+        else {
+            println!("no migration needed for plan {plan_name}");
+            return;
+        };
+
+        let mut enricher = TerraEnricher::new(plan_name.clone(), Op::Init, provider, String::new(), lookup, true);
+        if !run_events(rx, &mut enricher) {
+            eprintln!("error: terraform migrate failed");
+            process::exit(1);
+        }
+    });
+}
+
+fn read_plan_stamps(terra_root: &Path) -> Vec<PlanStamp> {
+    let mut out = Vec::new();
+    let entries = match fs::read_dir(terra_root) {
+        Ok(entries) => entries,
+        Err(_) => return out,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path().join(".ground-plan.json");
+        let Ok(src) = fs::read_to_string(&path) else { continue; };
+        let Ok(json) = serde_json::from_str::<Value>(&src) else { continue; };
+        let Some(alias) = json.get("alias").and_then(|v| v.as_str()).map(str::to_string) else { continue; };
+        let Some(kind) = json.get("kind").and_then(|v| v.as_str()).map(str::to_string) else { continue; };
+        let state = json.get("state").and_then(|v| v.as_str()).map(str::to_string);
+        let backend_present = json.get("backend_present").and_then(|v| v.as_bool()).unwrap_or(false);
+        out.push(PlanStamp { alias, kind, state, backend_present });
+    }
+
+    out
+}
+
+fn read_backend_summary(dir: &Path) -> Option<(String, String, String)> {
+    let src = fs::read_to_string(dir.join("main.tf.json")).ok()?;
+    let json = serde_json::from_str::<Value>(&src).ok()?;
+    let s3 = json.get("terraform")?.get("backend")?.get("s3")?;
+    let bucket = s3.get("bucket")?.as_str()?.to_string();
+    let key = s3.get("key")?.as_str()?.to_string();
+    let region = s3.get("region")?.as_str()?.to_string();
+    Some((bucket, key, region))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +278,7 @@ fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
     let mut unit_names: Vec<String> = vec![
         "<std>".into(),
         "<std:platform>".into(),
+        "<std:tf>".into(),
         "<std:aws:tf>".into(),
     ];
     debug_assert_eq!(unit_names.len(), STDLIB_UNIT_COUNT);
@@ -199,34 +306,32 @@ fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
     res
 }
 
-/// Compile and generate Terraform files for a single planned def.
-/// `ground plan` / `ground apply` operate on one terraform workspace at a time,
-/// so multiple planned defs must use `ground gen terra` instead.
-fn compile_and_gen(root: &Path) -> (CompileRes, Vec<JsonUnit>, String) {
+fn compile_and_gen(root: &Path, plan_name: &str) -> (CompileRes, Vec<JsonUnit>, String) {
     let res = do_compile(root, true);
-
-    if res.defs.len() != 1 {
-        eprintln!(
-            "expected exactly one plan for this command, found {} — use `ground gen terra` to generate all stacks",
-            res.defs.len()
-        );
-        process::exit(1);
-    }
 
     let outputs = match ground_be_terra::generate_each(&res) {
         Ok(o)  => o,
         Err(e) => { eprintln!("error: {e}"); process::exit(1); }
     };
 
-    let stack_name = res.defs[0].name.clone();
-    let stack_outputs: Vec<JsonUnit> = outputs.into_iter()
-        .filter(|u| u.file.starts_with(&format!("{stack_name}/")))
+    let Some(def) = res.defs.iter().find(|d| d.name == plan_name) else {
+        let available = res.defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ");
+        eprintln!("error: plan '{plan_name}' not found");
+        if !available.is_empty() {
+            eprintln!("available plans: {available}");
+        }
+        process::exit(1);
+    };
+
+    let selected_plan = def.name.clone();
+    let plan_outputs: Vec<JsonUnit> = outputs.into_iter()
+        .filter(|u| u.file.starts_with(&format!("{selected_plan}/")))
         .collect();
 
-    (res, stack_outputs, stack_name)
+    (res, plan_outputs, selected_plan)
 }
 
-fn write_stack_units(root: &Path, outputs: &[JsonUnit]) {
+fn write_plan_units(root: &Path, outputs: &[JsonUnit]) {
     for output in outputs {
         let out_path = root.join(".ground/terra").join(&output.file);
         if let Some(parent) = out_path.parent() {
@@ -252,8 +357,17 @@ fn cmd_gen_terra() {
         };
 
         for output in &outputs {
-            write_stack_units(root, std::slice::from_ref(output));
+            write_plan_units(root, std::slice::from_ref(output));
             println!("wrote .ground/terra/{}", output.file);
+        }
+    });
+}
+
+fn cmd_plan_ls() {
+    with_project_root(|root| {
+        let res = do_compile(root, true);
+        for def in &res.defs {
+            println!("{}", def.name);
         }
     });
 }
@@ -482,6 +596,56 @@ fn run_events(rx: std::sync::mpsc::Receiver<RunEvent<OpsEvent>>, enricher: &mut 
     ok
 }
 
+fn run_init_if_needed(
+    dir: &Path,
+    plan_name: &str,
+    provider: &str,
+    verbose: bool,
+) {
+    use ground_be_terra::terra_ops;
+
+    let init = terra_ops::init_if_needed(dir);
+    let Some(rx) = (match init {
+        Ok(rx) => rx,
+        Err(terra_ops::OpsError::Other(msg)) if msg == "state migration required" => {
+            let backend = read_backend_summary(dir);
+            eprintln!("error: plan '{plan_name}' requires Terraform state migration");
+            eprintln!();
+            eprintln!("reason:");
+            eprintln!("- this plan was previously initialized with local state");
+            eprintln!("- it now has a remote backend configured");
+            eprintln!();
+            eprintln!("migration candidate:");
+            eprintln!("- plan: {plan_name}");
+            if let Some((bucket, key, region)) = backend {
+                eprintln!("- bucket: {bucket}");
+                eprintln!("- key: {key}");
+                eprintln!("- region: {region}");
+            }
+            eprintln!();
+            eprintln!("`ground tf migrate` will:");
+            eprintln!("- ask for confirmation");
+            eprintln!("- run `terraform init -migrate-state`");
+            eprintln!("- move local state into the remote backend");
+            eprintln!();
+            eprintln!("`ground tf migrate` will not apply infrastructure changes.");
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }) else {
+        return;
+    };
+
+    let mut enricher = TerraEnricher::new(plan_name.to_string(), Op::Init, provider.to_string(), String::new(), vec![], verbose);
+    if !run_events(rx, &mut enricher) {
+        eprintln!("error: terraform init failed");
+        process::exit(1);
+    }
+}
+
 fn fmt_attr_val(val: &AttrVal) -> String {
     match val {
         AttrVal::Scalar(s)   => s.clone(),
@@ -552,7 +716,7 @@ fn display_resource_attrs(change: &terra_ops::ResourceChange) {
 fn display_plan_summary(
     summary:    &ground_be_terra::terra_ops::PlanSummary,
     res:        &CompileRes,
-    stack_name: &str,
+    plan_name:  &str,
     provider:   &str,
     verbose:    bool,
 ) {
@@ -568,7 +732,7 @@ fn display_plan_summary(
                 return label.clone();
             }
         }
-        format!("stack:{stack_name}")
+        format!("plan:{plan_name}")
     };
 
     // Group by ground entity name
@@ -578,7 +742,7 @@ fn display_plan_summary(
     }
 
     println!();
-    println!("{BOLD}stack {stack_name}{RESET} {DIM}→ {provider}{RESET}");
+    println!("{BOLD}plan {plan_name}{RESET} {DIM}→ {provider}{RESET}");
     println!();
 
     if groups.is_empty() {
@@ -601,29 +765,22 @@ fn display_plan_summary(
     println!();
 }
 
-fn cmd_apply(verbose: bool) {
+fn cmd_apply(plan_name: &str, verbose: bool) {
     use ground_be_terra::terra_ops;
 
     with_project_root(|root| {
-        let (res, outputs, stack_name) = compile_and_gen(root);
+        let (res, outputs, plan_name) = compile_and_gen(root, plan_name);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
 
-        write_stack_units(root, &outputs);
+        write_plan_units(root, &outputs);
 
-        let dir = root.join(".ground/terra").join(&stack_name);
-
-        let rx = terra_ops::init(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
-        if !run_events(rx, &mut enricher) {
-            eprintln!("error: terraform init failed");
-            process::exit(1);
-        }
+        let dir = root.join(".ground/terra").join(&plan_name);
+        run_init_if_needed(&dir, &plan_name, &provider, verbose);
 
         let rx = terra_ops::apply(&dir)
             .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Apply, provider.clone(), String::new(), lookup, verbose);
+        let mut enricher = TerraEnricher::new(plan_name.clone(), Op::Apply, provider.clone(), String::new(), lookup, verbose);
         if !run_events(rx, &mut enricher) {
             eprintln!("error: terraform apply failed");
             process::exit(1);
@@ -631,29 +788,22 @@ fn cmd_apply(verbose: bool) {
     });
 }
 
-fn cmd_plan(verbose: bool) {
+fn cmd_plan(plan_name: &str, verbose: bool) {
     use ground_be_terra::terra_ops;
 
     with_project_root(|root| {
-        let (res, outputs, stack_name) = compile_and_gen(root);
+        let (res, outputs, plan_name) = compile_and_gen(root, plan_name);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
 
-        write_stack_units(root, &outputs);
+        write_plan_units(root, &outputs);
 
-        let dir = root.join(".ground/terra").join(&stack_name);
-
-        let rx = terra_ops::init(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Init, provider.clone(), String::new(), vec![], verbose);
-        if !run_events(rx, &mut enricher) {
-            eprintln!("error: terraform init failed");
-            process::exit(1);
-        }
+        let dir = root.join(".ground/terra").join(&plan_name);
+        run_init_if_needed(&dir, &plan_name, &provider, verbose);
 
         let rx = terra_ops::plan(&dir)
             .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(stack_name.clone(), Op::Plan, provider.clone(), String::new(), lookup, verbose);
+        let mut enricher = TerraEnricher::new(plan_name.clone(), Op::Plan, provider.clone(), String::new(), lookup, verbose);
 
         for event in rx {
             match event {
@@ -662,7 +812,7 @@ fn cmd_plan(verbose: bool) {
                     process::exit(1);
                 }
                 RunEvent::Line(OpsEvent::PlanReady { summary }) => {
-                    display_plan_summary(&summary, &res, &stack_name, &provider, verbose);
+                    display_plan_summary(&summary, &res, &plan_name, &provider, verbose);
                 }
                 other => {
                     for d in enricher.enrich(&other) { render(&d); }

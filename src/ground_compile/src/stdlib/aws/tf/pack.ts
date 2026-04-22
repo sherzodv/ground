@@ -11,6 +11,7 @@ interface StdObserve {
 interface StdService {
   _name: string;
   port?: ServicePortName;
+  image?: string;
   access?: unknown[];
   observe?: StdObserve;
 }
@@ -32,6 +33,19 @@ interface StdSecret {
 
 interface StdProject {
   _name: string;
+}
+
+interface PlatformNetworkZone {
+  private?: string;
+  public?: string;
+}
+
+interface PlatformNetwork {
+  _name: string;
+  cidr?: string;
+  dns?: boolean;
+  egress?: "none" | "shared" | "zone";
+  zones?: PlatformNetworkZone[];
 }
 
 interface StdServiceDefaults {
@@ -70,16 +84,25 @@ interface StdDatabaseConfig {
 }
 
 interface AwsDeployI {
-  prefix?: string;
+  project?: StdProject;
   region?: string[];
-  state_backend?: BackendS3;
   pool?: StdComputePool;
   service_overrides?: StdServiceConfig[];
   database_overrides?: StdDatabaseConfig[];
 }
 
+interface AwsNetworkI {
+  project?: StdProject;
+  cidr?: string;
+  dns?: boolean;
+  egress?: "none" | "shared" | "zone";
+  zones?: PlatformNetworkZone[];
+  region?: string[];
+}
+
 interface AwsStateI {
   project?: StdProject;
+  state?: "local" | "remote";
   region?: string[];
   encrypted?: boolean;
 }
@@ -98,10 +121,10 @@ interface StateRoot {
 }
 
 interface AwsStateO {
-  kind: "state";
+  kind: "state_store";
   provider_region: string;
   root: StateRoot;
-  backend: BackendS3;
+  backend?: BackendS3;
 }
 
 interface ResolvedServiceConfig {
@@ -128,6 +151,17 @@ interface DeployRoot {
   nat_name: string;
 }
 
+interface NetworkRoot {
+  vpc_key: string;
+  vpc_name: string;
+  cidr_block: string;
+  enable_dns_support: boolean;
+  enable_dns_hostnames: boolean;
+  gw_key: string;
+  gw_name: string;
+  has_internet_gateway: boolean;
+}
+
 interface DeployZoneBase {
   n: string;
   az: string;
@@ -148,8 +182,35 @@ interface DeployZone extends DeployZoneBase {
   rprv_default_key: string;
 }
 
+interface NetworkZone {
+  n: string;
+  az: string;
+  private_cidr: string;
+  public_cidr?: string;
+  pub_key: string;
+  pub_name: string;
+  priv_key: string;
+  priv_name: string;
+  rpub_key: string;
+  rpub_name: string;
+  rprv_key: string;
+  rprv_name: string;
+  rpub_default_key: string;
+  rprv_default_key: string;
+  private_nat_key?: string;
+}
+
+interface NetworkNat {
+  n: string;
+  nat_key: string;
+  nat_name: string;
+  eip_key: string;
+  public_subnet_key: string;
+}
+
 interface DeployService {
   name: string;
+  image: string;
   port: number;
   port_name: ServicePortName;
   cpu: number;
@@ -240,6 +301,15 @@ interface AwsDeployO {
   service_secret_accesses: ServiceSecretAccess[];
 }
 
+interface AwsNetworkO {
+  kind: "network";
+  provider_region: string;
+  backend?: BackendS3;
+  root: NetworkRoot;
+  zones: NetworkZone[];
+  nat_gateways: NetworkNat[];
+}
+
 type AccessTarget =
   | { kind: "service"; service_name: string; port_name?: ServicePortName }
   | { kind: "database"; database_name: string }
@@ -253,6 +323,12 @@ function asObject(v: unknown): Record<string, unknown> | null {
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+function defName(v: unknown): string {
+  const obj = asObject(v);
+  if (!obj) return "";
+  return String(asString(obj._name) || asString(obj.name) || "").trim();
 }
 
 function sanitizeKey(raw: string): string {
@@ -568,11 +644,12 @@ function mergeDatabaseConfigs(
   });
 }
 
-function stateBackend(projectName: string, regionPrefix: string, encrypted: boolean): BackendS3 {
+function stateBackend(projectName: string, stateName: string, regionPrefix: string, encrypted: boolean): BackendS3 {
   const stem = sanitizeBucketName(projectName);
+  const keyStem = sanitizeKey(stateName).toLowerCase() || "terraform";
   return {
     bucket: `${stem}-tfstate`,
-    key: `${stem}/terraform.tfstate`,
+    key: `${stem}/${keyStem}.tfstate`,
     region: toAwsRegion(regionPrefix),
     encrypt: encrypted,
     use_lockfile: true,
@@ -583,21 +660,117 @@ function make_aws_state(input: AwsStateI): AwsStateO | {} {
   const first = firstRegion(input);
   if (!first) return {};
 
-  const projectName = String(input.project?._name || "").trim();
+  const projectName = defName(input.project);
   if (!projectName) return {};
 
   const regionPrefix = first.split(":", 1)[0];
-  const backend = stateBackend(projectName, regionPrefix, input.encrypted !== false);
+  const backend = input.state === "remote"
+    ? stateBackend(projectName, "terraform", regionPrefix, input.encrypted !== false)
+    : undefined;
   const rootKeyStem = sanitizeKey(projectName) || "ground_state";
 
   return {
-    kind: "state",
-    provider_region: backend.region,
+    kind: "state_store",
+    provider_region: backend?.region || toAwsRegion(regionPrefix),
     root: {
       bucket_key: `${rootKeyStem}_tfstate`,
-      bucket_name: backend.bucket,
+      bucket_name: backend?.bucket || `${sanitizeBucketName(projectName)}-tfstate`,
     },
     backend,
+  };
+}
+
+function make_aws_network(input: AwsNetworkI): AwsNetworkO | {} {
+  const first = firstRegion(input);
+  if (!first) return {};
+
+  const projectName = defName(input.project);
+  const networkName = "network";
+  if (!projectName) return {};
+
+  const zonesInput = Array.isArray(input.zones) ? input.zones : [];
+  const region = Array.isArray(input.region) ? input.region : [];
+  if (region.length === 0) return {};
+
+  const egress = input.egress || "none";
+
+  const regionPrefix = first.split(":", 1)[0];
+  const projectKey = sanitizeKey(projectName);
+  const networkKey = sanitizeKey(networkName);
+  const stem = `${projectKey}_${networkKey}`;
+  const nameStem = `${projectName}-${networkName}`;
+
+  const zones: NetworkZone[] = region.map((raw, idx) => {
+    const parsed = parseZone(raw);
+    const zoneInput = zonesInput[idx] || {};
+    const n = parsed.n;
+    const privateCidr = asString(zoneInput.private)?.trim() || parsed.private_cidr;
+    const publicCidr = egress === "none"
+      ? undefined
+      : asString(zoneInput.public)?.trim() || parsed.public_cidr;
+    return {
+      n,
+      az: parsed.az,
+      private_cidr: privateCidr,
+      public_cidr: publicCidr,
+      pub_key: `${stem}_npub_${n}`,
+      pub_name: `${nameStem}-npub-${n}`,
+      priv_key: `${stem}_nprv_${n}`,
+      priv_name: `${nameStem}-nprv-${n}`,
+      rpub_key: `${stem}_rpub_${n}`,
+      rpub_name: `${nameStem}-rpub-${n}`,
+      rprv_key: `${stem}_rprv_${n}`,
+      rprv_name: `${nameStem}-rprv-${n}`,
+      rpub_default_key: `${stem}_rpub_${n}_default`,
+      rprv_default_key: `${stem}_rprv_${n}_default`,
+    };
+  });
+
+  const natGateways: NetworkNat[] =
+    egress === "none"
+      ? []
+      : egress === "shared"
+        ? [{
+            n: zones[0].n,
+            nat_key: `${stem}_nat`,
+            nat_name: `${nameStem}-nat`,
+            eip_key: `${stem}_nat_eip`,
+            public_subnet_key: zones[0].pub_key,
+          }]
+        : zones.map((zone) => ({
+            n: zone.n,
+            nat_key: `${stem}_nat_${zone.n}`,
+            nat_name: `${nameStem}-nat-${zone.n}`,
+            eip_key: `${stem}_nat_eip_${zone.n}`,
+            public_subnet_key: zone.pub_key,
+          }));
+
+  if (egress === "shared") {
+    for (const zone of zones) {
+      zone.private_nat_key = natGateways[0]?.nat_key;
+    }
+  } else if (egress === "zone") {
+    for (const zone of zones) {
+      zone.private_nat_key = `${stem}_nat_${zone.n}`;
+    }
+  }
+
+  return {
+    kind: "network",
+    provider_region: toAwsRegion(regionPrefix),
+    backend: stateBackend(projectName, networkName, regionPrefix, true),
+    root: {
+      vpc_key: `${stem}_vpc`,
+      vpc_name: `${nameStem}-vpc`,
+      cidr_block: asString(input.cidr)?.trim() || "10.0.0.0/16",
+      enable_dns_support: input.dns !== false,
+      enable_dns_hostnames: input.dns !== false,
+      gw_key: `${stem}_gw`,
+      gw_name: `${nameStem}-gw`,
+      has_internet_gateway: egress !== "none",
+    },
+    zones,
+    nat_gateways,
   };
 }
 
@@ -605,17 +778,16 @@ function make_aws_deploy(input: AwsDeployI): AwsDeployO | {} {
   const region = Array.isArray(input.region) ? input.region : [];
   const first = firstRegion(input);
   if (!first) return {};
+  const projectName = defName(input.project);
+  if (!projectName) return {};
 
   const regionPrefix = first.split(":", 1)[0];
-  const alias = input.pool?._name || "deploy";
-  const prefix = String(input.prefix || "");
+  const alias = defName(input.pool) || "deploy";
   const aliasKey = sanitizeKey(alias);
-  const prefixKey = sanitizeKey(prefix);
-  const stem = `${prefixKey}${aliasKey}`;
-  const nameStem = `${prefix}${alias}`;
-  const backend = input.state_backend && input.state_backend.bucket && input.state_backend.key && input.state_backend.region
-    ? input.state_backend
-    : undefined;
+  const projectKey = sanitizeKey(projectName);
+  const stem = `${projectKey}_${aliasKey}`;
+  const nameStem = `${projectName}-${alias}`;
+  const backend = stateBackend(projectName, alias, regionPrefix, true);
 
   const serviceConfigs = mergeServiceConfigs(
     input.pool,
@@ -632,6 +804,7 @@ function make_aws_deploy(input: AwsDeployI): AwsDeployO | {} {
       const svcKey = sanitizeKey(svc._name);
       return {
         name: svc._name,
+        image: svc.image || "public.ecr.aws/docker/library/nginx:stable",
         port: servicePortNumber(svc.port),
         port_name: svc.port || "http",
         cpu: serviceCpu(cfg.size),

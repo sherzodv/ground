@@ -31,6 +31,7 @@ observe = {
 # Optional qualifiers like `(port)` and `(access)` carry edge-specific meaning.
 service = {
   port = grpc | http
+  image = reference
   access = [ service:(port) | database | bucket:(access) | secret ]
   observe = observe
 }
@@ -74,7 +75,7 @@ compute_pool = {
 }
 
 deploy = {
-  prefix = string
+  project = project
   pool = compute_pool
   region = [ string ]
   service_overrides = [ service_config ]

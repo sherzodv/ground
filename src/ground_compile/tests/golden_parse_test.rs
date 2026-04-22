@@ -298,6 +298,34 @@ fn alias_001() {
 }
 
 #[test]
+fn alias_001a() {
+    assert_eq!(
+        show("addr = ipv4"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[addr, _, unit, Primitive(ipv4)],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn alias_001b() {
+    assert_eq!(
+        show("net = ipv4net"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[net, _, unit, Primitive(ipv4net)],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn alias_002() {
     assert_eq!(
         show("engine = postgresql"),

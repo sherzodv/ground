@@ -89,7 +89,7 @@ pub struct IrScope {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrPrimitive { String, Integer, Boolean, Reference }
+pub enum IrPrimitive { String, Integer, Boolean, Reference, Ipv4, Ipv4Net }
 
 /// What a named type IS.
 #[derive(Debug, Clone)]
