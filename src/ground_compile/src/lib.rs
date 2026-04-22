@@ -10,31 +10,6 @@ pub use asm::{AsmDef, AsmField, AsmValue, AsmVariant, AsmDefRef, asm_value_to_js
 pub use fmt::format_source;
 
 // ---------------------------------------------------------------------------
-// Embedded stdlib
-// ---------------------------------------------------------------------------
-
-const STD_GRD:               &str = include_str!("stdlib/std.grd");
-const STD_PLATFORM_PACK_GRD: &str = include_str!("stdlib/platform/pack.grd");
-const STD_PLATFORM_PACK_TS:  &str = include_str!("stdlib/platform/pack.ts");
-const STD_TF_PACK_GRD:       &str = include_str!("stdlib/tf/pack.grd");
-const STD_TF_PACK_TS:        &str = include_str!("stdlib/tf/pack.ts");
-const STD_AWS_TF_PACK_GRD:   &str = include_str!("stdlib/aws/tf/pack.grd");
-const STD_AWS_TF_PACK_TS:    &str = include_str!("stdlib/aws/tf/pack.ts");
-
-/// Number of units prepended by the compiler as stdlib.
-/// Callers can use this to offset unit indices in error locations.
-pub const STDLIB_UNIT_COUNT: usize = 4;
-
-fn make_stdlib_parse_units() -> Vec<ast::ParseUnit> {
-    vec![
-        ast::ParseUnit { name: "std".into(),       path: vec![],                                          src: STD_GRD.into(),                  ts_src: None },
-        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "platform".into()],          src: STD_PLATFORM_PACK_GRD.into(),    ts_src: Some(STD_PLATFORM_PACK_TS.into()) },
-        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "tf".into()],                src: STD_TF_PACK_GRD.into(),          ts_src: Some(STD_TF_PACK_TS.into()) },
-        ast::ParseUnit { name: "".into(),           path: vec!["std".into(), "aws".into(), "tf".into()], src: STD_AWS_TF_PACK_GRD.into(),      ts_src: Some(STD_AWS_TF_PACK_TS.into()) },
-    ]
-}
-
-// ---------------------------------------------------------------------------
 // Public input shapes
 // ---------------------------------------------------------------------------
 
@@ -108,11 +83,9 @@ struct Prepared {
 }
 
 fn prepare(req: CompileReq) -> Prepared {
-    // Prepend stdlib units before user units, carrying ts_src with each unit.
-    let mut units: Vec<ast::ParseUnit> = make_stdlib_parse_units();
-    units.extend(req.units.into_iter().map(|u| ast::ParseUnit {
+    let units: Vec<ast::ParseUnit> = req.units.into_iter().map(|u| ast::ParseUnit {
         name: u.name, path: u.path, src: u.src, ts_src: u.ts_src,
-    }));
+    }).collect();
 
     let type_unit_files: Vec<String> = units.iter()
         .map(|u| type_unit_file(&u.path, &u.name))
@@ -123,23 +96,8 @@ fn prepare(req: CompileReq) -> Prepared {
 
     let parse_req = ast::ParseReq { units };
 
-    // Collect TS source blobs — stdlib and user are kept separate.
-    // Stdlib TS is trusted internal code; only user TS is type-checked.
-    let stdlib_ts: String = parse_req.units.iter()
-        .take(STDLIB_UNIT_COUNT)
-        .filter_map(|u| u.ts_src.as_deref())
-        .collect::<Vec<_>>()
-        .join("\n\n");
     let user_ts: String = parse_req.units.iter()
-        .skip(STDLIB_UNIT_COUNT)
         .filter_map(|u| u.ts_src.as_deref())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    // Full blob used for execution (stdlib + user, no generated declarations needed at runtime).
-    let ts_src: String = [stdlib_ts.as_str(), user_ts.as_str()]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
         .collect::<Vec<_>>()
         .join("\n\n");
 
@@ -179,8 +137,6 @@ fn prepare(req: CompileReq) -> Prepared {
         format!("{user_ts}\n{tc_assertions}")
     };
 
-    // Type-check user TypeScript against the generated declarations.
-    // Only user TS is checked — stdlib is trusted internal code.
     if !user_ts.is_empty() {
         match ground_ts::typecheck::typecheck(&generated_dts, &user_ts_for_check) {
             Ok(diags) => {
@@ -206,9 +162,9 @@ fn prepare(req: CompileReq) -> Prepared {
     }
 
     let full_ts = if generated_dts.is_empty() {
-        ts_src
+        user_ts
     } else {
-        format!("{}\n\n{}", generated_dts, ts_src)
+        format!("{}\n\n{}", generated_dts, user_ts)
     };
 
     Prepared { parse_res, ir, type_units, errors, full_ts }

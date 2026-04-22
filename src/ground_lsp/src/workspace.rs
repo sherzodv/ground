@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use ground_compile::{
-    analyze, AnalysisRes, CompileError, CompileReq, ErrorLoc, Unit, STDLIB_UNIT_COUNT,
+    analyze, AnalysisRes, CompileError, CompileReq, ErrorLoc, Unit,
     ir::{DefId, IrLoc, IrPrimitive, IrRes, IrShapeBody, ScopeId},
 };
 use serde_json::{json, Value};
@@ -75,7 +75,7 @@ impl Workspace {
         let mut ts_scope_to_uri = HashMap::new();
         let mut ts_functions_by_uri = HashMap::new();
         for (i, file) in files.iter().enumerate() {
-            let scope_id = res.parse.unit_scope_ids.get(STDLIB_UNIT_COUNT + i).copied();
+            let scope_id = res.parse.unit_scope_ids.get(i).copied();
             if let Some(scope_id) = scope_id {
                 ts_scope_to_uri.insert(scope_id.0, file.ts_uri.clone());
             }
@@ -123,7 +123,7 @@ impl Workspace {
         let analysis = self.analysis.as_ref()?;
         for (i, file) in analysis.files.iter().enumerate() {
             if file.uri == uri || file.ts_uri == uri {
-                let scope = analysis.res.parse.unit_scope_ids.get(STDLIB_UNIT_COUNT + i).copied()?;
+                let scope = analysis.res.parse.unit_scope_ids.get(i).copied()?;
                 return Some((analysis, ScopeId(scope.0)));
             }
         }
@@ -134,7 +134,7 @@ impl Workspace {
         let analysis = self.analysis.as_ref()?;
         for (i, file) in analysis.files.iter().enumerate() {
             if file.uri == uri || file.ts_uri == uri {
-                let unit = (STDLIB_UNIT_COUNT + i) as u32;
+                let unit = i as u32;
                 let scope = analysis.res.parse.unit_scope_ids.get(unit as usize).copied()?;
                 return Some((analysis, ScopeId(scope.0), unit));
             }
@@ -419,20 +419,13 @@ fn location_from_scope(analysis: &WorkspaceAnalysis, scope: ScopeId) -> Option<V
 }
 
 pub fn location_uri_for_loc(analysis: &WorkspaceAnalysis, loc: IrLoc) -> Option<String> {
-    let idx = loc.unit as usize;
-    if idx < STDLIB_UNIT_COUNT {
-        return None;
-    }
-    let file = analysis.files.get(idx - STDLIB_UNIT_COUNT)?;
+    let file = analysis.files.get(loc.unit as usize)?;
     Some(file.uri.clone())
 }
 
 fn error_uri(analysis: &WorkspaceAnalysis, loc: Option<&ErrorLoc>) -> Option<String> {
     let loc = loc?;
-    if (loc.unit as usize) < STDLIB_UNIT_COUNT {
-        return None;
-    }
-    Some(analysis.files.get(loc.unit as usize - STDLIB_UNIT_COUNT)?.uri.clone())
+    Some(analysis.files.get(loc.unit as usize)?.uri.clone())
 }
 
 fn text_for_analysis_uri<'a>(analysis: &'a WorkspaceAnalysis, uri: &str) -> Option<&'a str> {

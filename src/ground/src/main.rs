@@ -3,7 +3,7 @@ mod ops_display;
 use std::{env, fs, io, path::{Path, PathBuf}, process};
 
 use ground_be_terra::JsonUnit;
-use ground_compile::{compile, format_source, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit, STDLIB_UNIT_COUNT};
+use ground_compile::{compile, format_source, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit};
 use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ops_display::{Op, TerraEnricher};
@@ -274,15 +274,7 @@ fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
         process::exit(1);
     }
 
-    // stdlib units are prepended by compile(); their display names must come first.
-    let mut unit_names: Vec<String> = vec![
-        "<std>".into(),
-        "<std:platform>".into(),
-        "<std:tf>".into(),
-        "<std:aws:tf>".into(),
-    ];
-    debug_assert_eq!(unit_names.len(), STDLIB_UNIT_COUNT);
-    unit_names.extend(units.iter().map(|u| u.name.clone()));
+    let unit_names: Vec<String> = units.iter().map(|u| u.name.clone()).collect();
 
     let res = compile(CompileReq { units });
 

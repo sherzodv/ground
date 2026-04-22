@@ -1,11 +1,11 @@
-Ground is an architecture definition language. Infrastructure is derived.
+Ground is a systems design language. Infrastructure is derived.
 
 ## Agents
 
 ### Ground Compiler
 
 **Tassadar** (Ground Compiler Orchestrator) — coordinates compiler sub-agents; owns the overall compilation pipeline and cross-cutting concerns:
-- Root: `src/ground_compile/` (`lib.rs`, `resolve.rs`, `stdlib/`)
+- Root: `src/ground_compile/` (`lib.rs`, `resolve.rs`)
 - Delegates parser/IR/asm questions to sub-agents below
 - Ask: anything spanning multiple compiler stages, or when you're unsure which stage owns an issue
 
@@ -54,7 +54,7 @@ Ground is an architecture definition language. Infrastructure is derived.
 1. **Read first.** Explore relevant code before asking anything.
 2. **Consult agents early, not late.** Ask before implementing, not after.
 3. **Implement autonomously.** Once direction is clear, write the code — no need to check in mid-task.
-4. **One consultation round per feature.** Don't loop zealots repeatedly on the same task.
+4. **One consultation round per feature.** Don't loop agents repeatedly on the same task.
 
 ## Agent coordination rules
 
@@ -76,17 +76,5 @@ Ground is an architecture definition language. Infrastructure is derived.
 - Do not do any infra writing operations, ask user instead
 - Do not do assumptions always clarify requirements with a user
 - For any big changes: first show what are you going to do and only do after user confirmation.
-
-## Process
-
-The **devspec** folder is historical, do not treat it as a source of truth. RFCs in it do not reflect the current state but rather design choices of the past.
-
-The RFC process can be requested by user:
-
-  - Feature is designed in a corresponding devspec/000x-rfc-feature.md: reqs, approach, architecture, tech reqs, libs etc.
-  - Be concise and technical, no story telling
-  - Discuss and iterate with user on the rfc
-  - After rfc is confirmed as finished by the user, create a corresponding devspec/000x-pln-feature.md with implementation plan
-  - Iterate with user on the implementation plan
-  - After user confirms the plan proceed with the implementation
+- The **devspec** folder is historical, do not use it.
 
