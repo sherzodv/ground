@@ -48,6 +48,10 @@ pub fn show_field_type(lt: &IrFieldType, ir: &IrRes) -> String {
                 .collect();
             format!("List[{}]", parts.join(" | "))
         }
+        IrFieldType::Tuple(items) => {
+            let parts: Vec<_> = items.iter().map(|item| show_field_type(item, ir)).collect();
+            format!("Tuple[{}]", parts.join(" -> "))
+        }
         IrFieldType::Optional(inner) => format!("Optional[{}]", show_field_type(inner, ir)),
     }
 }
@@ -71,6 +75,7 @@ fn show_field_type_seg(seg: &IrRefSeg, ir: &IrRes) -> String {
                 IrShapeBody::Unit => "Unit",
                 IrShapeBody::Enum(_) => "Enum",
                 IrShapeBody::Struct(_) => "Struct",
+                IrShapeBody::Tuple(_) => "Tuple",
                 IrShapeBody::Primitive(_) => "Prim",
             };
             format!("{}(Shape#{})", kind, tid.0)
@@ -118,6 +123,10 @@ pub fn show_type_body(body: &IrShapeBody, ir: &IrRes) -> String {
                 .collect();
             format!("Struct[{}]", parts.join(", "))
         }
+        IrShapeBody::Tuple(items) => {
+            let parts: Vec<_> = items.iter().map(|item| show_field_type(item, ir)).collect();
+            format!("Tuple[{}]", parts.join(" -> "))
+        }
     }
 }
 
@@ -164,6 +173,10 @@ pub fn show_value(v: &IrValue, ir: &IrRes) -> String {
         IrValue::List(items) => {
             let parts: Vec<_> = items.iter().map(|v| show_value(v, ir)).collect();
             format!("List[{}]", parts.join(", "))
+        }
+        IrValue::Tuple(items) => {
+            let parts: Vec<_> = items.iter().map(|v| show_value(v, ir)).collect();
+            format!("Tuple[{}]", parts.join(" -> "))
         }
     }
 }

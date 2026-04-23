@@ -366,6 +366,11 @@ fn collect_type_tokens(
             }
         }
         AstTypeExpr::List(inner) => collect_type_tokens(&inner.inner, unit, src, ir, scope, out),
+        AstTypeExpr::Tuple(items) => {
+            for item in items {
+                collect_type_tokens(&item.inner, unit, src, ir, scope, out);
+            }
+        }
         AstTypeExpr::Optional(inner) => {
             collect_type_tokens(&inner.inner, unit, src, ir, scope, out)
         }
@@ -412,6 +417,11 @@ fn collect_value_tokens(
         AstValue::Str(_) => {}
         AstValue::Ref(r) => collect_ref_tokens(r, RefContext::Value, unit, src, ir, scope, out),
         AstValue::List(items) => {
+            for item in items {
+                collect_value_tokens(&item.inner, unit, src, ir, scope, out);
+            }
+        }
+        AstValue::Tuple(items) => {
             for item in items {
                 collect_value_tokens(&item.inner, unit, src, ir, scope, out);
             }

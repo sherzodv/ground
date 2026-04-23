@@ -109,6 +109,7 @@ pub enum IrShapeBody {
     Primitive(IrPrimitive),
     Enum(Vec<IrRef>), // variant refs, order preserved; plain atom → Plain seg, typed → Shape seg
     Struct(Vec<IrStructFieldDef>), // ordered fields owned by the shape
+    Tuple(Vec<IrFieldType>),
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +130,7 @@ pub enum IrFieldType {
     Primitive(IrPrimitive),
     Ref(IrRef),       // resolved type ref: single type, enum, or typed path
     List(Vec<IrRef>), // [ type1:(opt) | type2 ] — one IrRef per element pattern
+    Tuple(Vec<IrFieldType>),
     Optional(Box<IrFieldType>),
 }
 
@@ -152,6 +154,7 @@ pub enum IrValue {
     Inst(DefId),
     Path(Vec<IrValue>), // multi-segment typed path
     List(Vec<IrValue>), // list of validated values
+    Tuple(Vec<IrValue>),
 }
 
 // ---------------------------------------------------------------------------

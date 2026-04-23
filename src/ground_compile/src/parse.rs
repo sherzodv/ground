@@ -156,8 +156,22 @@ impl<'a> Parser<'a> {
         if !is_ref_char(first) {
             return None;
         }
-        let len = rest.chars().take_while(|&c| is_ref_char(c)).count();
-        self.advance(len);
+        let chars: Vec<char> = rest.chars().collect();
+        let mut len = 0usize;
+        while len < chars.len() {
+            let c = chars[len];
+            if !is_ref_char(c) {
+                break;
+            }
+            if c == '-' && chars.get(len + 1) == Some(&'>') {
+                break;
+            }
+            len += 1;
+        }
+        if len == 0 {
+            return None;
+        }
+        self.advance(chars[..len].iter().map(|c| c.len_utf8()).sum());
         Some(self.src[atom_start..self.pos].to_string())
     }
 
@@ -279,7 +293,7 @@ impl<'a> Parser<'a> {
     /// `type-def | "[" type-expr "]" | ref ("|" ref)*`
     ///
     /// Always returns a pure type expression; a union of refs desugars to `Enum`.
-    fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
+    fn parse_base_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
         let start = self.pos;
 
         // Optional type: "( type-expr )"
@@ -350,6 +364,35 @@ impl<'a> Parser<'a> {
         } else {
             Some(self.node(start, AstTypeExpr::Enum(refs)))
         }
+    }
+
+    fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
+        let start = self.pos;
+        let first = self.parse_base_type_expr()?;
+        let mut items = vec![first];
+
+        loop {
+            let saved = self.pos;
+            self.skip_ws();
+            if !self.eat("->") {
+                self.pos = saved;
+                break;
+            }
+            self.skip_ws();
+            let Some(next) = self.parse_base_type_expr() else {
+                self.pos = saved;
+                break;
+            };
+            items.push(next);
+        }
+
+        if items.len() == 1 {
+            return Some(items.remove(0));
+        }
+        if items.len() > 5 {
+            self.push_error(start, "tuple type may contain at most 5 items");
+        }
+        Some(self.node(start, AstTypeExpr::Tuple(items)))
     }
 
     fn parse_struct_item(&mut self) -> Option<AstNode<AstStructItem>> {
@@ -475,7 +518,7 @@ impl<'a> Parser<'a> {
     /// Ref is tried before bare struct so that `{this:name}-sg` is parsed as a
     /// brace-group ref rather than a struct body.  A bare `{` that fails the ref
     /// parse (e.g. `{ field: value }`) falls through to the struct branch.
-    fn parse_inst_value(&mut self) -> Option<AstNode<AstValue>> {
+    fn parse_base_inst_value(&mut self) -> Option<AstNode<AstValue>> {
         let start = self.pos;
 
         if let Some(s) = self.parse_string_lit() {
@@ -563,6 +606,35 @@ impl<'a> Parser<'a> {
         }
 
         None
+    }
+
+    fn parse_inst_value(&mut self) -> Option<AstNode<AstValue>> {
+        let start = self.pos;
+        let first = self.parse_base_inst_value()?;
+        let mut items = vec![first];
+
+        loop {
+            let saved = self.pos;
+            self.skip_ws();
+            if !self.eat("->") {
+                self.pos = saved;
+                break;
+            }
+            self.skip_ws();
+            let Some(next) = self.parse_base_inst_value() else {
+                self.pos = saved;
+                break;
+            };
+            items.push(next);
+        }
+
+        if items.len() == 1 {
+            return Some(items.remove(0));
+        }
+        if items.len() > 5 {
+            self.push_error(start, "tuple value may contain at most 5 items");
+        }
+        Some(self.node(start, AstValue::Tuple(items)))
     }
 
     /// Try to parse `ident WS* ":" SP inst-value`.

@@ -249,6 +249,11 @@ fn collect_preferred_names_from_field_type(
                 collect_preferred_names_from_ref(r, ir, out, candidate);
             }
         }
+        IrFieldType::Tuple(items) => {
+            for item in items {
+                collect_preferred_names_from_field_type(item, ir, out, candidate);
+            }
+        }
         IrFieldType::Optional(inner) => {
             collect_preferred_names_from_field_type(inner, ir, out, candidate)
         }
@@ -289,6 +294,11 @@ fn collect_shapes_from_field_type(field_type: &IrFieldType, ir: &IrRes, out: &mu
                 collect_shapes_from_ref(r, ir, out);
             }
         }
+        IrFieldType::Tuple(items) => {
+            for item in items {
+                collect_shapes_from_field_type(item, ir, out);
+            }
+        }
         IrFieldType::Optional(inner) => collect_shapes_from_field_type(inner, ir, out),
     }
 }
@@ -305,6 +315,11 @@ fn collect_shapes_from_ref(r: &IrRef, ir: &IrRes, out: &mut BTreeSet<u32>) {
                     IrShapeBody::Enum(variants) => {
                         for variant in variants {
                             collect_shapes_from_ref(variant, ir, out);
+                        }
+                    }
+                    IrShapeBody::Tuple(items) => {
+                        for item in items {
+                            collect_shapes_from_field_type(item, ir, out);
                         }
                     }
                     _ => {}
@@ -330,6 +345,11 @@ fn gen_shape_decl(
             &shape_ts_name(tid, ir, preferred_names),
             fields,
             ir,
+        )),
+        IrShapeBody::Tuple(items) => Some(format!(
+            "type {} = {};",
+            shape_ts_name(tid, ir, preferred_names),
+            field_type_to_ts_with_names(&IrFieldType::Tuple(items.clone()), ir, preferred_names)
         )),
         IrShapeBody::Enum(variants) => {
             let variants = variants
@@ -381,6 +401,13 @@ fn field_type_to_ts_with_names(
                 item_types.join(" | ")
             };
             format!("({union})[]")
+        }
+        IrFieldType::Tuple(items) => {
+            let parts: Vec<_> = items
+                .iter()
+                .map(|item| field_type_to_ts_with_names(item, ir, preferred_names))
+                .collect();
+            format!("[{}]", parts.join(", "))
         }
         IrFieldType::Optional(inner) => field_type_to_ts_with_names(inner, ir, preferred_names),
     }

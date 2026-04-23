@@ -161,6 +161,8 @@ pub enum AstTypeExpr {
     Struct(Vec<AstNode<AstStructItem>>),
     /// List whose element type is described by the inner `AstTypeExpr`: `[ … ]`
     List(Box<AstNode<AstTypeExpr>>),
+    /// Fixed-length tuple: `a -> b` up to 5 items.
+    Tuple(Vec<AstNode<AstTypeExpr>>),
     /// Optional field type: `( type_expr )`
     Optional(Box<AstNode<AstTypeExpr>>),
 }
@@ -215,6 +217,7 @@ pub enum AstValue {
     /// Integers are left as single-segment refs; the resolve pass interprets them.
     Ref(AstRef),
     List(Vec<AstNode<AstValue>>),
+    Tuple(Vec<AstNode<AstValue>>),
     /// Inline struct literal: `{ field: value ... }`
     /// `type_hint` is present when written as `type:scaling { ... }`.
     Struct {

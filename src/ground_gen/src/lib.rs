@@ -1,5 +1,6 @@
 use serde_json::Value;
-use tera::Tera;
+use std::collections::{HashMap, HashSet};
+use tera::{Filter, Tera};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeraUnit {
@@ -42,6 +43,8 @@ impl std::error::Error for GenError {}
 
 pub fn render(req: &RenderReq, ctx: &Value) -> Result<Vec<JsonUnit>, GenError> {
     let mut tera = Tera::default();
+    tera.register_filter("skip", SkipFilter);
+    tera.register_filter("pick", PickFilter);
     tera.add_raw_templates(
         req.units
             .iter()
@@ -143,6 +146,67 @@ fn deep_merge(base: &mut Value, overlay: Value) {
         }
         (base, overlay) => *base = overlay,
     }
+}
+
+struct SkipFilter;
+struct PickFilter;
+
+impl Filter for SkipFilter {
+    fn filter(&self, value: &Value, args: &HashMap<String, Value>) -> tera::Result<Value> {
+        filter_fields(value, args, false)
+    }
+}
+
+impl Filter for PickFilter {
+    fn filter(&self, value: &Value, args: &HashMap<String, Value>) -> tera::Result<Value> {
+        filter_fields(value, args, true)
+    }
+}
+
+fn filter_fields(value: &Value, args: &HashMap<String, Value>, keep: bool) -> tera::Result<Value> {
+    let names = filter_names(args)?;
+    let names: HashSet<&str> = names.iter().map(String::as_str).collect();
+    let arr = field_array(value)?;
+    let out = arr
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("name").and_then(Value::as_str)?;
+            let contains = names.contains(name);
+            if contains == keep {
+                Some(item.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(Value::Array(out))
+}
+
+fn filter_names(args: &HashMap<String, Value>) -> tera::Result<Vec<String>> {
+    let Some(raw) = args.get("names") else {
+        return Err("missing filter arg `names`".into());
+    };
+    let Some(arr) = raw.as_array() else {
+        return Err("filter arg `names` must be an array of strings".into());
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let Some(name) = item.as_str() else {
+            return Err("filter arg `names` must be an array of strings".into());
+        };
+        out.push(name.to_string());
+    }
+    Ok(out)
+}
+
+fn field_array(value: &Value) -> tera::Result<&Vec<Value>> {
+    if let Some(arr) = value.as_array() {
+        return Ok(arr);
+    }
+    value
+        .get("as_arr")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "filter input must be a field array or object with `as_arr`".into())
 }
 
 #[cfg(test)]
@@ -249,10 +313,8 @@ region={{ deploy.region }}
 
         let out = render(&req, &json!({})).unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(
-            out[0].content,
-            "{\n  \"b\": 1,\n  \"a\": {\n    \"x\": true\n  }\n}"
-        );
+        let actual: Value = serde_json::from_str(&out[0].content).unwrap();
+        assert_eq!(actual, json!({ "b": 1, "a": { "x": true } }));
     }
 
     #[test]
@@ -276,5 +338,75 @@ region={{ deploy.region }}
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].file, "main.tf.json");
         assert_eq!(out[0].content, "{\n  \"ok\": true\n}");
+    }
+
+    #[test]
+    fn render_skip_filter_accepts_def_object() {
+        let req = RenderReq {
+            entry: "manifest.json.tera".into(),
+            units: vec![
+                TeraUnit {
+                    file: "manifest.json.tera".into(),
+                    template:
+                        r#"{ "files": [ { "file": "main.txt", "template": "main.txt.tera" } ] }"#
+                            .into(),
+                },
+                TeraUnit {
+                    file: "main.txt.tera".into(),
+                    template: r#"{% for field in deploy | skip(names=["vpc"]) -%}{{ field.name }}{% if not loop.last %},{% endif %}{%- endfor %}"#.into(),
+                },
+            ],
+            pretty_print: false,
+        };
+
+        let out = render(
+            &req,
+            &json!({
+                "deploy": {
+                    "name": "app",
+                    "as_arr": [
+                        { "name": "vpc", "value": "main" },
+                        { "name": "cidr_block", "value": "10.0.1.0/24" },
+                        { "name": "tags", "value": { "Name": "app" } }
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(out[0].content, "cidr_block,tags");
+    }
+
+    #[test]
+    fn render_pick_filter_accepts_array_input() {
+        let req = RenderReq {
+            entry: "manifest.json.tera".into(),
+            units: vec![
+                TeraUnit {
+                    file: "manifest.json.tera".into(),
+                    template:
+                        r#"{ "files": [ { "file": "main.txt", "template": "main.txt.tera" } ] }"#
+                            .into(),
+                },
+                TeraUnit {
+                    file: "main.txt.tera".into(),
+                    template: r#"{% for field in fields | pick(names=["tags"]) -%}{{ field.value.Name }}{%- endfor %}"#.into(),
+                },
+            ],
+            pretty_print: false,
+        };
+
+        let out = render(
+            &req,
+            &json!({
+                "fields": [
+                    { "name": "cidr_block", "value": "10.0.1.0/24" },
+                    { "name": "tags", "value": { "Name": "app" } }
+                ]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(out[0].content, "app");
     }
 }

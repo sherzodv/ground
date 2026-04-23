@@ -96,6 +96,42 @@ fn optional_001() {
     );
 }
 
+#[test]
+fn tuple_001() {
+    assert_eq!(
+        show(
+            r##"
+            pair = string -> integer
+            svc = { boo = pair }
+            plan api = svc { boo: "boo" -> 1 }
+        "##
+        ),
+        norm(
+            r##"
+            Def[api = svc { boo: Tuple[Str("boo") -> Int(1)] }]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn tuple_list_001() {
+    assert_eq!(
+        show(
+            r##"
+            pair = string -> integer
+            svc = { pairs = [ pair ] }
+            plan api = svc { pairs: [ "boo" -> 1  "foo" -> 2 ] }
+        "##
+        ),
+        norm(
+            r##"
+            Def[api = svc { pairs: List[Tuple[Str("boo") -> Int(1)], Tuple[Str("foo") -> Int(2)]] }]
+        "##
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Mapper
 // ---------------------------------------------------------------------------

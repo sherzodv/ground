@@ -44,6 +44,7 @@ pub enum AsmValue {
     Def(Box<AsmDef>),    // anonymous inline def (name == "_" in IrRes)
     Path(Vec<AsmValue>), // multi-segment typed path, e.g. Variant:Variant
     List(Vec<AsmValue>),
+    Tuple(Vec<AsmValue>),
 }
 
 #[derive(Debug, Clone)]
@@ -488,8 +489,10 @@ fn lower_value(v: &IrValue, ir: &IrRes) -> AsmValue {
         }
 
         IrValue::Path(segs) => AsmValue::Path(segs.iter().map(|s| lower_value(s, ir)).collect()),
-
         IrValue::List(items) => AsmValue::List(items.iter().map(|s| lower_value(s, ir)).collect()),
+        IrValue::Tuple(items) => {
+            AsmValue::Tuple(items.iter().map(|s| lower_value(s, ir)).collect())
+        }
     }
 }
 
@@ -547,6 +550,9 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
         }
 
         IrValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(|i| ir_value_to_json(i, ir)).collect())
+        }
+        IrValue::Tuple(items) => {
             serde_json::Value::Array(items.iter().map(|i| ir_value_to_json(i, ir)).collect())
         }
     }
@@ -687,6 +693,26 @@ fn ir_value_to_json_typed(
                 }
             }
         },
+        IrFieldType::Tuple(item_types) => match v {
+            IrValue::Tuple(items) => serde_json::Value::Array(
+                item_types
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item_type)| {
+                        items.get(idx).map_or(serde_json::Value::Null, |item| {
+                            ir_value_to_json_typed(item, item_type, ir, cache, false)
+                        })
+                    })
+                    .collect(),
+            ),
+            _ => {
+                if via {
+                    ir_value_to_json_via(v, ir, cache)
+                } else {
+                    ir_value_to_json(v, ir)
+                }
+            }
+        },
         IrFieldType::Optional(inner) => ir_value_to_json_typed(v, inner, ir, cache, via),
     }
 }
@@ -737,6 +763,9 @@ pub fn asm_value_to_json(v: &AsmValue) -> serde_json::Value {
             serde_json::Value::Array(segs.iter().map(asm_value_to_json).collect())
         }
         AsmValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(asm_value_to_json).collect())
+        }
+        AsmValue::Tuple(items) => {
             serde_json::Value::Array(items.iter().map(asm_value_to_json).collect())
         }
     }

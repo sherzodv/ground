@@ -1275,6 +1275,13 @@ fn resolve_type_body(body: &AstNode<AstTypeExpr>, ctx: &mut Ctx, scope: ScopeId)
 
         AstTypeExpr::Struct(items) => IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope)),
 
+        AstTypeExpr::Tuple(items) => IrShapeBody::Tuple(
+            items
+                .iter()
+                .map(|item| resolve_field_type(&item.inner, ctx, scope, &ir_loc(&item.loc)))
+                .collect(),
+        ),
+
         AstTypeExpr::Unit => IrShapeBody::Unit,
 
         AstTypeExpr::List(_) => {
@@ -1392,6 +1399,20 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
                     }]);
                 }
             }
+            if let AstTypeExpr::Tuple(items) = &inner.inner {
+                let tuple_items: Vec<IrFieldType> = items
+                    .iter()
+                    .map(|item| resolve_field_type(&item.inner, ctx, scope, &ir_loc(&item.loc)))
+                    .collect();
+                let tid =
+                    ctx.alloc_shape(None, scope, loc.clone(), IrShapeBody::Tuple(tuple_items));
+                return IrFieldType::List(vec![IrRef {
+                    segments: vec![IrRefSeg {
+                        value: IrRefSegValue::Shape(tid),
+                        is_opt: false,
+                    }],
+                }]);
+            }
             let is_single_ref = matches!(&inner.inner, AstTypeExpr::Ref(_));
             let elem_refs: Vec<AstRef> = match &inner.inner {
                 AstTypeExpr::Ref(r) => vec![r.clone()],
@@ -1436,6 +1457,13 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
             }
             IrFieldType::List(ir_refs)
         }
+
+        AstTypeExpr::Tuple(items) => IrFieldType::Tuple(
+            items
+                .iter()
+                .map(|item| resolve_field_type(&item.inner, ctx, scope, &ir_loc(&item.loc)))
+                .collect(),
+        ),
 
         AstTypeExpr::Struct(items) => {
             let body = IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope));
@@ -2192,6 +2220,13 @@ fn resolve_value(
         },
 
         IrFieldType::Ref(pattern) => {
+            if let Some(shape_id) = target_shape_from_ir_ref(pattern) {
+                if let Some(IrShapeBody::Tuple(items)) =
+                    ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
+                {
+                    return resolve_value(v, &IrFieldType::Tuple(items.clone()), ctx, scope, loc);
+                }
+            }
             // Inline struct literal `{ field: value ... }` — allocate an anonymous instance.
             if let AstValue::Struct {
                 type_hint,
@@ -2404,6 +2439,46 @@ fn resolve_value(
                 IrValue::List(vec![])
             }
         },
+        IrFieldType::Tuple(item_types) => match v {
+            AstValue::Tuple(items) => {
+                if items.len() != item_types.len() {
+                    ctx.errors.push(IrError {
+                        message: format!(
+                            "expected tuple of length {}, got {}",
+                            item_types.len(),
+                            items.len()
+                        ),
+                        loc: loc.clone(),
+                    });
+                }
+                let vals = item_types
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item_type)| {
+                        items.get(idx).map_or_else(
+                            || IrValue::Ref(String::new()),
+                            |item| {
+                                resolve_value(
+                                    &item.inner,
+                                    item_type,
+                                    ctx,
+                                    scope,
+                                    &ir_loc(&item.loc),
+                                )
+                            },
+                        )
+                    })
+                    .collect();
+                IrValue::Tuple(vals)
+            }
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected tuple".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::Tuple(vec![])
+            }
+        },
         IrFieldType::Optional(inner) => resolve_value(v, inner, ctx, scope, loc),
     }
 }
@@ -2574,6 +2649,24 @@ fn resolve_single_seg_value(
                         }
                     }
                 }
+                Some(IrShapeBody::Tuple(_)) => {
+                    let fid = ctx
+                        .lookup_def_typed(scope, raw, *tid)
+                        .or_else(|| ctx.lookup_def(scope, raw));
+                    match fid {
+                        Some(fid) => IrValue::Inst(fid),
+                        None => {
+                            ctx.errors.push(IrError {
+                                message: format!(
+                                    "'{}' is not a known instance of Shape#{}",
+                                    raw, tid.0
+                                ),
+                                loc: loc.clone(),
+                            });
+                            IrValue::Ref(raw.to_string())
+                        }
+                    }
+                }
                 Some(IrShapeBody::Primitive(IrPrimitive::Integer)) => match raw.parse::<i64>() {
                     Ok(n) => IrValue::Int(n),
                     Err(_) => {
@@ -2633,6 +2726,16 @@ fn resolve_list_item(
     scope: ScopeId,
     loc: &IrLoc,
 ) -> IrValue {
+    if let AstValue::Tuple(_) = v {
+        if let Some(pattern) = patterns.first() {
+            return resolve_value(v, &IrFieldType::Ref(pattern.clone()), ctx, scope, loc);
+        }
+        ctx.errors.push(IrError {
+            message: "list item must be a reference".into(),
+            loc: loc.clone(),
+        });
+        return IrValue::Ref(String::new());
+    }
     // Handle inline struct literals `{ field: val ... }` — find the first matching struct pattern.
     if let AstValue::Struct { .. } = v {
         for pattern in patterns {

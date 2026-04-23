@@ -292,6 +292,11 @@ fn render_type_expr(ty: &AstTypeExpr, indent: usize, nested: bool) -> String {
             }
         }
         AstTypeExpr::List(inner) => render_list_type(&inner.inner, indent),
+        AstTypeExpr::Tuple(items) => items
+            .iter()
+            .map(|item| render_type_expr(&item.inner, indent, false))
+            .collect::<Vec<_>>()
+            .join(" -> "),
         AstTypeExpr::Optional(inner) => {
             format!("({})", render_type_expr(&inner.inner, indent, false))
         }
@@ -414,6 +419,11 @@ fn render_value(value: &AstValue, indent: usize) -> String {
         AstValue::Str(s) => format!("{:?}", s),
         AstValue::Ref(r) => render_ref(r),
         AstValue::List(items) => render_value_list(items, indent),
+        AstValue::Tuple(items) => items
+            .iter()
+            .map(|item| render_value(&item.inner, indent))
+            .collect::<Vec<_>>()
+            .join(" -> "),
         AstValue::Struct { type_hint, fields } => {
             let head = type_hint
                 .as_ref()

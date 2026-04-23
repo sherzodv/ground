@@ -65,3 +65,13 @@ fn error_006() {
     let out = show("service { port }");
     assert!(out.contains("ERR:"), "expected error, got: {out}");
 }
+
+#[test]
+fn error_007() {
+    let out = show("pair = a -> b -> c -> d -> e -> f");
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(
+        out.contains("at most 5"),
+        "expected tuple limit error, got: {out}"
+    );
+}

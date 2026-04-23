@@ -90,6 +90,13 @@ pub fn show_type_expr(body: &AstTypeExpr) -> String {
         AstTypeExpr::List(inner) => {
             format!("List[{}]", show_nested_type_expr(&inner.inner))
         }
+        AstTypeExpr::Tuple(items) => {
+            let parts: Vec<_> = items
+                .iter()
+                .map(|item| show_nested_type_expr(&item.inner))
+                .collect();
+            format!("Tuple[{}]", parts.join(" -> "))
+        }
         AstTypeExpr::Optional(inner) => {
             format!("Optional[{}]", show_nested_type_expr(&inner.inner))
         }
@@ -183,6 +190,10 @@ pub fn show_value(v: &AstValue) -> String {
         AstValue::List(items) => {
             let parts: Vec<_> = items.iter().map(|i| show_value(&i.inner)).collect();
             format!("List[{}]", parts.join(", "))
+        }
+        AstValue::Tuple(items) => {
+            let parts: Vec<_> = items.iter().map(|i| show_value(&i.inner)).collect();
+            format!("Tuple[{}]", parts.join(" -> "))
         }
         AstValue::Struct { type_hint, fields } => {
             let mut parts: Vec<String> = Vec::new();

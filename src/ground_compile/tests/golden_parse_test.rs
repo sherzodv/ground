@@ -127,6 +127,28 @@ fn enum_003() {
 }
 
 #[test]
+fn tuple_001() {
+    assert_eq!(
+        show(
+            r##"
+            boo = string -> integer
+            svc = { boo = string -> integer }
+            api = svc { boo: "boo" -> 1 }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[boo, _, unit, Tuple[Type[_, Ref(string)] -> Type[_, Ref(integer)]]],
+                Def[svc, _, unit, Struct[FieldDef[boo, Type[_, Tuple[Type[_, Ref(string)] -> Type[_, Ref(integer)]]]]]],
+                Def[api, svc, unit, Struct[FieldSet[boo, Tuple[Str("boo") -> Ref(1)]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn enum_004() {
     assert_eq!(
         show("boo = plain | def:foo"),

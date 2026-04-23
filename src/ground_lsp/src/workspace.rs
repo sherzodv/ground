@@ -287,6 +287,7 @@ pub fn describe_ground_token<'a>(
             IrShapeBody::Primitive(p) => format!("primitive `{}`", primitive_name(p)),
             IrShapeBody::Enum(vs) => format!("enum with {} variants", vs.len()),
             IrShapeBody::Struct(fs) => format!("struct with {} fields", fs.len()),
+            IrShapeBody::Tuple(items) => format!("tuple with {} items", items.len()),
         };
         return Some(("Def", format!("`{}`\n\n{}", def.name, body)));
     }
@@ -297,6 +298,7 @@ pub fn describe_ground_token<'a>(
             IrShapeBody::Primitive(p) => format!("primitive `{}`", primitive_name(p)),
             IrShapeBody::Enum(vs) => format!("enum with {} variants", vs.len()),
             IrShapeBody::Struct(fs) => format!("struct with {} fields", fs.len()),
+            IrShapeBody::Tuple(items) => format!("tuple with {} items", items.len()),
         };
         return Some(("Shape", body));
     }

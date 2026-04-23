@@ -284,18 +284,68 @@ fn value_to_json(
             out
         }
         crate::asm::AsmValue::Def(d) => def_to_json_inner(d, defs, seen),
-        crate::asm::AsmValue::List(items) => Value::Array(
-            items
-                .iter()
-                .map(|item| value_to_json(item, defs, seen))
-                .collect(),
-        ),
+        crate::asm::AsmValue::List(items) => list_to_json(items, defs, seen),
         crate::asm::AsmValue::Path(items) => Value::Array(
             items
                 .iter()
                 .map(|item| value_to_json(item, defs, seen))
                 .collect(),
         ),
+        crate::asm::AsmValue::Tuple(items) => tuple_to_json(items, defs, seen),
         _ => asm_value_to_json(v),
     }
+}
+
+fn list_to_json(
+    items: &[crate::asm::AsmValue],
+    defs: &[AsmDef],
+    seen: &mut HashSet<(String, String)>,
+) -> Value {
+    if let Some(obj) = tuple_pair_list_to_obj(items, defs, seen) {
+        return Value::Object(obj);
+    }
+    Value::Array(
+        items
+            .iter()
+            .map(|item| value_to_json(item, defs, seen))
+            .collect(),
+    )
+}
+
+fn tuple_pair_list_to_obj(
+    items: &[crate::asm::AsmValue],
+    defs: &[AsmDef],
+    seen: &mut HashSet<(String, String)>,
+) -> Option<serde_json::Map<String, Value>> {
+    let mut obj = serde_json::Map::new();
+    for item in items {
+        let crate::asm::AsmValue::Tuple(parts) = item else {
+            return None;
+        };
+        if parts.len() != 2 {
+            return None;
+        }
+        let Value::String(key) = value_to_json(&parts[0], defs, seen) else {
+            return None;
+        };
+        obj.insert(key, value_to_json(&parts[1], defs, seen));
+    }
+    Some(obj)
+}
+
+fn tuple_to_json(
+    items: &[crate::asm::AsmValue],
+    defs: &[AsmDef],
+    seen: &mut HashSet<(String, String)>,
+) -> Value {
+    let arr: Vec<Value> = items
+        .iter()
+        .map(|item| value_to_json(item, defs, seen))
+        .collect();
+    let mut obj = serde_json::Map::new();
+    obj.insert("as_arr".into(), Value::Array(arr.clone()));
+    for (idx, item) in arr.into_iter().enumerate() {
+        obj.insert(format!("v{idx}"), item);
+    }
+    Value::Object(obj)
 }

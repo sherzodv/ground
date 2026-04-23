@@ -30,6 +30,10 @@ pub fn show_value(v: &AsmValue) -> String {
             let parts: Vec<_> = items.iter().map(show_value).collect();
             format!("List[{}]", parts.join(", "))
         }
+        AsmValue::Tuple(items) => {
+            let parts: Vec<_> = items.iter().map(show_value).collect();
+            format!("Tuple[{}]", parts.join(" -> "))
+        }
     }
 }
 

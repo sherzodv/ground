@@ -135,6 +135,54 @@ fn optional_001() {
 }
 
 #[test]
+fn tuple_001() {
+    assert_eq!(
+        show(
+            r##"
+            pair = string -> integer
+            svc = { boo = pair  pairs = [ pair ] }
+            api = svc { boo: "boo" -> 1  pairs: [ "x" -> 2 ] }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[pair, Tuple[Prim(string) -> Prim(integer)]],
+                Shape#1[svc, Struct[Field#0[boo, IrRef[Tuple(Shape#0)]], Field#1[pairs, List[IrRef[Tuple(Shape#0)]]]]],
+                Def#0[pair, Shape#0],
+                Def#1[svc, Shape#1],
+                Def#2[api, Shape#1, base=Def#1, Set[Field#0, Tuple[Str("boo") -> Int(1)]], Set[Field#1, List[Tuple[Str("x") -> Int(2)]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn tuple_list_001() {
+    assert_eq!(
+        show(
+            r##"
+            pair = string -> integer
+            svc = { pairs = [ pair ] }
+            api = svc { pairs: [ "boo" -> 1  "foo" -> 2 ] }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[pair, Tuple[Prim(string) -> Prim(integer)]],
+                Shape#1[svc, Struct[Field#0[pairs, List[IrRef[Tuple(Shape#0)]]]]],
+                Def#0[pair, Shape#0],
+                Def#1[svc, Shape#1],
+                Def#2[api, Shape#1, base=Def#1, Set[Field#0, List[Tuple[Str("boo") -> Int(1)], Tuple[Str("foo") -> Int(2)]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn def_004() {
     assert_eq!(
         show(

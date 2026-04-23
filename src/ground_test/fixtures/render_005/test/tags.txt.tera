@@ -1,0 +1,3 @@
+{% set def = defs[0] -%}
+name={{ def.as_obj.tags.Name }}
+env={{ def.as_obj.tags.Environment }}

@@ -1,0 +1,12 @@
+pack test
+
+def subnet {
+  tags = [ string -> string ]
+}
+
+plan app = subnet {
+  tags: [
+    "Name" -> "app"
+    "Environment" -> "test"
+  ]
+}

@@ -141,6 +141,47 @@ fn ts_gen_boolean_output() {
 }
 
 #[test]
+fn ts_gen_tuple_input() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                pack test
+                pair = string -> integer
+                def label { pair = pair } = make_label { value = string }
+                plan env = label { pair: "environment" -> 2 }
+            "#
+            .into(),
+            ts_src: Some(
+                r#"
+                function make_label(i) { return { value: i.pair[0] + "=" + i.pair[1] }; }
+            "#
+                .into(),
+            ),
+        }],
+    });
+
+    assert!(
+        res.errors.is_empty(),
+        "compile errors: {:?}",
+        res.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+
+    let def = res
+        .defs
+        .iter()
+        .find(|d| d.name == "env")
+        .expect("env def missing");
+    let field = def
+        .fields
+        .iter()
+        .find(|f| f.name == "value")
+        .expect("value field missing");
+    assert_eq!(format!("{:?}", field.value), r#"Str("environment=2")"#);
+}
+
+#[test]
 fn ts_gen_type_units_include_named_shapes() {
     let res = compile(CompileReq {
         units: vec![Unit {
