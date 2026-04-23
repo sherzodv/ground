@@ -236,6 +236,115 @@ fn def_005() {
     );
 }
 
+#[test]
+fn nested_enum_cross_pack_composition_001() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "tf",
+                vec!["std", "aws"],
+                r##"
+                eip = {
+                    def domain = vpc | standard
+                    domain = def:domain
+                }
+            "##,
+            ),
+            (
+                "test",
+                vec![],
+                r##"
+                use std:aws
+
+                plan nat = aws:tf:eip {
+                    domain: vpc
+                }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:std,
+                Scope[pack:aws,
+                    Scope[pack:tf,
+                        Shape#0[eip, Struct[Field#0[domain, IrRef[Enum(Shape#1)]]]],
+                        Def#0[eip, Shape#0],
+                        Scope[struct:eip,
+                            Shape#1[domain, Enum[vpc|standard]],
+                            Def#1[domain, Shape#1],
+                        ],
+                    ],
+                ],
+            ]
+            Scope[pack:test,
+                Def#2[nat, Shape#0, planned, base=Def#0, Set[Field#0, Variant(Shape#1, "vpc")]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn nested_def_in_input_block_001() {
+    assert_eq!(
+        show(
+            r##"
+            def eip {
+                def domain = vpc | standard
+                domain = def:domain
+            }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[eip, Struct[Field#0[domain, IrRef[Enum(Shape#1)]]]],
+                Def#0[eip, Shape#0],
+                Scope[struct:eip,
+                    Shape#1[domain, Enum[vpc|standard]],
+                    Def#1[domain, Shape#1],
+                ],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn nested_def_in_input_block_enum_variant_shadowed_by_def_001() {
+    assert_eq!(
+        show(
+            r##"
+            def vpc
+
+            def eip {
+                def domain = vpc | standard
+                domain = def:domain
+            }
+
+            plan nat = eip {
+                domain: vpc
+            }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[vpc, Unit],
+                Shape#1[eip, Struct[Field#0[domain, IrRef[Enum(Shape#2)]]]],
+                Def#0[vpc, Shape#0],
+                Def#1[eip, Shape#1],
+                Def#2[nat, Shape#1, planned, base=Def#1, Set[Field#0, Variant(Shape#2, "vpc")]],
+                Scope[struct:eip,
+                    Shape#2[domain, Enum[vpc|standard]],
+                    Def#3[domain, Shape#2],
+                ],
+            ]
+        "##
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Shape
 // ---------------------------------------------------------------------------

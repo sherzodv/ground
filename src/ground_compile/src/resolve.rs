@@ -614,6 +614,36 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
     IrRef { segments: result }
 }
 
+fn resolve_enum_variant_ref(r: &AstRef, ctx: &Ctx, scope: ScopeId) -> IrRef {
+    let is_explicitly_qualified = r
+        .segments
+        .first()
+        .and_then(|seg| seg.inner.as_plain())
+        .is_some_and(|seg| matches!(seg, "def" | "pack"));
+    if !is_explicitly_qualified
+        && r.segments
+            .iter()
+            .all(|seg| seg.inner.as_plain().is_some() && !seg.inner.is_opt)
+    {
+        return IrRef {
+            segments: r
+                .segments
+                .iter()
+                .map(|seg| IrRefSeg {
+                    value: IrRefSegValue::Plain(
+                        seg.inner
+                            .as_plain()
+                            .expect("plain enum variant segment")
+                            .to_string(),
+                    ),
+                    is_opt: false,
+                })
+                .collect(),
+        };
+    }
+    resolve_ref(&r.segments, ctx, scope)
+}
+
 // ---------------------------------------------------------------------------
 // Pass 1 — mirror scope tree
 // ---------------------------------------------------------------------------
@@ -1081,6 +1111,8 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     for (shape_id, td, scope) in mapper_work {
         let name = td.inner.name.inner.clone();
         let _loc = ir_loc(&td.loc);
+        let body_scope =
+            find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
 
         // Resolve input fields (the fields before "=").
         let inputs: Vec<IrStructFieldDef> = td
@@ -1090,7 +1122,7 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             .map(|field| {
                 let fname = field.inner.name.as_ref().map(|n| n.inner.clone());
                 let floc = ir_loc(&field.loc);
-                let field_type = resolve_field_type(&field.inner.ty.inner, ctx, scope, &floc);
+                let field_type = resolve_field_type(&field.inner.ty.inner, ctx, body_scope, &floc);
                 IrStructFieldDef {
                     name: fname,
                     field_type,
@@ -1099,8 +1131,6 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             .collect();
 
         // Resolve output fields (the fields after "=").
-        let body_scope =
-            find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
         let outputs = match td.inner.output.as_ref().map(|o| &o.inner) {
             Some(AstDefO::Struct(items)) => resolve_struct_fields(items, ctx, body_scope),
             _ => vec![],
@@ -1282,7 +1312,7 @@ fn resolve_type_body(body: &AstNode<AstTypeExpr>, ctx: &mut Ctx, scope: ScopeId)
         AstTypeExpr::Enum(refs) => {
             let variants = refs
                 .iter()
-                .map(|r| resolve_ref(&r.inner.segments, ctx, scope))
+                .map(|r| resolve_enum_variant_ref(&r.inner, ctx, scope))
                 .collect();
             IrShapeBody::Enum(variants)
         }
@@ -1494,7 +1524,7 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
             // Anonymous inline enum — allocate an anonymous type.
             let variants = refs
                 .iter()
-                .map(|r| resolve_ref(&r.inner.segments, ctx, scope))
+                .map(|r| resolve_enum_variant_ref(&r.inner, ctx, scope))
                 .collect();
             let tid = ctx.alloc_shape(None, scope, loc.clone(), IrShapeBody::Enum(variants));
             IrFieldType::Ref(IrRef {

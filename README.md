@@ -42,6 +42,12 @@ Regenerate expected output after render changes:
 UPDATE_GOLDENS=1 cargo test -p ground_test
 ```
 
+## Todo
+
+- bare enum variants in value position are currently accepted through expected-type resolution, e.g. `domain: vpc`
+  when the field type is a nested enum like `def domain = vpc | standard`
+  this works, but is not very readable; consider requiring an explicit qualifier such as `domain:vpc`
+
 ## Future Ideas
 
 - Introduce pack versioning

@@ -174,8 +174,19 @@ fn render_use(use_: &AstUse, indent: usize) -> String {
 }
 
 fn render_def(def: &AstDef, indent: usize) -> String {
+    render_def_inner(def, indent, false)
+}
+
+fn render_def_inner(def: &AstDef, indent: usize, force_def_keyword: bool) -> String {
     let head = if def.planned {
         format!("{}plan {}", spaces(indent), def.name.inner)
+    } else if force_def_keyword {
+        if def.input.is_empty() {
+            format!("{}def {}", spaces(indent), def.name.inner)
+        } else {
+            let input = render_input_block(&def.input, &def.input_nested_defs, indent);
+            format!("{}def {} {}", spaces(indent), def.name.inner, input)
+        }
     } else if def.input.is_empty() && def.mapper.is_none() {
         match &def.output {
             None => format!("{}def {}", spaces(indent), def.name.inner),
@@ -184,7 +195,7 @@ fn render_def(def: &AstDef, indent: usize) -> String {
     } else if def.input.is_empty() {
         format!("{}{} =", spaces(indent), def.name.inner)
     } else {
-        let input = render_input_block(&def.input, indent);
+        let input = render_input_block(&def.input, &def.input_nested_defs, indent);
         format!("{}def {} {}", spaces(indent), def.name.inner, input)
     };
 
@@ -239,29 +250,42 @@ fn render_def(def: &AstDef, indent: usize) -> String {
     }
 }
 
-fn render_input_block(fields: &[crate::ast::AstNode<AstDefI>], indent: usize) -> String {
-    if fields.is_empty() {
+fn render_input_block(
+    fields: &[crate::ast::AstNode<AstDefI>],
+    nested_defs: &[AstItem],
+    indent: usize,
+) -> String {
+    if fields.is_empty() && nested_defs.is_empty() {
         return "{}".into();
     }
     let name_width = max_def_input_name_width(fields);
-    let parts: Vec<String> = fields
+    let mut parts: Vec<String> = nested_defs
         .iter()
-        .map(|f| {
-            let name = f
-                .inner
-                .name
-                .as_ref()
-                .map(|n| n.inner.as_str())
-                .unwrap_or("_");
-            format!(
-                "{}{}{} = {}",
-                spaces(indent + 2),
-                name,
-                spaces(name_width.saturating_sub(name.len())),
-                render_type_expr(&f.inner.ty.inner, indent + 2, false)
-            )
+        .map(|d| match d {
+            AstItem::Def(def) => render_def_inner(&def.inner, indent + 2, true),
+            _ => render_item(d, indent + 2),
         })
         .collect();
+    parts.extend(
+        fields
+            .iter()
+            .map(|f| {
+                let name = f
+                    .inner
+                    .name
+                    .as_ref()
+                    .map(|n| n.inner.as_str())
+                    .unwrap_or("_");
+                format!(
+                    "{}{}{} = {}",
+                    spaces(indent + 2),
+                    name,
+                    spaces(name_width.saturating_sub(name.len())),
+                    render_type_expr(&f.inner.ty.inner, indent + 2, false)
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
     format!("{{\n{}\n{}}}", parts.join("\n"), spaces(indent))
 }
 
@@ -348,14 +372,14 @@ fn render_struct_item(item: &AstStructItem, indent: usize) -> String {
     match item {
         AstStructItem::Field(f) => render_struct_field(&f.inner, indent),
         AstStructItem::Anon(v) => render_value(&v.inner, indent),
-        AstStructItem::Def(d) => render_def(&d.inner, indent),
+        AstStructItem::Def(d) => render_def_inner(&d.inner, indent, true),
         AstStructItem::Comment(c) => render_comment(&c.inner, indent),
     }
 }
 
 fn render_struct_item_line(item: &AstStructItem, indent: usize, name_width: usize) -> String {
     match item {
-        AstStructItem::Def(d) => render_def(&d.inner, indent),
+        AstStructItem::Def(d) => render_def_inner(&d.inner, indent, true),
         AstStructItem::Comment(c) => render_comment(&c.inner, indent),
         AstStructItem::Field(f) => {
             format!(
@@ -791,6 +815,21 @@ tags: [ "Name" -> "main" "Environment" -> "test" ]
         assert_eq!(
             got,
             "main = vpc { tags: [\n    \"Name\"        -> \"main\"\n    \"Environment\" -> \"test\"\n  ] }"
+        );
+    }
+
+    #[test]
+    fn fmt_keeps_nested_defs_in_input_blocks() {
+        let src = r#"
+def eip {
+def domain = vpc | standard
+domain = def:domain
+}
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(
+            got,
+            "def eip {\n  def domain = vpc | standard\n  domain = def:domain\n}"
         );
     }
 }

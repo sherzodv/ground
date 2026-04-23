@@ -797,16 +797,24 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// `"{" (ident "=" type_expr)* "}"` — input field block in `def name { … } = …`
-    fn parse_field_block(&mut self) -> Vec<AstNode<AstDefI>> {
+    /// `"{" ((ident "=" type_expr) | nested-def)* "}"` — input field block in
+    /// `def name { … } = …`
+    fn parse_field_block(&mut self) -> (Vec<AstNode<AstDefI>>, Vec<AstItem>) {
         if !self.eat("{") {
-            return vec![];
+            return (vec![], vec![]);
         }
         let mut fields = Vec::new();
+        let mut nested_defs = Vec::new();
         loop {
             self.skip_ws();
             if self.rest().starts_with('}') || self.pos >= self.src.len() {
                 break;
+            }
+            if self.at_keyword("def") {
+                if let Some(td) = self.parse_top_def_with_keyword("def", false) {
+                    nested_defs.push(AstItem::Def(td));
+                    continue;
+                }
             }
             if let Some(f) = self.parse_named_field_def() {
                 fields.push(f);
@@ -819,7 +827,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.eat("}");
-        fields
+        (fields, nested_defs)
     }
 
     /// After consuming `=` in a `def`-keyword form, parse the rhs:
@@ -892,10 +900,10 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         // Optional input block: `{ field* }` before `=`
-        let input = if self.rest().starts_with('{') {
+        let (input, input_nested_defs) = if self.rest().starts_with('{') {
             self.parse_field_block()
         } else {
-            vec![]
+            (vec![], vec![])
         };
         self.skip_ws();
 
@@ -912,6 +920,7 @@ impl<'a> Parser<'a> {
                 planned,
                 name,
                 input,
+                input_nested_defs,
                 mapper: mapper_opt,
                 output,
             },
@@ -953,13 +962,14 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         if self.rest().starts_with('{') {
-            let input = self.parse_field_block();
+            let (input, input_nested_defs) = self.parse_field_block();
             return Some(self.node(
                 start,
                 AstDef {
                     planned: false,
                     name,
                     input,
+                    input_nested_defs,
                     mapper: None,
                     output: None,
                 },
@@ -983,6 +993,7 @@ impl<'a> Parser<'a> {
                         planned: false,
                         name,
                         input: vec![],
+                        input_nested_defs: vec![],
                         mapper: Some(mapper_name),
                         output,
                     },
@@ -1005,6 +1016,7 @@ impl<'a> Parser<'a> {
                     planned: false,
                     name,
                     input: vec![],
+                    input_nested_defs: vec![],
                     mapper: None,
                     output: Some(self.node(out_start, AstDefO::Struct(items))),
                 },
@@ -1024,6 +1036,7 @@ impl<'a> Parser<'a> {
                         planned: false,
                         name,
                         input: vec![],
+                        input_nested_defs: vec![],
                         mapper: Some(ref_node),
                         output: Some(self.node(out_start, AstDefO::Struct(items))),
                     },
@@ -1040,6 +1053,7 @@ impl<'a> Parser<'a> {
                     planned: false,
                     name,
                     input: vec![],
+                    input_nested_defs: vec![],
                     mapper: None,
                     output: Some(self.node(out_start, AstDefO::TypeExpr(te))),
                 },
@@ -1056,6 +1070,7 @@ impl<'a> Parser<'a> {
                 planned: false,
                 name,
                 input: vec![],
+                input_nested_defs: vec![],
                 mapper: None,
                 output: Some(self.node(out_start, AstDefO::Struct(vec![]))),
             },
@@ -1240,9 +1255,10 @@ fn hoist_nested_defs_in_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId) 
             let scope = &mut scopes[scope_id.0 as usize];
             if let Some(AstItem::Def(td)) = scope.defs.get_mut(def_idx) {
                 parent_name = Some(td.inner.name.clone());
+                hoisted.extend(td.inner.input_nested_defs.drain(..));
                 if let Some(output) = &mut td.inner.output {
                     if let AstDefO::Struct(items) = &mut output.inner {
-                        hoisted = hoist_nested_defs_from_items(items);
+                        hoisted.extend(hoist_nested_defs_from_items(items));
                     }
                 }
             }

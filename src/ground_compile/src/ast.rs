@@ -113,6 +113,9 @@ pub struct AstDef {
     pub planned: bool, // true when declared with `plan`
     pub name: AstNode<String>,
     pub input: Vec<AstNode<AstDefI>>, // fields before `=`; empty for simple defs
+    /// Temporary nested defs declared inside the input block; parse hoists these
+    /// into the same adjacent `ScopeKind::Struct` scope as output/body nested defs.
+    pub input_nested_defs: Vec<AstItem>,
     pub mapper: Option<AstNode<AstRef>>, // explicit mapper ref when it appears in source
     pub output: Option<AstNode<AstDefO>>,
 }

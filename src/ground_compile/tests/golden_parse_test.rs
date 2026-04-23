@@ -7,7 +7,7 @@
 
 #[path = "helpers/golden_parse_helpers.rs"]
 mod golden_parse_helpers;
-use golden_parse_helpers::{norm, show};
+use golden_parse_helpers::{norm, show, show_multi};
 
 // ---------------------------------------------------------------------------
 // Basics
@@ -906,6 +906,77 @@ fn mapper_019a() {
                 Def[my-svc, service, unit, Struct[FieldSet[scaling, Struct[Hint(def:scaling), Field[min, Ref(2)], Field[max, Ref(10)]]]]],
                 Scope[struct:service,
                     Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                ],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn nested_enum_cross_pack_composition_001() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "tf",
+                vec!["std", "aws"],
+                r##"
+                eip = {
+                    def domain = vpc | standard
+                    domain = def:domain
+                }
+            "##,
+            ),
+            (
+                "test",
+                vec![],
+                r##"
+                use std:aws
+
+                plan nat = aws:tf:eip {
+                    domain: vpc
+                }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Scope[pack:std,
+                Scope[pack:aws,
+                    Scope[pack:tf,
+                        Def[eip, _, unit, Struct[FieldDef[domain, Type[_, Ref(def:domain)]]]],
+                        Scope[struct:eip,
+                            Def[domain, _, unit, Enum[Ref(vpc) | Ref(standard)]],
+                        ],
+                    ],
+                ],
+            ]
+            Scope[pack:test,
+                Use[std:aws],
+                Plan[nat, aws:tf:eip, unit, Struct[FieldSet[domain, Ref(vpc)]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn nested_def_in_input_block_001() {
+    assert_eq!(
+        show(
+            r##"
+            def eip {
+                def domain = vpc | standard
+                domain = def:domain
+            }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[eip, _, Input[Field[domain, Type[_, Ref(def:domain)]]], unit],
+                Scope[struct:eip,
+                    Def[domain, _, unit, Enum[Ref(vpc) | Ref(standard)]],
                 ],
             ]
         "##

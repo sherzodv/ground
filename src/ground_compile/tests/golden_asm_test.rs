@@ -137,6 +137,102 @@ fn tuple_list_001() {
     );
 }
 
+#[test]
+fn nested_enum_cross_pack_composition_001() {
+    assert_eq!(
+        show_multi(vec![
+            (
+                "tf",
+                vec!["std", "aws"],
+                r##"
+                eip = {
+                    def domain = vpc | standard
+                    domain = def:domain
+                }
+            "##,
+            ),
+            (
+                "test",
+                vec![],
+                r##"
+                use std:aws
+
+                plan nat = aws:tf:eip {
+                    domain: vpc
+                }
+            "##,
+            ),
+        ]),
+        norm(
+            r##"
+            Def[nat = eip { domain: Variant(domain, "vpc") }]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn nested_def_in_input_block_001() {
+    assert_eq!(
+        show_with_ts(
+            r##"
+            def eip {
+                def domain = vpc | standard
+                domain = def:domain
+            } = make_eip {
+                value = string
+            }
+
+            plan nat = eip {
+                domain: vpc
+            }
+        "##,
+            r##"
+            function make_eip(i) {
+                return { value: i.domain };
+            }
+        "##,
+        ),
+        norm(
+            r##"
+            Def[nat = eip { domain: Variant(domain, "vpc"), value: Str("vpc") }]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn nested_def_in_input_block_enum_variant_shadowed_by_def_001() {
+    assert_eq!(
+        show_with_ts(
+            r##"
+            def vpc
+
+            def eip {
+                def domain = vpc | standard
+                domain = def:domain
+            } = make_eip {
+                value = string
+            }
+
+            plan nat = eip {
+                domain: vpc
+            }
+        "##,
+            r##"
+            function make_eip(i) {
+                return { value: i.domain };
+            }
+        "##,
+        ),
+        norm(
+            r##"
+            Def[nat = eip { domain: Variant(domain, "vpc"), value: Str("vpc") }]
+        "##
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Mapper
 // ---------------------------------------------------------------------------
