@@ -6,6 +6,9 @@ use std::{
     process,
 };
 
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ground_compile::{
     compile, format_source, render as compile_render, render_ctx_for_plan, AsmDef, AsmDefRef,
@@ -30,6 +33,10 @@ fn main() {
         [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
         [cmd, sub, key] if cmd == "config" && sub == "target" => cmd_config_set_target(key),
         [cmd, sub] if cmd == "config" && sub == "target" => cmd_config_get_target(),
+        [cmd, sub] if cmd == "tf" && sub == "check" => cmd_tf_check(),
+        [cmd, sub, source, target] if cmd == "tf" && sub == "rename" => {
+            cmd_tf_rename(source, target)
+        }
         [cmd, sub] if cmd == "tf" && sub == "migrate" => cmd_tf_migrate(),
         [cmd] if cmd == "gen" => cmd_gen(None),
         [cmd, flag, val] if cmd == "gen" && flag == "--target" => cmd_gen(Some(val.as_str())),
@@ -56,6 +63,8 @@ fn main() {
             eprintln!("  ground config target [<backend>:<type>]");
             eprintln!("  ground gen [--target <backend>:<type>]");
             eprintln!("  ground gen types");
+            eprintln!("  ground tf check");
+            eprintln!("  ground tf rename <source> <target>");
             eprintln!("  ground tf migrate");
             eprintln!("  ground fmt");
             eprintln!("  ground status");
@@ -195,6 +204,520 @@ struct PlanStamp {
     kind: String,
     state: Option<String>,
     backend_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateBinding {
+    plan: String,
+    target: String,
+    dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackedStateOrphan {
+    code: String,
+    plan: String,
+    dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateRegistryMismatch {
+    recorded_plan: String,
+    actual_plan: String,
+    dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TfCheckRes {
+    untracked_orphans: Vec<String>,
+    tracked_orphans: Vec<TrackedStateOrphan>,
+    registry_mismatches: Vec<StateRegistryMismatch>,
+}
+
+fn states_path(root: &Path) -> PathBuf {
+    root.join(".ground/states.json")
+}
+
+fn read_state_bindings(root: &Path) -> Result<Vec<StateBinding>, String> {
+    let path = states_path(root);
+    let Ok(src) = fs::read_to_string(&path) else {
+        return Ok(vec![]);
+    };
+    let json: Value = serde_json::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+    let entries = match &json {
+        Value::Array(items) => items,
+        Value::Object(map) => match map.get("states") {
+            Some(Value::Array(items)) => items,
+            Some(_) => {
+                return Err(format!(
+                    "{}: expected top-level array or {{\"states\": [...]}}",
+                    path.display()
+                ));
+            }
+            None => return Ok(vec![]),
+        },
+        _ => {
+            return Err(format!(
+                "{}: expected top-level array or {{\"states\": [...]}}",
+                path.display()
+            ));
+        }
+    };
+
+    let mut out = Vec::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        let Some(obj) = entry.as_object() else {
+            return Err(format!(
+                "{}: entry {} must be an object",
+                path.display(),
+                idx
+            ));
+        };
+        let Some(plan) = obj.get("plan").and_then(Value::as_str) else {
+            return Err(format!(
+                "{}: entry {} missing string field 'plan'",
+                path.display(),
+                idx
+            ));
+        };
+        let Some(target) = obj.get("target").and_then(Value::as_str) else {
+            return Err(format!(
+                "{}: entry {} missing string field 'target'",
+                path.display(),
+                idx
+            ));
+        };
+        let Some(dir) = obj.get("dir").and_then(Value::as_str) else {
+            return Err(format!(
+                "{}: entry {} missing string field 'dir'",
+                path.display(),
+                idx
+            ));
+        };
+        out.push(StateBinding {
+            plan: plan.to_string(),
+            target: target.to_string(),
+            dir: dir.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+fn write_state_bindings(root: &Path, bindings: &[StateBinding]) -> Result<(), String> {
+    let path = states_path(root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let json = Value::Array(
+        bindings
+            .iter()
+            .map(|binding| {
+                Value::Object(serde_json::Map::from_iter([
+                    ("plan".to_string(), Value::String(binding.plan.clone())),
+                    ("target".to_string(), Value::String(binding.target.clone())),
+                    ("dir".to_string(), Value::String(binding.dir.clone())),
+                ]))
+            })
+            .collect(),
+    );
+    let mut out =
+        serde_json::to_string_pretty(&json).map_err(|e| format!("{}: {e}", path.display()))?;
+    out.push('\n');
+    fs::write(&path, out).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn target_repr(target: &RenderTarget) -> String {
+    format!("{}:{}", target.backend, target.out_type)
+}
+
+fn selected_full_plan_name(res: &CompileRes, plan_name: &str) -> Option<String> {
+    res.plans
+        .iter()
+        .find(|plan| plan.name == plan_name)
+        .map(full_plan_name)
+}
+
+fn upsert_state_binding_for_plan_dir(
+    root: &Path,
+    full_plan: &str,
+    target: &RenderTarget,
+    dir: &str,
+) -> Result<(), String> {
+    let mut bindings = read_state_bindings(root)?;
+    let target = target_repr(target);
+
+    let mut updated = false;
+    bindings.retain(|binding| {
+        if binding.dir == dir {
+            if !updated {
+                updated = true;
+                true
+            } else {
+                false
+            }
+        } else if binding.plan == full_plan {
+            false
+        } else {
+            true
+        }
+    });
+
+    if let Some(binding) = bindings.iter_mut().find(|binding| binding.dir == dir) {
+        binding.plan = full_plan.to_string();
+        binding.target = target;
+    } else {
+        bindings.push(StateBinding {
+            plan: full_plan.to_string(),
+            target,
+            dir: dir.to_string(),
+        });
+    }
+    bindings.sort_by(|a, b| a.dir.cmp(&b.dir).then(a.plan.cmp(&b.plan)));
+    write_state_bindings(root, &bindings)
+}
+
+fn prune_non_stateful_state_bindings(root: &Path) -> Result<Vec<String>, String> {
+    let mut bindings = read_state_bindings(root)?;
+    let stateful_dirs: std::collections::HashSet<String> =
+        tf_stateful_dir_paths(root).into_iter().collect();
+    let before = bindings.len();
+    let removed: Vec<String> = bindings
+        .iter()
+        .filter(|binding| !stateful_dirs.contains(&binding.dir))
+        .map(|binding| binding.dir.clone())
+        .collect();
+    if removed.is_empty() {
+        return Ok(vec![]);
+    }
+    bindings.retain(|binding| stateful_dirs.contains(&binding.dir));
+    if bindings.len() != before {
+        write_state_bindings(root, &bindings)?;
+    }
+    Ok(removed)
+}
+
+fn stateful_artifact_names() -> &'static [&'static str] {
+    &[
+        ".terraform",
+        ".terraform.lock.hcl",
+        "terraform.tfstate",
+        "terraform.tfstate.backup",
+    ]
+}
+
+fn dir_has_stateful_artifacts(dir: &Path) -> bool {
+    stateful_artifact_names().iter().any(|name| {
+        let path = dir.join(name);
+        path.is_dir() || path.is_file()
+    })
+}
+
+fn move_stateful_artifacts(src_dir: &Path, dst_dir: &Path) -> Result<(), String> {
+    if dir_has_stateful_artifacts(dst_dir) {
+        return Err(format!(
+            "{} already has Terraform stateful artifacts",
+            dst_dir.display()
+        ));
+    }
+    fs::create_dir_all(dst_dir).map_err(|e| format!("{}: {e}", dst_dir.display()))?;
+    for name in stateful_artifact_names() {
+        let src = src_dir.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = dst_dir.join(name);
+        fs::rename(&src, &dst)
+            .map_err(|e| format!("failed to move {} -> {}: {e}", src.display(), dst.display()))?;
+    }
+    if src_dir.exists()
+        && fs::read_dir(src_dir)
+            .map(|mut it| it.next().is_none())
+            .unwrap_or(false)
+    {
+        let _ = fs::remove_dir(src_dir);
+    }
+    Ok(())
+}
+
+fn rename_tracked_orphan_to_plan(
+    root: &Path,
+    res: &CompileRes,
+    target: &RenderTarget,
+    source_code: &str,
+    target_plan_name: &str,
+) -> Result<(String, String, String), String> {
+    let check = tf_check(root, res)?;
+    let Some(orphan) = check
+        .tracked_orphans
+        .iter()
+        .find(|orphan| orphan.code == source_code)
+    else {
+        let available = check
+            .tracked_orphans
+            .iter()
+            .map(|o| o.code.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return if available.is_empty() {
+            Err("no tracked Terraform orphaned state found".into())
+        } else {
+            Err(format!(
+                "unknown rename source '{}'; available sources: {}",
+                source_code, available
+            ))
+        };
+    };
+
+    let Some(full_target_plan) = selected_full_plan_name(res, target_plan_name) else {
+        let available = res
+            .plans
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return if available.is_empty() {
+            Err(format!("plan '{}' not found", target_plan_name))
+        } else {
+            Err(format!(
+                "plan '{}' not found; available plans: {}",
+                target_plan_name, available
+            ))
+        };
+    };
+
+    let target_dir = format!("{}/{}", render_out_dir(target), target_plan_name);
+    let src_dir = root.join(&orphan.dir);
+    let dst_dir = root.join(&target_dir);
+    if orphan.dir != target_dir {
+        move_stateful_artifacts(&src_dir, &dst_dir)?;
+    }
+    upsert_state_binding_for_plan_dir(root, &full_target_plan, target, &target_dir)?;
+    let _ = prune_non_stateful_state_bindings(root)?;
+    Ok((orphan.plan.clone(), full_target_plan, target_dir))
+}
+
+fn full_plan_name(plan: &ground_compile::PlanRoot) -> String {
+    if plan.pack_path.is_empty() {
+        plan.name.clone()
+    } else {
+        format!("{}:{}", plan.pack_path.join(":"), plan.name)
+    }
+}
+
+fn tf_stateful_dir_paths(root: &Path) -> Vec<String> {
+    let terra_root = root.join(".ground/tf");
+    let entries = match fs::read_dir(&terra_root) {
+        Ok(entries) => entries,
+        Err(_) => return vec![],
+    };
+
+    let mut paths = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let is_stateful = path.join(".terraform").is_dir()
+            || path.join("terraform.tfstate").is_file()
+            || path.join("terraform.tfstate.backup").is_file();
+        if !is_stateful {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        paths.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    paths.sort();
+    paths
+}
+
+fn orphan_code_for_dir(dir: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in dir.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:05x}", hash & 0xfffff)
+}
+
+fn tf_check(root: &Path, res: &CompileRes) -> Result<TfCheckRes, String> {
+    let stateful_dirs = tf_stateful_dir_paths(root);
+    let bindings = read_state_bindings(root)?;
+    let current_plans: std::collections::HashSet<String> =
+        res.plans.iter().map(full_plan_name).collect();
+    let current_plan_dirs: std::collections::HashSet<String> = res
+        .plans
+        .iter()
+        .map(|plan| format!(".ground/tf/{}", plan.name))
+        .collect();
+    let current_plan_by_dir: std::collections::HashMap<String, String> = res
+        .plans
+        .iter()
+        .map(|plan| (format!(".ground/tf/{}", plan.name), full_plan_name(plan)))
+        .collect();
+    let binding_by_dir: std::collections::HashMap<&str, &StateBinding> = bindings
+        .iter()
+        .map(|binding| (binding.dir.as_str(), binding))
+        .collect();
+
+    let untracked_orphans = stateful_dirs
+        .iter()
+        .filter(|dir| {
+            !binding_by_dir.contains_key(dir.as_str()) && !current_plan_dirs.contains(dir.as_str())
+        })
+        .cloned()
+        .collect();
+
+    let stateful_dir_set: std::collections::HashSet<&str> =
+        stateful_dirs.iter().map(|dir| dir.as_str()).collect();
+    let mut registry_mismatches: Vec<StateRegistryMismatch> = bindings
+        .iter()
+        .filter_map(|binding| {
+            let actual_plan = current_plan_by_dir.get(&binding.dir)?;
+            if &binding.plan == actual_plan || !stateful_dir_set.contains(binding.dir.as_str()) {
+                return None;
+            }
+            Some(StateRegistryMismatch {
+                recorded_plan: binding.plan.clone(),
+                actual_plan: actual_plan.clone(),
+                dir: binding.dir.clone(),
+            })
+        })
+        .collect();
+    registry_mismatches.sort_by(|a, b| a.dir.cmp(&b.dir));
+
+    let mut tracked_rows: Vec<(String, String)> = bindings
+        .iter()
+        .filter(|binding| {
+            binding.target.starts_with("tf:")
+                && stateful_dir_set.contains(binding.dir.as_str())
+                && !current_plan_by_dir.contains_key(&binding.dir)
+                && !current_plans.contains(&binding.plan)
+        })
+        .map(|binding| (binding.plan.clone(), binding.dir.clone()))
+        .collect();
+    tracked_rows.sort();
+    let tracked_orphans = tracked_rows
+        .into_iter()
+        .map(|(plan, dir)| TrackedStateOrphan {
+            code: orphan_code_for_dir(&dir),
+            plan,
+            dir,
+        })
+        .collect();
+
+    Ok(TfCheckRes {
+        untracked_orphans,
+        tracked_orphans,
+        registry_mismatches,
+    })
+}
+
+fn print_tf_check_report(check: &TfCheckRes) {
+    if !check.untracked_orphans.is_empty() {
+        eprintln!("error: found untracked Terraform orphaned state");
+        for dir in &check.untracked_orphans {
+            eprintln!("- {dir}: requires manual fix");
+        }
+        if !check.tracked_orphans.is_empty() || !check.registry_mismatches.is_empty() {
+            eprintln!();
+        }
+    }
+
+    if !check.tracked_orphans.is_empty() {
+        eprintln!("error: found tracked Terraform orphaned state");
+        for orphan in &check.tracked_orphans {
+            eprintln!(
+                "- {}  {} -> {}: requires manual fix or rename `ground tf rename {} <target>`",
+                orphan.code, orphan.plan, orphan.dir, orphan.code
+            );
+        }
+        if !check.registry_mismatches.is_empty() {
+            eprintln!();
+        }
+    }
+
+    if !check.registry_mismatches.is_empty() {
+        eprintln!("warning: found Terraform state registry mismatches");
+        for mismatch in &check.registry_mismatches {
+            eprintln!(
+                "- {}: recorded as {} but current plan is {}",
+                mismatch.dir, mismatch.recorded_plan, mismatch.actual_plan
+            );
+        }
+        eprintln!("these will be fixed automatically on `ground plan`");
+    }
+}
+
+fn tf_check_has_blockers(check: &TfCheckRes) -> bool {
+    !check.untracked_orphans.is_empty() || !check.tracked_orphans.is_empty()
+}
+
+fn fix_registry_mismatches(root: &Path, target: &RenderTarget, check: &TfCheckRes) {
+    for mismatch in &check.registry_mismatches {
+        upsert_state_binding_for_plan_dir(root, &mismatch.actual_plan, target, &mismatch.dir)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                process::exit(1);
+            });
+        eprintln!(
+            "info: updated state registry for {}: {} -> {}",
+            mismatch.dir, mismatch.recorded_plan, mismatch.actual_plan
+        );
+    }
+    for removed in prune_non_stateful_state_bindings(root).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }) {
+        eprintln!("info: removed stale state registry record for {}", removed);
+    }
+}
+
+fn cmd_tf_check() {
+    with_project_root(|root| {
+        let res = do_compile(root, true);
+        let check = tf_check(root, &res).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            process::exit(1);
+        });
+        if check.untracked_orphans.is_empty()
+            && check.tracked_orphans.is_empty()
+            && check.registry_mismatches.is_empty()
+        {
+            println!("tf check: ok");
+            return;
+        }
+
+        print_tf_check_report(&check);
+
+        if tf_check_has_blockers(&check) {
+            process::exit(1);
+        }
+    });
+}
+
+fn cmd_tf_rename(source: &str, target_plan: &str) {
+    with_project_root(|root| {
+        let res = do_compile(root, true);
+        let target = read_target(root);
+        ensure_tf_backend(&target, "ground tf rename");
+
+        let (from_plan, to_plan, dir) =
+            rename_tracked_orphan_to_plan(root, &res, &target, source, target_plan).unwrap_or_else(
+                |e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                },
+            );
+
+        println!("renamed Terraform state binding");
+        println!("- source: {source}");
+        println!("- from:   {from_plan}");
+        println!("- to:     {to_plan}");
+        println!("- dir:    {dir}");
+    });
 }
 
 fn cmd_tf_migrate() {
@@ -1137,8 +1660,33 @@ fn cmd_apply(plan_name: &str, verbose: bool) {
         let (res, outputs, target, plan_name) = compile_and_gen(root, plan_name);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
+        let check = tf_check(root, &res).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            process::exit(1);
+        });
+        if !check.untracked_orphans.is_empty()
+            || !check.tracked_orphans.is_empty()
+            || !check.registry_mismatches.is_empty()
+        {
+            print_tf_check_report(&check);
+            if !check.registry_mismatches.is_empty() {
+                fix_registry_mismatches(root, &target, &check);
+            }
+            if tf_check_has_blockers(&check) {
+                process::exit(1);
+            }
+        }
 
         write_render_units(root, &target, &outputs);
+        let full_plan =
+            selected_full_plan_name(&res, &plan_name).unwrap_or_else(|| plan_name.clone());
+        let state_dir = format!("{}/{}", render_out_dir(&target), plan_name);
+        upsert_state_binding_for_plan_dir(root, &full_plan, &target, &state_dir).unwrap_or_else(
+            |e| {
+                eprintln!("error: {e}");
+                process::exit(1);
+            },
+        );
 
         let dir = root.join(render_out_dir(&target)).join(&plan_name);
         run_init_if_needed(&dir, &plan_name, &provider, verbose);
@@ -1169,8 +1717,33 @@ fn cmd_plan(plan_name: &str, verbose: bool) {
         let (res, outputs, target, plan_name) = compile_and_gen(root, plan_name);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
+        let check = tf_check(root, &res).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            process::exit(1);
+        });
+        if !check.untracked_orphans.is_empty()
+            || !check.tracked_orphans.is_empty()
+            || !check.registry_mismatches.is_empty()
+        {
+            print_tf_check_report(&check);
+            if !check.registry_mismatches.is_empty() {
+                fix_registry_mismatches(root, &target, &check);
+            }
+            if tf_check_has_blockers(&check) {
+                process::exit(1);
+            }
+        }
 
         write_render_units(root, &target, &outputs);
+        let full_plan =
+            selected_full_plan_name(&res, &plan_name).unwrap_or_else(|| plan_name.clone());
+        let state_dir = format!("{}/{}", render_out_dir(&target), plan_name);
+        upsert_state_binding_for_plan_dir(root, &full_plan, &target, &state_dir).unwrap_or_else(
+            |e| {
+                eprintln!("error: {e}");
+                process::exit(1);
+            },
+        );
 
         let dir = root.join(render_out_dir(&target)).join(&plan_name);
         run_init_if_needed(&dir, &plan_name, &provider, verbose);
@@ -1205,4 +1778,364 @@ fn cmd_plan(plan_name: &str, verbose: bool) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ground-{name}-{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
+
+    fn test_compile_res(plan_names: &[&str]) -> CompileRes {
+        CompileRes {
+            units: vec![],
+            defs: vec![],
+            plans: plan_names
+                .iter()
+                .map(|name| ground_compile::PlanRoot {
+                    name: (*name).to_string(),
+                    def_idx: 0,
+                    pack_path: vec![],
+                    scope: ground_compile::ScopeId(0),
+                    unit: None,
+                })
+                .collect(),
+            scopes: vec![],
+            type_units: vec![],
+            errors: vec![],
+        }
+    }
+
+    fn write_states_json(root: &Path, src: &str) {
+        let path = states_path(root);
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        fs::write(path, src).unwrap();
+    }
+
+    fn read_states_json(root: &Path) -> String {
+        fs::read_to_string(states_path(root)).unwrap()
+    }
+
+    #[test]
+    fn tf_check_reports_untracked_stateful_dirs() {
+        let root = temp_test_dir("tf-check-untracked");
+        fs::create_dir_all(root.join(".ground/tf/orphan/.terraform")).unwrap();
+
+        let check = tf_check(&root, &test_compile_res(&["test:current"])).unwrap();
+        assert_eq!(
+            check,
+            TfCheckRes {
+                untracked_orphans: vec![".ground/tf/orphan".to_string()],
+                tracked_orphans: vec![],
+                registry_mismatches: vec![],
+            }
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tf_check_ignores_untracked_stateful_dir_for_current_plan() {
+        let root = temp_test_dir("tf-check-current-plan-dir");
+        fs::create_dir_all(root.join(".ground/tf/current/.terraform")).unwrap();
+
+        let check = tf_check(&root, &test_compile_res(&["current"])).unwrap();
+        assert_eq!(
+            check,
+            TfCheckRes {
+                untracked_orphans: vec![],
+                tracked_orphans: vec![],
+                registry_mismatches: vec![],
+            }
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tf_check_reports_tracked_state_json_orphans_with_codes() {
+        let root = temp_test_dir("tf-check-tracked");
+        fs::create_dir_all(root.join(".ground/tf/old-a/.terraform")).unwrap();
+        fs::create_dir_all(root.join(".ground/tf/old-b/.terraform")).unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:old-a", "target": "tf:json", "dir": ".ground/tf/old-a" },
+              { "plan": "test:old-b", "target": "tf:json", "dir": ".ground/tf/old-b" }
+            ]
+            "#,
+        );
+
+        let check = tf_check(&root, &test_compile_res(&["test:current"])).unwrap();
+        assert_eq!(check.untracked_orphans, Vec::<String>::new());
+        assert_eq!(
+            check.tracked_orphans,
+            vec![
+                TrackedStateOrphan {
+                    code: orphan_code_for_dir(".ground/tf/old-a"),
+                    plan: "test:old-a".to_string(),
+                    dir: ".ground/tf/old-a".to_string(),
+                },
+                TrackedStateOrphan {
+                    code: orphan_code_for_dir(".ground/tf/old-b"),
+                    plan: "test:old-b".to_string(),
+                    dir: ".ground/tf/old-b".to_string(),
+                }
+            ]
+        );
+        assert_eq!(
+            check.registry_mismatches,
+            Vec::<StateRegistryMismatch>::new()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tf_check_ignores_state_json_entries_without_stateful_dir() {
+        let root = temp_test_dir("tf-check-no-state");
+        fs::create_dir_all(root.join(".ground/tf/old")).unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:old", "target": "tf:json", "dir": ".ground/tf/old" }
+            ]
+            "#,
+        );
+
+        let check = tf_check(&root, &test_compile_res(&["test:current"])).unwrap();
+        assert_eq!(
+            check,
+            TfCheckRes {
+                untracked_orphans: vec![],
+                tracked_orphans: vec![],
+                registry_mismatches: vec![],
+            }
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tf_check_reports_registry_mismatch_for_current_plan_dir() {
+        let root = temp_test_dir("tf-check-registry-mismatch");
+        fs::create_dir_all(root.join(".ground/tf/current/.terraform")).unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:boo", "target": "tf:json", "dir": ".ground/tf/current" }
+            ]
+            "#,
+        );
+
+        let check = tf_check(&root, &test_compile_res(&["current"])).unwrap();
+        assert_eq!(check.untracked_orphans, Vec::<String>::new());
+        assert_eq!(check.tracked_orphans, Vec::<TrackedStateOrphan>::new());
+        assert_eq!(
+            check.registry_mismatches,
+            vec![StateRegistryMismatch {
+                recorded_plan: "test:boo".to_string(),
+                actual_plan: "current".to_string(),
+                dir: ".ground/tf/current".to_string(),
+            }]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upsert_state_binding_adds_missing_record() {
+        let root = temp_test_dir("state-upsert-add");
+        let target = RenderTarget {
+            backend: "tf".into(),
+            out_type: "json".into(),
+        };
+
+        upsert_state_binding_for_plan_dir(
+            &root,
+            "test:ground-test-platform",
+            &target,
+            ".ground/tf/ground-test-platform",
+        )
+        .unwrap();
+
+        let src = read_states_json(&root);
+        assert!(src.contains("\"plan\": \"test:ground-test-platform\""));
+        assert!(src.contains("\"target\": \"tf:json\""));
+        assert!(src.contains("\"dir\": \".ground/tf/ground-test-platform\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upsert_state_binding_rewrites_stale_binding_for_same_dir() {
+        let root = temp_test_dir("state-upsert-rewrite");
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:boo", "target": "tf:json", "dir": ".ground/tf/ground-test-platform" }
+            ]
+            "#,
+        );
+        let target = RenderTarget {
+            backend: "tf".into(),
+            out_type: "json".into(),
+        };
+
+        upsert_state_binding_for_plan_dir(
+            &root,
+            "test:ground-test-platform",
+            &target,
+            ".ground/tf/ground-test-platform",
+        )
+        .unwrap();
+
+        let src = read_states_json(&root);
+        assert!(src.contains("\"plan\": \"test:ground-test-platform\""));
+        assert!(!src.contains("\"plan\": \"test:boo\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fix_registry_mismatches_rewrites_states_json() {
+        let root = temp_test_dir("fix-registry-mismatches");
+        fs::create_dir_all(root.join(".ground/tf/current/.terraform")).unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:boo", "target": "tf:json", "dir": ".ground/tf/current" }
+            ]
+            "#,
+        );
+        let target = RenderTarget {
+            backend: "tf".into(),
+            out_type: "json".into(),
+        };
+        let check = tf_check(&root, &test_compile_res(&["current"])).unwrap();
+
+        fix_registry_mismatches(&root, &target, &check);
+
+        let src = read_states_json(&root);
+        assert!(src.contains("\"plan\": \"current\""));
+        assert!(!src.contains("\"plan\": \"test:boo\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fix_registry_mismatches_prunes_non_stateful_registry_records() {
+        let root = temp_test_dir("fix-registry-mismatches-prune");
+        fs::create_dir_all(root.join(".ground/tf/current/.terraform")).unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:boo", "target": "tf:json", "dir": ".ground/tf/current" },
+              { "plan": "test:old", "target": "tf:json", "dir": ".ground/tf/old" }
+            ]
+            "#,
+        );
+        let target = RenderTarget {
+            backend: "tf".into(),
+            out_type: "json".into(),
+        };
+        let check = tf_check(&root, &test_compile_res(&["current"])).unwrap();
+
+        fix_registry_mismatches(&root, &target, &check);
+
+        let src = read_states_json(&root);
+        assert!(src.contains("\"dir\": \".ground/tf/current\""));
+        assert!(!src.contains("\"dir\": \".ground/tf/old\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rename_tracked_orphan_to_plan_moves_stateful_artifacts_and_updates_registry() {
+        let root = temp_test_dir("rename-tracked-orphan");
+        fs::create_dir_all(root.join(".ground/tf/old/.terraform")).unwrap();
+        fs::write(root.join(".ground/tf/old/terraform.tfstate"), "{}").unwrap();
+        fs::write(root.join(".ground/tf/old/.terraform.lock.hcl"), "# lock").unwrap();
+        fs::create_dir_all(root.join(".ground/tf/current")).unwrap();
+        fs::write(root.join(".ground/tf/current/main.tf.json"), "{}").unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:old", "target": "tf:json", "dir": ".ground/tf/old" }
+            ]
+            "#,
+        );
+
+        let res = test_compile_res(&["current"]);
+        let target = RenderTarget {
+            backend: "tf".into(),
+            out_type: "json".into(),
+        };
+        let source = orphan_code_for_dir(".ground/tf/old");
+
+        let (from, to, dir) =
+            rename_tracked_orphan_to_plan(&root, &res, &target, &source, "current").unwrap();
+
+        assert_eq!(from, "test:old");
+        assert_eq!(to, "current");
+        assert_eq!(dir, ".ground/tf/current");
+        assert!(root.join(".ground/tf/current/.terraform").is_dir());
+        assert!(root.join(".ground/tf/current/terraform.tfstate").is_file());
+        assert!(root
+            .join(".ground/tf/current/.terraform.lock.hcl")
+            .is_file());
+        assert!(!root.join(".ground/tf/old/terraform.tfstate").exists());
+        let src = read_states_json(&root);
+        assert!(src.contains("\"plan\": \"current\""));
+        assert!(src.contains("\"dir\": \".ground/tf/current\""));
+        assert!(!src.contains("\"plan\": \"test:old\""));
+        assert!(!src.contains("\"dir\": \".ground/tf/old\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rename_tracked_orphan_to_plan_rejects_stateful_target_dir() {
+        let root = temp_test_dir("rename-tracked-orphan-stateful-target");
+        fs::create_dir_all(root.join(".ground/tf/old/.terraform")).unwrap();
+        fs::write(root.join(".ground/tf/old/terraform.tfstate"), "{}").unwrap();
+        fs::create_dir_all(root.join(".ground/tf/current/.terraform")).unwrap();
+        write_states_json(
+            &root,
+            r#"
+            [
+              { "plan": "test:old", "target": "tf:json", "dir": ".ground/tf/old" }
+            ]
+            "#,
+        );
+
+        let res = test_compile_res(&["current"]);
+        let target = RenderTarget {
+            backend: "tf".into(),
+            out_type: "json".into(),
+        };
+        let source = orphan_code_for_dir(".ground/tf/old");
+
+        let err = rename_tracked_orphan_to_plan(&root, &res, &target, &source, "current")
+            .expect_err("rename should fail when target dir is already stateful");
+        assert!(err.contains("already has Terraform stateful artifacts"));
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
