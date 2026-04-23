@@ -27,7 +27,7 @@ mod golden {
 
         let res = compile(CompileReq {
             units: vec![Unit {
-                name: String::new(),
+                name: "test".into(),
                 path: vec![],
                 src,
                 ts_src,

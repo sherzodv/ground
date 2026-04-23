@@ -1,3 +1,5 @@
+pack test
+
 pack shared {
   def helper
 }

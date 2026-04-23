@@ -841,6 +841,28 @@ fn mapper_019() {
 }
 
 #[test]
+fn mapper_019b() {
+    assert_eq!(
+        show(
+            r##"
+            scaling = { min = integer  max = integer }
+            svc = { scaling = scaling }
+            my-svc = svc { scaling  : scaling { min  : 2  max  : 10 } }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[scaling, _, unit, Struct[FieldDef[min, Type[_, Ref(integer)]], FieldDef[max, Type[_, Ref(integer)]]]],
+                Def[svc, _, unit, Struct[FieldDef[scaling, Type[_, Ref(scaling)]]]],
+                Def[my-svc, svc, unit, Struct[FieldSet[scaling, Struct[Hint(scaling), Field[min, Ref(2)], Field[max, Ref(10)]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn mapper_019a() {
     assert_eq!(
         show(
@@ -1085,12 +1107,14 @@ fn scope_001() {
             ParseUnit {
                 name: "web".into(),
                 path: vec!["infra".into()],
+                declared_pack: None,
                 src: "image = reference".into(),
                 ts_src: None,
             },
             ParseUnit {
                 name: "db".into(),
                 path: vec!["infra".into()],
+                declared_pack: None,
                 src: "engine = string".into(),
                 ts_src: None,
             },

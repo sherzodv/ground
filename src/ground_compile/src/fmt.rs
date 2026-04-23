@@ -1,6 +1,6 @@
 use crate::ast::{
-    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstNodeLoc, AstPrimitive, AstRef,
-    AstRefSegVal, AstStructField, AstStructFieldBody, AstStructFieldKind, AstStructItem,
+    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstNode, AstNodeLoc, AstPrimitive,
+    AstRef, AstRefSegVal, AstStructField, AstStructFieldBody, AstStructFieldKind, AstStructItem,
     AstTypeExpr, AstUse, AstValue, UnitId,
 };
 use crate::parse::parse_file_items;
@@ -15,18 +15,23 @@ pub fn format_source(src: &str) -> Result<String, Vec<String>> {
 
 fn render_items(items: &[AstItem], indent: usize, top_level: bool, src: &str) -> String {
     if top_level {
-        let mut uses: Vec<String> = items
+        let (prefix, rest) = split_top_level_prefix(items, src);
+
+        let mut uses: Vec<String> = rest
             .iter()
-            .filter_map(|item| match item {
+            .filter_map(|item| match *item {
                 AstItem::Use(_) => Some(render_item(item, indent)),
                 _ => None,
             })
             .collect();
         uses.sort();
 
-        let others = render_top_level_non_use_blocks(items, indent, src);
+        let others = render_top_level_non_use_blocks(&rest, indent, src);
 
         let mut blocks = vec![];
+        if !prefix.is_empty() {
+            blocks.push(prefix.join("\n"));
+        }
         if !uses.is_empty() {
             blocks.push(uses.join("\n"));
         }
@@ -40,11 +45,51 @@ fn render_items(items: &[AstItem], indent: usize, top_level: bool, src: &str) ->
     rendered.join("\n")
 }
 
-fn render_top_level_non_use_blocks(items: &[AstItem], indent: usize, src: &str) -> Vec<String> {
+fn split_top_level_prefix<'a>(items: &'a [AstItem], src: &str) -> (Vec<String>, Vec<&'a AstItem>) {
+    let Some(first_idx) = items
+        .iter()
+        .position(|item| matches!(item, AstItem::Pack(pack) if pack.inner.defs.is_none()))
+    else {
+        return (vec![], items.iter().collect());
+    };
+
+    let mut prefix_start = first_idx;
+    while prefix_start > 0 {
+        let AstItem::Comment(comment) = &items[prefix_start - 1] else {
+            break;
+        };
+        if comment_attaches(src, &comment.loc, &item_loc(&items[prefix_start])) {
+            prefix_start -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let prefix = items[prefix_start..=first_idx]
+        .iter()
+        .map(|item| render_item(item, 0))
+        .collect();
+    if prefix_start == 0 {
+        return (prefix, items[first_idx + 1..].iter().collect());
+    }
+
+    // When a file-level `pack ...` is misplaced below other items, hoist it to the
+    // front and let the caller re-render the remaining items in original relative order.
+    let mut rest = Vec::with_capacity(items.len() - (first_idx + 1 - prefix_start));
+    rest.extend(items[..prefix_start].iter());
+    rest.extend(items[first_idx + 1..].iter());
+    (prefix, rest)
+}
+
+fn render_top_level_non_use_blocks(items: &[&AstItem], indent: usize, src: &str) -> Vec<String> {
     let mut blocks = vec![];
     let mut pending_comments: Vec<(String, AstNodeLoc)> = vec![];
 
-    for item in items.iter().filter(|item| !matches!(item, AstItem::Use(_))) {
+    for item in items
+        .iter()
+        .copied()
+        .filter(|item| !matches!(item, AstItem::Use(_)))
+    {
         match item {
             AstItem::Comment(c) => {
                 pending_comments.push((render_item(item, indent), c.loc.clone()))
@@ -132,8 +177,8 @@ fn render_def(def: &AstDef, indent: usize) -> String {
     let head = if def.planned {
         format!("{}plan {}", spaces(indent), def.name.inner)
     } else if def.input.is_empty() && def.mapper.is_none() {
-        match &def.output.inner {
-            AstDefO::Unit => format!("{}def {}", spaces(indent), def.name.inner),
+        match &def.output {
+            None => format!("{}def {}", spaces(indent), def.name.inner),
             _ => format!("{}{} =", spaces(indent), def.name.inner),
         }
     } else if def.input.is_empty() {
@@ -143,15 +188,25 @@ fn render_def(def: &AstDef, indent: usize) -> String {
         format!("{}def {} {}", spaces(indent), def.name.inner, input)
     };
 
-    match &def.output.inner {
-        AstDefO::Unit => {
+    match &def.output {
+        None => {
             if let Some(mapper) = &def.mapper {
-                format!("{head} {}", render_ref(&mapper.inner))
+                if def.input.is_empty()
+                    && !def.planned
+                    && !matches!(head.trim_end(), x if x.ends_with('='))
+                {
+                    format!("{head} {}", render_ref(&mapper.inner))
+                } else {
+                    format!("{head} = {}", render_ref(&mapper.inner))
+                }
             } else {
                 head
             }
         }
-        AstDefO::TypeExpr(ty) => {
+        Some(AstNode {
+            inner: AstDefO::TypeExpr(ty),
+            ..
+        }) => {
             if matches!(head.trim_end(), x if x.ends_with('=')) {
                 format!("{head} {}", render_type_expr(&ty.inner, indent, false))
             } else if let Some(mapper) = &def.mapper {
@@ -164,7 +219,10 @@ fn render_def(def: &AstDef, indent: usize) -> String {
                 format!("{head} = {}", render_type_expr(&ty.inner, indent, false))
             }
         }
-        AstDefO::Struct(items) => {
+        Some(AstNode {
+            inner: AstDefO::Struct(items),
+            ..
+        }) => {
             let body = render_struct_items(items, indent);
             if let Some(mapper) = &def.mapper {
                 if matches!(head.trim_end(), x if x.ends_with('=')) {
@@ -185,6 +243,7 @@ fn render_input_block(fields: &[crate::ast::AstNode<AstDefI>], indent: usize) ->
     if fields.is_empty() {
         return "{}".into();
     }
+    let name_width = max_def_input_name_width(fields);
     let parts: Vec<String> = fields
         .iter()
         .map(|f| {
@@ -195,9 +254,10 @@ fn render_input_block(fields: &[crate::ast::AstNode<AstDefI>], indent: usize) ->
                 .map(|n| n.inner.as_str())
                 .unwrap_or("_");
             format!(
-                "{}{} = {}",
+                "{}{}{} = {}",
                 spaces(indent + 2),
                 name,
+                spaces(name_width.saturating_sub(name.len())),
                 render_type_expr(&f.inner.ty.inner, indent + 2, false)
             )
         })
@@ -267,9 +327,10 @@ fn render_struct_items(items: &[crate::ast::AstNode<AstStructItem>], indent: usi
                 .join(" ")
         );
     }
+    let name_width = max_struct_field_name_width(items);
     let parts: Vec<String> = items
         .iter()
-        .map(|i| render_struct_item_line(&i.inner, indent + 2))
+        .map(|i| render_struct_item_line(&i.inner, indent + 2, name_width))
         .collect();
     format!("{{\n{}\n{}}}", parts.join("\n"), spaces(indent))
 }
@@ -287,28 +348,63 @@ fn render_struct_item(item: &AstStructItem, indent: usize) -> String {
     }
 }
 
-fn render_struct_item_line(item: &AstStructItem, indent: usize) -> String {
+fn render_struct_item_line(item: &AstStructItem, indent: usize, name_width: usize) -> String {
     match item {
         AstStructItem::Def(d) => render_def(&d.inner, indent),
         AstStructItem::Comment(c) => render_comment(&c.inner, indent),
+        AstStructItem::Field(f) => {
+            format!(
+                "{}{}",
+                spaces(indent),
+                render_struct_field_aligned(&f.inner, indent, name_width)
+            )
+        }
         _ => format!("{}{}", spaces(indent), render_struct_item(item, indent)),
     }
 }
 
 fn render_struct_field(field: &AstStructField, indent: usize) -> String {
     let name = field.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
+    render_struct_field_with_padding(field, indent, 0, name.len())
+}
+
+fn render_struct_field_aligned(field: &AstStructField, indent: usize, name_width: usize) -> String {
+    let name = field.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
+    render_struct_field_with_padding(
+        field,
+        indent,
+        name_width.saturating_sub(name.len()),
+        name.len(),
+    )
+}
+
+fn render_struct_field_with_padding(
+    field: &AstStructField,
+    indent: usize,
+    pad: usize,
+    _name_len: usize,
+) -> String {
+    let name = field.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
     match (&field.kind, &field.body) {
         (AstStructFieldKind::Def, AstStructFieldBody::Type(ty)) => {
-            format!("{name} = {}", render_type_expr(&ty.inner, indent, true))
+            format!(
+                "{name}{} = {}",
+                spaces(pad),
+                render_type_expr(&ty.inner, indent, true)
+            )
         }
         (AstStructFieldKind::Set, AstStructFieldBody::Value(v)) => {
-            format!("{name}: {}", render_value(&v.inner, indent))
+            format!("{name}{}: {}", spaces(pad), render_value(&v.inner, indent))
         }
         (AstStructFieldKind::Def, AstStructFieldBody::Value(v)) => {
-            format!("{name} = {}", render_value(&v.inner, indent))
+            format!("{name}{} = {}", spaces(pad), render_value(&v.inner, indent))
         }
         (AstStructFieldKind::Set, AstStructFieldBody::Type(ty)) => {
-            format!("{name}: {}", render_type_expr(&ty.inner, indent, true))
+            format!(
+                "{name}{}: {}",
+                spaces(pad),
+                render_type_expr(&ty.inner, indent, true)
+            )
         }
     }
 }
@@ -357,20 +453,35 @@ fn render_value_fields(fields: &[crate::ast::AstNode<AstField>], indent: usize) 
     if inline {
         return format!("{{ {} }}", render_field(&fields[0].inner, indent + 2));
     }
+    let name_width = max_value_field_name_width(fields);
     let parts: Vec<String> = fields
         .iter()
-        .map(|f| render_field_line(&f.inner, indent + 2))
+        .map(|f| render_field_line(&f.inner, indent + 2, name_width))
         .collect();
     format!("{{\n{}\n{}}}", parts.join("\n"), spaces(indent))
 }
 
 fn render_field(field: &AstField, indent: usize) -> String {
+    render_field_with_padding(field, indent, 0)
+}
+
+fn render_field_with_padding(field: &AstField, indent: usize, pad: usize) -> String {
     match field {
         AstField::Named { name, value, via } => {
             if *via {
-                format!("{}: via {}", name.inner, render_value(&value.inner, indent))
+                format!(
+                    "{}{}: via {}",
+                    name.inner,
+                    spaces(pad),
+                    render_value(&value.inner, indent)
+                )
             } else {
-                format!("{}: {}", name.inner, render_value(&value.inner, indent))
+                format!(
+                    "{}{}: {}",
+                    name.inner,
+                    spaces(pad),
+                    render_value(&value.inner, indent)
+                )
             }
         }
         AstField::Anon(v) => render_value(&v.inner, indent),
@@ -378,9 +489,14 @@ fn render_field(field: &AstField, indent: usize) -> String {
     }
 }
 
-fn render_field_line(field: &AstField, indent: usize) -> String {
+fn render_field_line(field: &AstField, indent: usize, name_width: usize) -> String {
     match field {
         AstField::Comment(c) => render_comment(&c.inner, indent),
+        AstField::Named { name, .. } => format!(
+            "{}{}",
+            spaces(indent),
+            render_field_with_padding(field, indent, name_width.saturating_sub(name.inner.len()))
+        ),
         _ => format!("{}{}", spaces(indent), render_field(field, indent)),
     }
 }
@@ -429,6 +545,38 @@ fn spaces(n: usize) -> String {
     " ".repeat(n)
 }
 
+fn max_def_input_name_width(fields: &[crate::ast::AstNode<AstDefI>]) -> usize {
+    fields
+        .iter()
+        .map(|f| f.inner.name.as_ref().map(|n| n.inner.len()).unwrap_or(1))
+        .max()
+        .unwrap_or(1)
+}
+
+fn max_struct_field_name_width(items: &[crate::ast::AstNode<AstStructItem>]) -> usize {
+    items
+        .iter()
+        .filter_map(|item| match &item.inner {
+            AstStructItem::Field(f) => {
+                Some(f.inner.name.as_ref().map(|n| n.inner.len()).unwrap_or(1))
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1)
+}
+
+fn max_value_field_name_width(fields: &[crate::ast::AstNode<AstField>]) -> usize {
+    fields
+        .iter()
+        .filter_map(|f| match &f.inner {
+            AstField::Named { name, .. } => Some(name.inner.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_source;
@@ -450,7 +598,24 @@ port=grpc|http
         let src =
             r#"api=service{access: [media:http database:main] scaling: scaling{min: 1 max: 2}}"#;
         let got = format_source(src).unwrap();
-        assert_eq!(got, "api = service {\n  access: [\n    media:http\n    database:main\n  ]\n  scaling: scaling {\n    min: 1\n    max: 2\n  }\n}");
+        assert_eq!(got, "api = service {\n  access : [\n    media:http\n    database:main\n  ]\n  scaling: scaling {\n    min: 1\n    max: 2\n  }\n}");
+    }
+
+    #[test]
+    fn fmt_canonicalizes_spaced_value_colons() {
+        let src = r#"
+api = service {
+  scaling  : scaling {
+    min  : 1
+    max  : 2
+  }
+}
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(
+            got,
+            "api = service { scaling: scaling {\n    min: 1\n    max: 2\n  } }"
+        );
     }
 
     #[test]
@@ -465,6 +630,21 @@ use pack:std
         assert_eq!(
             got,
             "use pack:app\nuse pack:ops\nuse pack:std\n\nservice = { port = grpc | http }"
+        );
+    }
+
+    #[test]
+    fn fmt_keeps_file_pack_before_uses() {
+        let src = r#"
+use pack:ops
+pack std:aws:tf
+use pack:app
+service = { port = grpc | http }
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(
+            got,
+            "pack std:aws:tf\n\nuse pack:app\nuse pack:ops\n\nservice = { port = grpc | http }"
         );
     }
 
@@ -487,5 +667,34 @@ service = { port = grpc | http }
 "#;
         let got = format_source(src).unwrap();
         assert_eq!(got, "# service mapper\n\nservice = { port = grpc | http }");
+    }
+
+    #[test]
+    fn fmt_aligns_multiline_fields() {
+        let src = r#"
+service = {
+port = grpc | http
+image = reference
+}
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(
+            got,
+            "service = {\n  port  = grpc | http\n  image = reference\n}"
+        );
+    }
+
+    #[test]
+    fn fmt_keeps_equals_for_mapper_with_input_block_and_empty_output() {
+        let src = r#"
+def aws_vpc {
+cidr_block = string
+} = make_aws_vpc {}
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(
+            got,
+            "def aws_vpc {\n  cidr_block = string\n} = make_aws_vpc {}"
+        );
     }
 }

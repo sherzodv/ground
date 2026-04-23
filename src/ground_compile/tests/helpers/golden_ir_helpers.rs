@@ -260,6 +260,7 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
             .map(|(name, path, src)| ParseUnit {
                 name: name.into(),
                 path: path.into_iter().map(|s| s.to_string()).collect(),
+                declared_pack: None,
                 src: src.to_string(),
                 ts_src: None,
             })
@@ -275,6 +276,7 @@ pub fn show(input: &str) -> String {
         units: vec![ParseUnit {
             name: "test".into(),
             path: vec![],
+            declared_pack: None,
             src: input.to_string(),
             ts_src: None,
         }],
@@ -289,6 +291,7 @@ pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
         units: vec![ParseUnit {
             name: "test".into(),
             path: vec![],
+            declared_pack: None,
             src: grd_src.to_string(),
             ts_src: Some(ts_src.to_string()),
         }],
@@ -306,6 +309,7 @@ pub fn show_multi_ts(units: Vec<(&str, Vec<&str>, &str, Option<&str>)>) -> Strin
             .map(|(name, path, src, ts)| ParseUnit {
                 name: name.into(),
                 path: path.into_iter().map(|s| s.to_string()).collect(),
+                declared_pack: None,
                 src: src.to_string(),
                 ts_src: ts.map(|s| s.to_string()),
             })

@@ -272,10 +272,7 @@ fn effective_mapper_fn(td: &AstDef) -> Option<String> {
     if td.input.is_empty() {
         return None;
     }
-    match &td.output.inner {
-        AstDefO::Unit => None,
-        _ => Some(td.name.inner.clone()),
-    }
+    td.output.as_ref().map(|_| td.name.inner.clone())
 }
 
 fn lookup_base_shape_and_def(
@@ -361,7 +358,11 @@ fn classify_def(td: &AstDef) -> DefKind {
     if !has_explicit_mapper(td) {
         return DefKind::Plain;
     }
-    if output_has_schema_items(&td.output.inner) {
+    if td
+        .output
+        .as_ref()
+        .is_some_and(|output| output_has_schema_items(&output.inner))
+    {
         return DefKind::ComposedShape;
     }
     DefKind::Apply
@@ -1086,8 +1087,8 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         // Resolve output fields (the fields after "=").
         let body_scope =
             find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
-        let outputs = match &td.inner.output.inner {
-            AstDefO::Struct(items) => resolve_struct_fields(items, ctx, body_scope),
+        let outputs = match td.inner.output.as_ref().map(|o| &o.inner) {
+            Some(AstDefO::Struct(items)) => resolve_struct_fields(items, ctx, body_scope),
             _ => vec![],
         };
 
@@ -1113,16 +1114,29 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         ctx.shapes[shape_id.0 as usize].body = IrShapeBody::Struct(all_fields);
 
         let mut mapper_fn = effective_mapper_fn(&td.inner);
+        let mut mapper_from_explicit_ref = td
+            .inner
+            .mapper
+            .as_ref()
+            .map(|m| ref_to_repr(&m.inner))
+            .zip(mapper_fn.clone())
+            .is_some_and(|(explicit, current)| explicit == current);
         if td.inner.input.is_empty() {
             let (_, base_def) = lookup_base_shape_and_def(&td.inner, ctx, scope);
             if base_def.is_some() {
-                mapper_fn = None;
+                mapper_fn = if outputs.is_empty() {
+                    None
+                } else {
+                    Some(td.inner.name.inner.clone())
+                };
+                mapper_from_explicit_ref = false;
             }
         }
 
         if let Some(mapper_name) = mapper_fn.clone() {
             if !ctx.scope_has_ts_fn(scope, &mapper_name) {
-                if let Some(explicit) = &td.inner.mapper {
+                if mapper_from_explicit_ref {
+                    let explicit = td.inner.mapper.as_ref().expect("explicit mapper ref");
                     if let Some(ts_name) = lookup_ts_fn_by_ref(&explicit.inner, ctx, scope) {
                         mapper_fn = Some(ts_name);
                     } else {
@@ -1218,9 +1232,9 @@ fn pass3b_flatten_alias_types(ctx: &mut Ctx) {
 /// Resolve the body of an `AstDef` into an `IrShapeBody`.
 /// Called from pass3 for top-level and nested defs.
 fn resolve_top_def_body(td: &AstDef, ctx: &mut Ctx, scope: ScopeId) -> IrShapeBody {
-    match &td.output.inner {
-        AstDefO::Unit => IrShapeBody::Unit,
-        AstDefO::TypeExpr(type_node) => match &type_node.inner {
+    match td.output.as_ref().map(|o| &o.inner) {
+        None => IrShapeBody::Unit,
+        Some(AstDefO::TypeExpr(type_node)) => match &type_node.inner {
             AstTypeExpr::Ref(r) => {
                 if let Some(p) = builtin_primitive_from_ref(r) {
                     return IrShapeBody::Primitive(p);
@@ -1230,7 +1244,9 @@ fn resolve_top_def_body(td: &AstDef, ctx: &mut Ctx, scope: ScopeId) -> IrShapeBo
             }
             _ => resolve_type_body(type_node, ctx, scope),
         },
-        AstDefO::Struct(items) => IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope)),
+        Some(AstDefO::Struct(items)) => {
+            IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope))
+        }
     }
 }
 
@@ -1673,10 +1689,9 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                         .and_then(|shape_id| ctx.lookup_def_typed_any(scope, name, shape_id))
                         .or_else(|| ctx.lookup_def_any(scope, name));
                     if let Some(fid) = fid {
-                        let fields = match &td.inner.output.inner {
-                            AstDefO::Unit => vec![],
-                            AstDefO::Struct(items) => collect_apply_fields(items),
-                            AstDefO::TypeExpr(_) => vec![],
+                        let fields = match td.inner.output.as_ref().map(|o| &o.inner) {
+                            Some(AstDefO::Struct(items)) => collect_apply_fields(items),
+                            _ => vec![],
                         };
                         let enforce_required = matches!(classify_def(&td.inner), DefKind::Apply);
                         work.push((fid, fields, scope, enforce_required));

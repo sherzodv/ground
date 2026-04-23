@@ -108,14 +108,26 @@ struct Prepared {
 }
 
 fn prepare(req: CompileReq) -> Prepared {
+    let mut pre_errors = vec![];
     let units: Vec<ast::ParseUnit> = req
         .units
         .into_iter()
-        .map(|u| ast::ParseUnit {
-            name: u.name,
-            path: u.path,
-            src: u.src,
-            ts_src: u.ts_src,
+        .enumerate()
+        .map(|(idx, u)| {
+            let declared_pack = validate_compile_unit_pack(
+                UnitId(idx as u32),
+                &u.path,
+                &u.name,
+                &u.src,
+                &mut pre_errors,
+            );
+            ast::ParseUnit {
+                name: u.name,
+                path: u.path,
+                declared_pack,
+                src: u.src,
+                ts_src: u.ts_src,
+            }
         })
         .collect();
 
@@ -152,7 +164,7 @@ fn prepare(req: CompileReq) -> Prepared {
     let parse_res = parse::parse(parse_req);
     let ir = resolve::resolve(parse_res.clone());
 
-    let errors: Vec<CompileError> = ir
+    let mut errors: Vec<CompileError> = ir
         .errors
         .iter()
         .map(|e| {
@@ -171,6 +183,7 @@ fn prepare(req: CompileReq) -> Prepared {
             }
         })
         .collect();
+    errors.extend(pre_errors);
 
     // Don't lower if the IR has errors — it may be in an invalid state.
     if !errors.is_empty() {
@@ -327,6 +340,126 @@ fn offset_to_line_col(src: &str, offset: u32) -> (u32, u32) {
     let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
     let col = before.rfind('\n').map_or(offset, |p| offset - p - 1) as u32 + 1;
     (line, col)
+}
+
+fn validate_compile_unit_pack(
+    unit: UnitId,
+    path: &[String],
+    name: &str,
+    src: &str,
+    errors: &mut Vec<CompileError>,
+) -> Option<Vec<String>> {
+    let (items, parse_errors) = parse::parse_file_items(src, unit);
+    if !parse_errors.is_empty() {
+        return None;
+    }
+
+    let Some(first_idx) = items
+        .iter()
+        .position(|item| !matches!(item, ast::AstItem::Comment(_)))
+    else {
+        errors.push(CompileError {
+            message: "compile unit must start with `pack ...`".into(),
+            loc: Some(ErrorLoc {
+                unit,
+                line: 1,
+                col: 1,
+                in_ts: false,
+            }),
+        });
+        return None;
+    };
+
+    let ast::AstItem::Pack(pack) = &items[first_idx] else {
+        errors.push(CompileError {
+            message: "compile unit must start with `pack ...`".into(),
+            loc: Some(ErrorLoc {
+                unit,
+                line: 1,
+                col: 1,
+                in_ts: false,
+            }),
+        });
+        return None;
+    };
+
+    if pack.inner.defs.is_some() {
+        let (line, col) = offset_to_line_col(src, pack.loc.start);
+        errors.push(CompileError {
+            message: "compile unit pack declaration must be bare `pack ...`".into(),
+            loc: Some(ErrorLoc {
+                unit,
+                line,
+                col,
+                in_ts: false,
+            }),
+        });
+        return None;
+    }
+
+    let mut declared = vec![];
+    for seg in &pack.inner.path.inner.segments {
+        let Some(plain) = seg.inner.as_plain() else {
+            let (line, col) = offset_to_line_col(src, seg.loc.start);
+            errors.push(CompileError {
+                message: "compile unit pack path must use plain segments".into(),
+                loc: Some(ErrorLoc {
+                    unit,
+                    line,
+                    col,
+                    in_ts: false,
+                }),
+            });
+            return None;
+        };
+        if seg.inner.is_opt || plain == "*" || plain == "pack" || plain == "def" {
+            let (line, col) = offset_to_line_col(src, seg.loc.start);
+            errors.push(CompileError {
+                message: "compile unit pack path must use plain segments".into(),
+                loc: Some(ErrorLoc {
+                    unit,
+                    line,
+                    col,
+                    in_ts: false,
+                }),
+            });
+            return None;
+        }
+        declared.push(plain.to_string());
+    }
+
+    let mut base = path.to_vec();
+    if !name.is_empty() {
+        base.push(name.to_string());
+    }
+    if !declared.starts_with(&base) {
+        let (line, col) = offset_to_line_col(src, pack.loc.start);
+        let expected = if base.is_empty() {
+            "<root>".into()
+        } else {
+            base.join(":")
+        };
+        let got = if declared.is_empty() {
+            "<root>".into()
+        } else {
+            declared.join(":")
+        };
+        errors.push(CompileError {
+            message: format!(
+                "compile unit pack '{}' must match file path prefix '{}'",
+                got, expected
+            ),
+            loc: Some(ErrorLoc {
+                unit,
+                line,
+                col,
+                in_ts: false,
+            }),
+        });
+        return None;
+    }
+
+    Some(declared)
 }
 
 fn scope_pack_path(scopes: &[ir::IrScope], mut scope: ScopeId) -> Vec<String> {

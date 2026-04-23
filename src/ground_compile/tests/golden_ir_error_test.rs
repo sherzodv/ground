@@ -364,12 +364,14 @@ fn error_mapper_fn_not_imported() {
             ParseUnit {
                 name: "mappers".into(),
                 path: vec![],
+                declared_pack: None,
                 src: String::new(),
                 ts_src: Some("function make_label(i) { return { value: i.key }; }".into()),
             },
             ParseUnit {
                 name: "main".into(),
                 path: vec![],
+                declared_pack: None,
                 src: r#"def label { key = string } = make_label { value = string }"#.into(),
                 ts_src: None,
             },

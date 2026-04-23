@@ -71,7 +71,8 @@ We used the **def** keyword to define a mapping named **rectangle** which, given
 
 If no mapper is explicitly referenced, Ground uses shorthand defaults:
 - with no output block, the mapper is `identity`
-- with an output block, the mapper is the def name itself
+- with an output block on an initial def, the mapper is the def name itself
+- with an output block on a composed def, Ground reuses the inherited mapper unless the composition defines new fields; if it defines new fields, it must provide an explicit mapper override
 
 Mappings are composable. The **r1** "instance" that we declared earlier is nothing more than just another mapping based on the **rectangle** mapping and inheriting the output structure from it, where now the **rectangle** defines the *how*, i.e. not only it is the inherited mapping, but also is the Typescript function reference. Note how input params are passed using the `field: value` syntax. Using the full mapping definition it becomes:
 ```ground
@@ -90,6 +91,7 @@ def colored_rectangle {} = rectangle {
 ```
 
 Here `colored_rectangle` is its own def. It inherits the structure of `rectangle` and adds a new field `color = string`.
+Because it defines a new field, it must also provide its own explicit mapper if that field is meant to be produced during mapping. If a composed def only refines values and does not define new fields, it may keep using the inherited mapper.
 
 And finally the **plan** statement is there to trigger the *resolution process*:
 ```ground
@@ -547,31 +549,39 @@ Each produces independent output. Defs not reachable from any `plan` are not res
 
 ## Packs
 
-A **pack** is a Ground namespacing tool. The can be nested.
+A **pack** is a Ground namespacing tool. Packs can be nested.
 
-- Each folder from the source root creates a nested pack with same as folder's name
-- Each file creates a pack names as file's basename
-- Special pack.grd contains definitions for a pack of the same name as the containing folder
+Every compile unit must declare a bare `pack ...` as its first non-comment item.
+That declared pack is the unit's scope. It must match the pack implied by the
+file path and may refine it further.
+
+- Each folder from the source root contributes a pack segment with the same name
+- Each `.grd` file contributes its basename as the default leaf segment
+- `pack.grd` is the special case: it contributes no extra leaf segment and belongs
+  to the containing folder's pack
+- The declared `pack ...` in the file must start with that file-implied path
+- The declared pack may extend it with extra nested segments
 
 For example:
 
 ```
-./std/           # pack std
-./std/pack.grd   # pack definitions belonging to pack std
-./std/math.grd   # pack std:math
-./std/io/        # pack std:io
-./std/io/net.grd # pack std:io:net
+./std/pack.grd   + `pack std`
+./std/math.grd   + `pack std:math`
+./std/aws.grd    + `pack std:aws:tf`
+./std/io/net.grd + `pack std:io:net`
 ```
 
-Typescript & ground files with the same name are in the same named pack.
+Typescript and Ground files co-located for the same unit live in the same
+declared pack.
 
 Ground allows explicit packs:
 
 ```ground
-# File: geometry.grd
-pack shapes # creates a pack named shapes which continues to end of file
+# File: std/aws.grd
+pack std:aws:tf # file scope; required as the first non-comment item
 
-pack smooth { # creates a pack named smooth inside pack shapes, with scoped defined by {}
+# nested pack inside the current file pack
+pack vendor { # creates pack std:aws:tf:vendor with scope defined by {}
 }
 ```
 

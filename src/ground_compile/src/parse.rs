@@ -410,6 +410,7 @@ impl<'a> Parser<'a> {
         // Named field `ident : value`
         let saved = self.pos;
         if let Some(name) = self.parse_ident() {
+            self.skip_ws();
             if self.eat(":") {
                 let has_ws = self
                     .peek()
@@ -564,7 +565,7 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// Try to parse `ident ":" SP inst-value`.
+    /// Try to parse `ident WS* ":" SP inst-value`.
     /// Returns `None` and backtracks if the `:` is not followed by whitespace
     /// (that indicates a ref separator, not a field separator).
     fn try_parse_inst_field(&mut self) -> Option<AstNode<AstField>> {
@@ -572,6 +573,7 @@ impl<'a> Parser<'a> {
         let saved = self.pos;
 
         let id = self.parse_ident()?;
+        self.skip_ws();
 
         if !self.eat(":") {
             self.pos = saved;
@@ -748,22 +750,21 @@ impl<'a> Parser<'a> {
         fields
     }
 
-    /// After consuming `=` in a `def`-keyword form, parse the output:
+    /// After consuming `=` in a `def`-keyword form, parse the rhs:
     ///   - `{` struct body → `Struct`
     ///   - `ref {` mapper ref + struct body → `Struct` (with mapper ref)
+    ///   - `ref` with def input present → explicit mapper with no output body
     ///   - anything else → `TypeExpr`
-    fn parse_after_eq(&mut self) -> (Option<AstNode<AstRef>>, AstNode<AstDefO>) {
+    fn parse_after_eq(
+        &mut self,
+        has_input: bool,
+    ) -> (Option<AstNode<AstRef>>, Option<AstNode<AstDefO>>) {
         let start = self.pos;
 
         // Direct struct body
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let output = if items.is_empty() {
-                AstDefO::Unit
-            } else {
-                AstDefO::Struct(items)
-            };
-            return (None, self.node(start, output));
+            return (None, Some(self.node(start, AstDefO::Struct(items))));
         }
 
         // Try mapper ref immediately followed (with optional ws) by `{`
@@ -772,26 +773,27 @@ impl<'a> Parser<'a> {
             self.skip_ws();
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                let output = if items.is_empty() {
-                    AstDefO::Unit
-                } else {
-                    AstDefO::Struct(items)
-                };
-                return (Some(mapper_ref), self.node(start, output));
+                return (
+                    Some(mapper_ref),
+                    Some(self.node(start, AstDefO::Struct(items))),
+                );
+            }
+            if has_input {
+                return (Some(mapper_ref), None);
             }
             self.pos = saved; // not a mapper — backtrack
         }
 
         // Type expression (ref, enum, list, primitive)
         if let Some(te) = self.parse_type_expr() {
-            return (None, self.node(start, AstDefO::TypeExpr(te)));
+            return (None, Some(self.node(start, AstDefO::TypeExpr(te))));
         }
 
         self.push_error(
             self.pos,
             "expected type expression or struct body after '='",
         );
-        (None, self.node(start, AstDefO::Struct(vec![])))
+        (None, Some(self.node(start, AstDefO::Struct(vec![]))))
     }
 
     /// `"def" ident input? ("=" mapper? output)?`
@@ -825,12 +827,11 @@ impl<'a> Parser<'a> {
         };
         self.skip_ws();
 
-        let output_start = self.pos;
         let (mapper_opt, output) = if self.eat("=") {
             self.skip_ws();
-            self.parse_after_eq()
+            self.parse_after_eq(!input.is_empty())
         } else {
-            (None, self.node(output_start, AstDefO::Unit))
+            (None, None)
         };
 
         Some(self.node(
@@ -881,7 +882,6 @@ impl<'a> Parser<'a> {
 
         if self.rest().starts_with('{') {
             let input = self.parse_field_block();
-            let output = self.node(self.pos, AstDefO::Unit);
             return Some(self.node(
                 start,
                 AstDef {
@@ -889,7 +889,7 @@ impl<'a> Parser<'a> {
                     name,
                     input,
                     mapper: None,
-                    output,
+                    output: None,
                 },
             ));
         }
@@ -898,17 +898,12 @@ impl<'a> Parser<'a> {
             let mapper_saved = self.pos;
             if let Some(mapper_name) = self.parse_ref() {
                 self.skip_ws();
-                let out_start = self.pos;
                 let output = if self.rest().starts_with('{') {
+                    let out_start = self.pos;
                     let items = self.parse_struct_body().unwrap_or_default();
-                    let output = if items.is_empty() {
-                        AstDefO::Unit
-                    } else {
-                        AstDefO::Struct(items)
-                    };
-                    self.node(out_start, output)
+                    Some(self.node(out_start, AstDefO::Struct(items)))
                 } else {
-                    self.node(out_start, AstDefO::Unit)
+                    None
                 };
                 return Some(self.node(
                     start,
@@ -932,14 +927,6 @@ impl<'a> Parser<'a> {
         // Direct struct body: `name = { field = type ... }` — type alias
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let output = self.node(
-                out_start,
-                if items.is_empty() {
-                    AstDefO::Unit
-                } else {
-                    AstDefO::Struct(items)
-                },
-            );
             return Some(self.node(
                 start,
                 AstDef {
@@ -947,7 +934,7 @@ impl<'a> Parser<'a> {
                     name,
                     input: vec![],
                     mapper: None,
-                    output,
+                    output: Some(self.node(out_start, AstDefO::Struct(items))),
                 },
             ));
         }
@@ -959,14 +946,6 @@ impl<'a> Parser<'a> {
             // If followed by `{`, this is a def with explicit mapper ref and struct body.
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                let output = self.node(
-                    out_start,
-                    if items.is_empty() {
-                        AstDefO::Unit
-                    } else {
-                        AstDefO::Struct(items)
-                    },
-                );
                 return Some(self.node(
                     start,
                     AstDef {
@@ -974,7 +953,7 @@ impl<'a> Parser<'a> {
                         name,
                         input: vec![],
                         mapper: Some(ref_node),
-                        output,
+                        output: Some(self.node(out_start, AstDefO::Struct(items))),
                     },
                 ));
             }
@@ -983,7 +962,6 @@ impl<'a> Parser<'a> {
 
         // Type expression (ref, enum, list, primitive): `name = type_expr`
         if let Some(te) = self.parse_type_expr() {
-            let output = self.node(out_start, AstDefO::TypeExpr(te));
             return Some(self.node(
                 start,
                 AstDef {
@@ -991,7 +969,7 @@ impl<'a> Parser<'a> {
                     name,
                     input: vec![],
                     mapper: None,
-                    output,
+                    output: Some(self.node(out_start, AstDefO::TypeExpr(te))),
                 },
             ));
         }
@@ -1000,7 +978,6 @@ impl<'a> Parser<'a> {
             self.pos,
             "expected type expression or struct body after '='",
         );
-        let output = self.node(out_start, AstDefO::Struct(vec![]));
         Some(self.node(
             start,
             AstDef {
@@ -1008,7 +985,7 @@ impl<'a> Parser<'a> {
                 name,
                 input: vec![],
                 mapper: None,
-                output,
+                output: Some(self.node(out_start, AstDefO::Struct(vec![]))),
             },
         ))
     }
@@ -1191,10 +1168,9 @@ fn hoist_nested_defs_in_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId) 
             let scope = &mut scopes[scope_id.0 as usize];
             if let Some(AstItem::Def(td)) = scope.defs.get_mut(def_idx) {
                 parent_name = Some(td.inner.name.clone());
-                if let AstDefO::Struct(items) = &mut td.inner.output.inner {
-                    hoisted = hoist_nested_defs_from_items(items);
-                    if items.is_empty() {
-                        td.inner.output.inner = AstDefO::Unit;
+                if let Some(output) = &mut td.inner.output {
+                    if let AstDefO::Struct(items) = &mut output.inner {
+                        hoisted = hoist_nested_defs_from_items(items);
                     }
                 }
             }
@@ -1266,14 +1242,22 @@ pub fn parse(req: ParseReq) -> ParseRes {
     let mut units = Vec::with_capacity(req.units.len());
 
     for (unit_idx, unit) in req.units.iter().enumerate() {
-        let mut parent_id = AstScopeId(0);
-        for seg in &unit.path {
-            parent_id = find_or_create_scope(&mut scopes, seg, parent_id);
-        }
-        let leaf_id = if unit.name.is_empty() {
-            parent_id
+        let leaf_id = if let Some(declared_pack) = &unit.declared_pack {
+            let mut scope_id = AstScopeId(0);
+            for seg in declared_pack {
+                scope_id = find_or_create_scope(&mut scopes, seg, scope_id);
+            }
+            scope_id
         } else {
-            find_or_create_scope(&mut scopes, &unit.name, parent_id)
+            let mut parent_id = AstScopeId(0);
+            for seg in &unit.path {
+                parent_id = find_or_create_scope(&mut scopes, seg, parent_id);
+            }
+            if unit.name.is_empty() {
+                parent_id
+            } else {
+                find_or_create_scope(&mut scopes, &unit.name, parent_id)
+            }
         };
         units.push(ParseUnitRes {
             scope_id: leaf_id,
@@ -1281,7 +1265,17 @@ pub fn parse(req: ParseReq) -> ParseRes {
         });
 
         let mut p = Parser::new(&unit.src, UnitId(unit_idx as u32));
-        let items = p.parse_system();
+        let mut items = p.parse_system();
+        if unit.declared_pack.is_some() {
+            if let Some(pack_idx) = items
+                .iter()
+                .position(|item| !matches!(item, AstItem::Comment(_)))
+            {
+                if matches!(&items[pack_idx], AstItem::Pack(pack) if pack.inner.defs.is_none()) {
+                    items.remove(pack_idx);
+                }
+            }
+        }
         errors.extend(p.errors);
         materialize_items_into_scope(&mut scopes, leaf_id, items);
         hoist_nested_defs_in_scope(&mut scopes, leaf_id);

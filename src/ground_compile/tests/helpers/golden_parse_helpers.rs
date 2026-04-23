@@ -1,7 +1,8 @@
 use ground_compile::ast::{
-    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstPack, AstPrimitive, AstRef,
-    AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody, AstStructFieldKind,
-    AstStructItem, AstTypeExpr, AstUse, AstValue, ParseReq, ParseUnit, ScopeKind,
+    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstNode, AstPack, AstPrimitive,
+    AstRef, AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody,
+    AstStructFieldKind, AstStructItem, AstTypeExpr, AstUse, AstValue, ParseReq, ParseUnit,
+    ScopeKind,
 };
 use ground_compile::parse::parse;
 
@@ -15,6 +16,7 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
             .map(|(name, path, src)| ParseUnit {
                 name: name.into(),
                 path: path.into_iter().map(|s| s.to_string()).collect(),
+                declared_pack: None,
                 src: src.to_string(),
                 ts_src: None,
             })
@@ -121,11 +123,12 @@ pub fn show_struct_field(f: &AstStructField) -> String {
     }
 }
 
-pub fn show_top_def_output(output: &AstDefO) -> String {
-    match output {
-        AstDefO::Unit => "unit".to_string(),
-        AstDefO::TypeExpr(td) => show_type_expr(&td.inner),
-        AstDefO::Struct(items) => {
+pub fn show_top_def_output(output: &Option<AstNode<AstDefO>>) -> String {
+    match output.as_ref().map(|o| &o.inner) {
+        None => "unit".to_string(),
+        Some(AstDefO::TypeExpr(td)) => show_type_expr(&td.inner),
+        Some(AstDefO::Struct(items)) if items.is_empty() => "unit".to_string(),
+        Some(AstDefO::Struct(items)) => {
             let parts: Vec<_> = items.iter().map(|i| show_struct_item(&i.inner)).collect();
             format!("Struct[{}]", parts.join(", "))
         }
@@ -145,7 +148,7 @@ pub fn show_top_def(td: &AstDef) -> String {
         let input_parts: Vec<_> = td.input.iter().map(|f| show_field_def(&f.inner)).collect();
         format!("Input[{}]", input_parts.join(", "))
     };
-    let output = show_top_def_output(&td.output.inner);
+    let output = show_top_def_output(&td.output);
     let head = if td.planned { "Plan" } else { "Def" };
     format!("{head}[{name}, {mapper}, {input}, {output}]")
 }
@@ -260,6 +263,7 @@ pub fn show(input: &str) -> String {
         units: vec![ParseUnit {
             name: "test".into(),
             path: vec![],
+            declared_pack: None,
             src: input.to_string(),
             ts_src: None,
         }],

@@ -333,10 +333,10 @@ fn collect_def_tokens(
     if let Some(mapper) = &def.mapper {
         collect_ref_tokens(&mapper.inner, RefContext::Mapper, unit, src, ir, scope, out);
     }
-    match &def.output.inner {
-        AstDefO::Unit => {}
-        AstDefO::TypeExpr(ty) => collect_type_tokens(&ty.inner, unit, src, ir, scope, out),
-        AstDefO::Struct(items) => {
+    match def.output.as_ref().map(|o| &o.inner) {
+        None => {}
+        Some(AstDefO::TypeExpr(ty)) => collect_type_tokens(&ty.inner, unit, src, ir, scope, out),
+        Some(AstDefO::Struct(items)) => {
             for item in items {
                 collect_struct_item_tokens(&item.inner, unit, src, ir, scope, out);
             }
@@ -670,5 +670,71 @@ fn push_name_token(
             len: (end_col - start) as u32,
             token_type,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ground_compile::ast::{ParseReq, ParseUnit};
+    use ground_compile::parse::parse;
+    use ground_compile::resolve::resolve;
+
+    #[test]
+    fn semantic_tokens_cover_optional_list_inner_type() {
+        let src = "pack std:aws:tf\naws_tag = { key = string  value = string }\nsvc = { tags = ([ aws_tag ]) }";
+        let parse_res = parse(ParseReq {
+            units: vec![ParseUnit {
+                name: "test".into(),
+                path: vec![],
+                declared_pack: None,
+                src: src.into(),
+                ts_src: None,
+            }],
+        });
+        let ir = resolve(parse_res.clone());
+        let unit = UnitId(0);
+        let scope = ground_compile::ir::ScopeId(parse_res.units[0].scope_id.0);
+        let mut tokens = vec![];
+        collect_scope_ref_tokens(&parse_res.scopes, 0, unit, src, &ir, scope, &mut tokens);
+
+        let needle = "aws_tag";
+        let offset = src.rfind(needle).expect("aws_tag occurrence missing");
+        let (line, start) = offset_to_line_col(src, offset);
+        assert!(tokens.iter().any(|t| {
+            t.line == line as u32
+                && t.start == start as u32
+                && t.len == needle.len() as u32
+                && t.token_type == TOK_TYPE
+        }));
+    }
+
+    #[test]
+    fn semantic_tokens_cover_aligned_optional_list_inner_type() {
+        let src = "pack std:aws:tf\n\naws_tag = {\n  key   = string\n  value = string\n}\n\naws_vpc = {\n  cidr_block = string\n  tags       = ([ aws_tag ])\n}";
+        let parse_res = parse(ParseReq {
+            units: vec![ParseUnit {
+                name: "test".into(),
+                path: vec![],
+                declared_pack: None,
+                src: src.into(),
+                ts_src: None,
+            }],
+        });
+        let ir = resolve(parse_res.clone());
+        let unit = UnitId(0);
+        let scope = ground_compile::ir::ScopeId(parse_res.units[0].scope_id.0);
+        let mut tokens = vec![];
+        collect_scope_ref_tokens(&parse_res.scopes, 0, unit, src, &ir, scope, &mut tokens);
+
+        let needle = "aws_tag";
+        let offset = src.rfind(needle).expect("aws_tag occurrence missing");
+        let (line, start) = offset_to_line_col(src, offset);
+        assert!(tokens.iter().any(|t| {
+            t.line == line as u32
+                && t.start == start as u32
+                && t.len == needle.len() as u32
+                && t.token_type == TOK_TYPE
+        }));
     }
 }

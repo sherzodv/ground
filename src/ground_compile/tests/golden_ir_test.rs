@@ -113,6 +113,7 @@ fn def_003() {
                 Def#0[service, Shape#0],
                 Def#1[api, Shape#1, base=Def#0],
             ]
+            ERR: mapper function 'api' not in scope; define it in a co-located .ts file or import its pack with `use pack:<name>`
         "##
         ),
     );
@@ -153,6 +154,7 @@ fn def_004() {
                 Def#0[service, Shape#0],
                 Def#1[api, Shape#1, base=Def#0, Set[Field#0, Ref(nginx)]],
             ]
+            ERR: mapper function 'api' not in scope; define it in a co-located .ts file or import its pack with `use pack:<name>`
         "##
         ),
     );
@@ -180,6 +182,7 @@ fn def_005() {
                 Def#2[edge, Shape#2],
                 Def#3[edge-api, Shape#2, base=Def#2, Set[Field#0, Inst(Def#1)]],
             ]
+            ERR: mapper function 'api' not in scope; define it in a co-located .ts file or import its pack with `use pack:<name>`
         "##
         ),
     );
@@ -603,6 +606,7 @@ fn import_007() {
                 Def#2[edge, Shape#2],
                 Def#3[api, Shape#2, base=Def#2, Set[Field#0, Inst(Def#1)]],
             ]
+            ERR: mapper function 'api-gen' not in scope; define it in a co-located .ts file or import its pack with `use pack:<name>`
         "##
         ),
     );

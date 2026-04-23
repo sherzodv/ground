@@ -13,6 +13,7 @@ fn ts_gen_primitive_fields() {
             name: "test".into(),
             path: vec![],
             src: r#"
+                pack test
                 def label { key = string } = make_label { value = string }
                 plan env = label { key: "environment" }
             "#
@@ -57,6 +58,7 @@ fn ts_gen_integer_output() {
             name: "test".into(),
             path: vec![],
             src: r#"
+                pack test
                 def port = make_port { number = integer }
                 plan api = port {}
             "#
@@ -101,6 +103,7 @@ fn ts_gen_boolean_output() {
             name: "test".into(),
             path: vec![],
             src: r#"
+                pack test
                 def feature = make_feature { enabled = boolean }
                 plan beta = feature {}
             "#
@@ -144,6 +147,7 @@ fn ts_gen_type_units_include_named_shapes() {
             name: "test".into(),
             path: vec![],
             src: r#"
+                pack test
                 endpoint = { host = string  port = integer }
                 def node { name = string } = make_node { endpoint = endpoint }
             "#.into(),
@@ -179,6 +183,7 @@ fn ts_gen_optional_output_field() {
             name: "test".into(),
             path: vec![],
             src: r#"
+                pack test
                 def feature = make_feature { note = (string) }
                 plan beta = feature {}
             "#
@@ -214,4 +219,148 @@ fn ts_gen_optional_output_field() {
         def.fields.iter().all(|f| f.name != "note"),
         "optional omitted field should not be materialized"
     );
+}
+
+#[test]
+fn compile_requires_pack_as_first_item() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: "def service".into(),
+            ts_src: None,
+        }],
+    });
+
+    assert_eq!(res.errors.len(), 1);
+    assert_eq!(
+        res.errors[0].message,
+        "compile unit must start with `pack ...`"
+    );
+}
+
+#[test]
+fn compile_pack_must_refine_file_path() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "aws".into(),
+            path: vec!["std".into()],
+            src: "pack wrong:tf\naws_vpc = string".into(),
+            ts_src: None,
+        }],
+    });
+
+    assert_eq!(res.errors.len(), 1);
+    assert_eq!(
+        res.errors[0].message,
+        "compile unit pack 'wrong:tf' must match file path prefix 'std:aws'"
+    );
+}
+
+#[test]
+fn composed_def_without_new_fields_reuses_inherited_mapper() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                pack test
+                def vpc { cidr_block = string } = make_vpc { rendered = string }
+                plan main = vpc { cidr_block: "10.0.0.0/16" }
+            "#
+            .into(),
+            ts_src: Some(
+                r#"
+                function make_vpc(i) { return { rendered: "cidr=" + i.cidr_block }; }
+            "#
+                .into(),
+            ),
+        }],
+    });
+
+    assert!(
+        res.errors.is_empty(),
+        "compile errors: {:?}",
+        res.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+
+    let def = res
+        .defs
+        .iter()
+        .find(|d| d.name == "main")
+        .expect("main def missing");
+    let field = def
+        .fields
+        .iter()
+        .find(|f| f.name == "rendered")
+        .expect("rendered field missing");
+    assert_eq!(format!("{:?}", field.value), r#"Str("cidr=10.0.0.0/16")"#);
+}
+
+#[test]
+fn composed_def_with_new_fields_requires_explicit_mapper_override() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                pack test
+                def vpc { cidr_block = string } = make_vpc {}
+                decorated = vpc { label = string }
+            "#
+            .into(),
+            ts_src: Some(
+                r#"
+                function make_vpc(_i) { return {}; }
+            "#
+                .into(),
+            ),
+        }],
+    });
+
+    assert_eq!(res.errors.len(), 1);
+    assert_eq!(
+        res.errors[0].message,
+        "mapper function 'decorated' not in scope; define it in a co-located .ts file or import its pack with `use pack:<name>`"
+    );
+}
+
+#[test]
+fn def_with_input_and_bare_mapper_rhs_uses_explicit_mapper() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                pack test
+                def aws_vpc { cidr_block = string } = make_aws_vpc
+                plan main = aws_vpc { cidr_block: "10.0.0.0/16" }
+            "#
+            .into(),
+            ts_src: Some(
+                r#"
+                function make_aws_vpc(i) { return { cidr_block: i.cidr_block }; }
+            "#
+                .into(),
+            ),
+        }],
+    });
+
+    assert!(
+        res.errors.is_empty(),
+        "compile errors: {:?}",
+        res.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+
+    let def = res
+        .defs
+        .iter()
+        .find(|d| d.name == "main")
+        .expect("main def missing");
+    let field = def
+        .fields
+        .iter()
+        .find(|f| f.name == "cidr_block")
+        .expect("cidr_block field missing");
+    assert_eq!(format!("{:?}", field.value), r#"Str("10.0.0.0/16")"#);
 }

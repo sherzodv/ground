@@ -1,3 +1,5 @@
+pack test
+
 def minimal
 
 plan minimal

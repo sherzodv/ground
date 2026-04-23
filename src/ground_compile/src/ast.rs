@@ -114,13 +114,13 @@ pub struct AstDef {
     pub name: AstNode<String>,
     pub input: Vec<AstNode<AstDefI>>, // fields before `=`; empty for simple defs
     pub mapper: Option<AstNode<AstRef>>, // explicit mapper ref when it appears in source
-    pub output: AstNode<AstDefO>,
+    pub output: Option<AstNode<AstDefO>>,
 }
 
-/// Output side of a def — what appears after `=`.
+/// Output side of a def — what appears after `=`, when an output body or type is
+/// explicitly present. `None` means no output body was written.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstDefO {
-    Unit,                                // bare `def name` or `name` with no `=`
     TypeExpr(AstNode<AstTypeExpr>),      // `= type_expr`
     Struct(Vec<AstNode<AstStructItem>>), // `= mapper? { struct_items }`
 }
@@ -295,6 +295,7 @@ pub struct AstParseError {
 pub struct ParseUnit {
     pub name: String,
     pub path: Vec<String>,
+    pub declared_pack: Option<Vec<String>>,
     pub src: String,
     pub ts_src: Option<String>,
 }
