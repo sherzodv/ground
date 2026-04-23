@@ -1,0 +1,5 @@
+{% set def = defs[0] -%}
+name={{ def.name }}
+type={{ def.type_name }}
+vpc={{ def.as_obj.vpc }}
+cidr={{ def.as_obj.cidr_block }}

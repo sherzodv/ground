@@ -1,0 +1,11 @@
+{
+  "files": [
+    {% for def in defs -%}
+    {
+      "plan": "{{ def.name }}",
+      "file": "subnet.txt",
+      "template": "test:subnet.txt.tera"
+    }
+    {%- endfor %}
+  ]
+}

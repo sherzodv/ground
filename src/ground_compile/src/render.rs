@@ -209,12 +209,22 @@ fn pack_display(pack: &[String]) -> String {
 }
 
 fn def_to_json(def: &AsmDef) -> Value {
-    json!({
-        "type_name": def.type_name,
-        "name": def.name,
-        "type_hint": def.type_hint,
-        "fields": fields_to_json(&def.fields),
-    })
+    let mut obj = serde_json::Map::new();
+    obj.insert("type_name".into(), Value::String(def.type_name.clone()));
+    obj.insert("name".into(), Value::String(def.name.clone()));
+    obj.insert(
+        "type_hint".into(),
+        def.type_hint
+            .as_ref()
+            .map(|v| Value::String(v.clone()))
+            .unwrap_or(Value::Null),
+    );
+    let as_arr = Value::Array(fields_to_json(&def.fields));
+    obj.insert("fields".into(), as_arr.clone());
+    obj.insert("as_arr".into(), as_arr);
+    obj.insert("as_obj".into(), fields_to_obj(&def.fields));
+
+    Value::Object(obj)
 }
 
 fn fields_to_json(fields: &[AsmField]) -> Vec<Value> {
@@ -227,4 +237,12 @@ fn fields_to_json(fields: &[AsmField]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn fields_to_obj(fields: &[AsmField]) -> Value {
+    let mut obj = serde_json::Map::new();
+    for field in fields {
+        obj.insert(field.name.clone(), asm_value_to_json(&field.value));
+    }
+    Value::Object(obj)
 }
