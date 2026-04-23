@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use ground_gen::{render as gen_render, GenError, RenderReq, TeraUnit};
 use serde_json::{json, Value};
@@ -100,7 +100,7 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
 
         let defs_json: Vec<Value> = plans
             .iter()
-            .map(|p| def_to_json(&res.defs[p.def_idx]))
+            .map(|p| def_to_json(&res.defs[p.def_idx], &res.defs))
             .collect();
 
         let plans_json: Vec<Value> = plans
@@ -208,7 +208,12 @@ fn pack_display(pack: &[String]) -> String {
     }
 }
 
-fn def_to_json(def: &AsmDef) -> Value {
+fn def_to_json(def: &AsmDef, defs: &[AsmDef]) -> Value {
+    let mut seen = HashSet::new();
+    def_to_json_inner(def, defs, &mut seen)
+}
+
+fn def_to_json_inner(def: &AsmDef, defs: &[AsmDef], seen: &mut HashSet<(String, String)>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("type_name".into(), Value::String(def.type_name.clone()));
     obj.insert("name".into(), Value::String(def.name.clone()));
@@ -219,30 +224,78 @@ fn def_to_json(def: &AsmDef) -> Value {
             .map(|v| Value::String(v.clone()))
             .unwrap_or(Value::Null),
     );
-    let as_arr = Value::Array(fields_to_json(&def.fields));
-    obj.insert("fields".into(), as_arr.clone());
-    obj.insert("as_arr".into(), as_arr);
-    obj.insert("as_obj".into(), fields_to_obj(&def.fields));
+    obj.insert(
+        "as_arr".into(),
+        Value::Array(fields_to_json(&def.fields, defs, seen)),
+    );
+    obj.insert("as_obj".into(), fields_to_obj(&def.fields, defs, seen));
 
     Value::Object(obj)
 }
 
-fn fields_to_json(fields: &[AsmField]) -> Vec<Value> {
+fn fields_to_json(
+    fields: &[AsmField],
+    defs: &[AsmDef],
+    seen: &mut HashSet<(String, String)>,
+) -> Vec<Value> {
     fields
         .iter()
         .map(|f| {
             json!({
                 "name": f.name,
-                "value": asm_value_to_json(&f.value),
+                "value": value_to_json(&f.value, defs, seen),
             })
         })
         .collect()
 }
 
-fn fields_to_obj(fields: &[AsmField]) -> Value {
+fn fields_to_obj(
+    fields: &[AsmField],
+    defs: &[AsmDef],
+    seen: &mut HashSet<(String, String)>,
+) -> Value {
     let mut obj = serde_json::Map::new();
     for field in fields {
-        obj.insert(field.name.clone(), asm_value_to_json(&field.value));
+        obj.insert(field.name.clone(), value_to_json(&field.value, defs, seen));
     }
     Value::Object(obj)
+}
+
+fn value_to_json(
+    v: &crate::asm::AsmValue,
+    defs: &[AsmDef],
+    seen: &mut HashSet<(String, String)>,
+) -> Value {
+    match v {
+        crate::asm::AsmValue::DefRef(r) => {
+            let key = (r.type_name.clone(), r.name.clone());
+            if seen.contains(&key) {
+                return asm_value_to_json(v);
+            }
+            let Some(target) = defs
+                .iter()
+                .find(|d| d.type_name == r.type_name && d.name == r.name)
+            else {
+                return asm_value_to_json(v);
+            };
+            seen.insert(key.clone());
+            let out = def_to_json_inner(target, defs, seen);
+            seen.remove(&key);
+            out
+        }
+        crate::asm::AsmValue::Def(d) => def_to_json_inner(d, defs, seen),
+        crate::asm::AsmValue::List(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| value_to_json(item, defs, seen))
+                .collect(),
+        ),
+        crate::asm::AsmValue::Path(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| value_to_json(item, defs, seen))
+                .collect(),
+        ),
+        _ => asm_value_to_json(v),
+    }
 }

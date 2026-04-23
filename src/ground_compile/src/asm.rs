@@ -90,6 +90,41 @@ pub fn lower(ir: &IrRes, ts_src: &str) -> AsmRes {
     AsmRes { defs }
 }
 
+pub fn lower_all_named(ir: &IrRes, ts_src: &str) -> AsmRes {
+    let mut cache: HashMap<DefId, AsmDef> = HashMap::new();
+
+    let planned = ir
+        .defs
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.planned)
+        .map(|(idx, _)| DefId(idx as u32));
+    let named_non_planned = ir
+        .defs
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| !def.planned && def.name != "_")
+        .map(|(idx, _)| DefId(idx as u32));
+
+    let defs: Vec<AsmDef> = planned
+        .chain(named_non_planned)
+        .map(|root_id| {
+            let mut resolving = HashSet::new();
+            let mut resolved_order = Vec::new();
+            resolve_named_def(
+                root_id,
+                ir,
+                ts_src,
+                &mut cache,
+                &mut resolving,
+                &mut resolved_order,
+            )
+        })
+        .collect();
+
+    AsmRes { defs }
+}
+
 // ---------------------------------------------------------------------------
 // Def / field / value lowering
 // ---------------------------------------------------------------------------

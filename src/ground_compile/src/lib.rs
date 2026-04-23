@@ -296,7 +296,7 @@ pub fn compile(req: CompileReq) -> CompileRes {
         };
     }
 
-    let ctx = asm::lower(&prepared.ir, &prepared.full_ts);
+    let ctx = asm::lower_all_named(&prepared.ir, &prepared.full_ts);
 
     // `asm::lower` iterates `ir.defs` in order and keeps planned defs only, so
     // the i-th planned IR def corresponds to `ctx.defs[i]`.

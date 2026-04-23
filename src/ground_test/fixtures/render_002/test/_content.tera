@@ -1,11 +1,11 @@
 {% macro summary(def) -%}
 name={{ def.name }}
 shape={{ def.type_name }}
-field_count={{ def.fields | length }}
+field_count={{ def.as_arr | length }}
 {%- endmacro summary %}
 
 {% macro values(def) -%}
-{% for field in def.fields -%}
+{% for field in def.as_arr -%}
 {{ field.name }}={{ field.value | json_encode }}{% if not loop.last %}
 {% endif -%}
 {%- endfor %}
