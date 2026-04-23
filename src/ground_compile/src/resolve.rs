@@ -228,16 +228,43 @@ impl Ctx {
     }
 
     fn lookup_pack_visible(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
+        let origin_pack = self.enclosing_pack_scope(scope);
+        self.lookup_pack_visible_from(origin_pack, scope, name)
+    }
+
+    fn lookup_pack_visible_from(
+        &self,
+        origin_pack: ScopeId,
+        scope: ScopeId,
+        name: &str,
+    ) -> Option<ScopeId> {
         let s = &self.scopes[scope.0 as usize];
         if s.ambiguous.contains(name) {
             return None;
         }
         if let Some(&id) = s.packs.get(name) {
-            return Some(id);
+            if id != origin_pack {
+                return Some(id);
+            }
         }
         match s.parent {
-            Some(parent) if parent != ScopeId(0) => self.lookup_pack_visible(parent, name),
+            Some(parent) if parent != ScopeId(0) => {
+                self.lookup_pack_visible_from(origin_pack, parent, name)
+            }
             _ => None,
+        }
+    }
+
+    fn enclosing_pack_scope(&self, mut scope: ScopeId) -> ScopeId {
+        loop {
+            let s = &self.scopes[scope.0 as usize];
+            if matches!(s.kind, crate::ir::ScopeKind::Pack) {
+                return scope;
+            }
+            match s.parent {
+                Some(parent) => scope = parent,
+                None => return scope,
+            }
         }
     }
 
@@ -542,10 +569,16 @@ fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
 // Unresolvable segments become Plain(String).
 // ---------------------------------------------------------------------------
 
-fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> IrRef {
+fn resolve_ref_with_mode(
+    segments: &[AstNode<AstRefSeg>],
+    ctx: &Ctx,
+    scope: ScopeId,
+    strict: bool,
+) -> IrRef {
     let mut result = Vec::new();
     let mut kind_hint: Option<&str> = None;
     let mut cur_scope = scope;
+    let mut failed = false;
 
     for (idx, seg) in segments.iter().enumerate() {
         // Group segments ({inner:ref}) are not statically resolvable —
@@ -558,11 +591,23 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
                         value: IrRefSegValue::Plain(group_repr(inner, trailing.as_deref())),
                         is_opt: seg.inner.is_opt,
                     });
+                    if strict {
+                        failed = true;
+                    }
                 }
                 kind_hint = None;
                 continue;
             }
         };
+
+        if failed {
+            result.push(IrRefSeg {
+                value: IrRefSegValue::Plain(val.to_string()),
+                is_opt: seg.inner.is_opt,
+            });
+            kind_hint = None;
+            continue;
+        }
 
         match val {
             "pack" | "def" => {
@@ -572,30 +617,34 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
             _ => {}
         }
 
-        let resolved = match kind_hint {
+        let (resolved, unresolved) = match kind_hint {
             Some("def") => ctx
                 .lookup_shape(cur_scope, val)
-                .map(IrRefSegValue::Shape)
-                .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
+                .map(|v| (IrRefSegValue::Shape(v), false))
+                .unwrap_or_else(|| (IrRefSegValue::Plain(val.to_string()), true)),
 
             Some("pack") => ctx
                 .lookup_pack_visible(cur_scope, val)
-                .map(IrRefSegValue::Pack)
-                .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
+                .map(|v| (IrRefSegValue::Pack(v), false))
+                .unwrap_or_else(|| (IrRefSegValue::Plain(val.to_string()), true)),
 
             _ => {
                 // No hint — try def/type, then instance, then pack; else plain.
                 if let Some(id) = ctx.lookup_shape(cur_scope, val) {
-                    IrRefSegValue::Shape(id)
+                    (IrRefSegValue::Shape(id), false)
                 } else if let Some(id) = ctx.lookup_def(cur_scope, val) {
-                    IrRefSegValue::Def(id)
+                    (IrRefSegValue::Def(id), false)
                 } else if let Some(id) = ctx.lookup_pack_visible(cur_scope, val) {
-                    IrRefSegValue::Pack(id)
+                    (IrRefSegValue::Pack(id), false)
                 } else {
-                    IrRefSegValue::Plain(val.to_string())
+                    (IrRefSegValue::Plain(val.to_string()), true)
                 }
             }
         };
+
+        if strict && unresolved {
+            failed = true;
+        }
 
         if let IrRefSegValue::Pack(next_scope) = resolved {
             cur_scope = next_scope;
@@ -612,6 +661,22 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
     }
 
     IrRef { segments: result }
+}
+
+fn resolve_ref_strict(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> IrRef {
+    resolve_ref_with_mode(segments, ctx, scope, true)
+}
+
+fn first_unresolved_plain(ir_ref: &IrRef) -> Option<&str> {
+    ir_ref.segments.iter().find_map(|seg| {
+        if seg.is_opt {
+            return None;
+        }
+        match &seg.value {
+            IrRefSegValue::Plain(s) => Some(s.as_str()),
+            _ => None,
+        }
+    })
 }
 
 fn resolve_enum_variant_ref(r: &AstRef, ctx: &Ctx, scope: ScopeId) -> IrRef {
@@ -641,7 +706,7 @@ fn resolve_enum_variant_ref(r: &AstRef, ctx: &Ctx, scope: ScopeId) -> IrRef {
                 .collect(),
         };
     }
-    resolve_ref(&r.segments, ctx, scope)
+    resolve_ref_strict(&r.segments, ctx, scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -1283,7 +1348,13 @@ fn resolve_top_def_body(td: &AstDef, ctx: &mut Ctx, scope: ScopeId) -> IrShapeBo
                 if let Some(p) = builtin_primitive_from_ref(r) {
                     return IrShapeBody::Primitive(p);
                 }
-                let ir_ref = resolve_ref(&r.segments, ctx, scope);
+                let ir_ref = resolve_ref_strict(&r.segments, ctx, scope);
+                if let Some(s) = first_unresolved_plain(&ir_ref) {
+                    ctx.errors.push(IrError {
+                        message: format!("unresolved type ref '{}'", s),
+                        loc: ir_loc(&type_node.loc),
+                    });
+                }
                 IrShapeBody::Enum(vec![ir_ref])
             }
             _ => resolve_type_body(type_node, ctx, scope),
@@ -1407,14 +1478,12 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
             if let Some(p) = builtin_primitive_from_ref(r) {
                 return IrFieldType::Primitive(p);
             }
-            let ir_ref = resolve_ref(&r.segments, ctx, scope);
-            for seg in &ir_ref.segments {
-                if let IrRefSegValue::Plain(s) = &seg.value {
-                    ctx.errors.push(IrError {
-                        message: format!("unresolved type ref '{}'", s),
-                        loc: loc.clone(),
-                    });
-                }
+            let ir_ref = resolve_ref_strict(&r.segments, ctx, scope);
+            if let Some(s) = first_unresolved_plain(&ir_ref) {
+                ctx.errors.push(IrError {
+                    message: format!("unresolved type ref '{}'", s),
+                    loc: loc.clone(),
+                });
             }
             IrFieldType::Ref(ir_ref)
         }
@@ -1471,7 +1540,7 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
             };
             let ir_refs: Vec<IrRef> = elem_refs
                 .iter()
-                .map(|r| resolve_ref(&r.segments, ctx, scope))
+                .map(|r| resolve_ref_strict(&r.segments, ctx, scope))
                 .collect();
             let has_typed_variant = ir_refs.iter().any(|ir_ref| {
                 ir_ref
@@ -1487,15 +1556,11 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
                 //   • plain single-segment enum variant: `[ FARGATE | EC2 ]` — skip (string constants)
                 let should_validate = is_single_ref || r.segments.len() > 1 || has_typed_variant;
                 if should_validate {
-                    for seg in &ir_ref.segments {
-                        if !seg.is_opt {
-                            if let IrRefSegValue::Plain(s) = &seg.value {
-                                ctx.errors.push(IrError {
-                                    message: format!("unresolved type ref '{}'", s),
-                                    loc: loc.clone(),
-                                });
-                            }
-                        }
+                    if let Some(s) = first_unresolved_plain(ir_ref) {
+                        ctx.errors.push(IrError {
+                            message: format!("unresolved type ref '{}'", s),
+                            loc: loc.clone(),
+                        });
                     }
                 }
             }

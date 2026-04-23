@@ -144,6 +144,21 @@ fn error_cross_pack_ref_requires_use() {
 }
 
 #[test]
+fn error_typed_ref_stops_on_first_unresolved_segment_001() {
+    let out = show(
+        r##"
+        def vpc
+        def platform { vpcs = [ tf:vpc ] }
+    "##,
+    );
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(
+        out.contains("unresolved type ref 'tf'"),
+        "error should mention the first unresolved segment: {out}"
+    );
+}
+
+#[test]
 fn error_planned_def_cannot_be_referenced() {
     let out = show(
         r##"

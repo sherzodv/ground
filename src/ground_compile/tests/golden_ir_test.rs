@@ -71,6 +71,27 @@ fn def_001a() {
 }
 
 #[test]
+fn reference_value_keeps_unresolved_segments_001() {
+    assert_eq!(
+        show(
+            r##"
+            def svc { endpoint = reference }
+            app = svc { endpoint: some:segment }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[svc, Struct[Field#0[endpoint, Prim(reference)]]],
+                Def#0[svc, Shape#0],
+                Def#1[app, Shape#0, base=Def#0, Set[Field#0, Ref(some:segment)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn def_002() {
     assert_eq!(
         show(
