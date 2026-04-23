@@ -171,3 +171,47 @@ fn ts_gen_type_units_include_named_shapes() {
         .content
         .contains("declare function make_node(i: MakeNodeI): MakeNodeO;"));
 }
+
+#[test]
+fn ts_gen_optional_output_field() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                def feature = make_feature { note = (string) }
+                plan beta = feature {}
+            "#
+            .into(),
+            ts_src: Some(
+                r#"
+                function make_feature(_i) { return {}; }
+            "#
+                .into(),
+            ),
+        }],
+    });
+
+    assert!(
+        res.errors.is_empty(),
+        "compile errors: {:?}",
+        res.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+
+    let unit = res
+        .type_units
+        .iter()
+        .find(|u| u.file == "test.gen.d.ts")
+        .expect("test.gen.d.ts missing");
+
+    assert!(unit.content.contains("note?: string;"));
+    let def = res
+        .defs
+        .iter()
+        .find(|d| d.name == "beta")
+        .expect("beta def missing");
+    assert!(
+        def.fields.iter().all(|f| f.name != "note"),
+        "optional omitted field should not be materialized"
+    );
+}

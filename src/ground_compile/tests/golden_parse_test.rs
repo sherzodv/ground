@@ -1501,6 +1501,20 @@ fn qualifier_001() {
 }
 
 #[test]
+fn optional_001() {
+    assert_eq!(
+        show("svc = { vpc = (std:aws:tf:aws_vpc) }"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[svc, _, unit, Struct[FieldDef[vpc, Type[_, Optional[Type[_, Ref(std:aws:tf:aws_vpc)]]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn qualifier_002() {
     assert_eq!(
         show("backend = std:aws:tf:def:backend_s3"),

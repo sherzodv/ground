@@ -48,6 +48,7 @@ pub fn show_field_type(lt: &IrFieldType, ir: &IrRes) -> String {
                 .collect();
             format!("List[{}]", parts.join(" | "))
         }
+        IrFieldType::Optional(inner) => format!("Optional[{}]", show_field_type(inner, ir)),
     }
 }
 

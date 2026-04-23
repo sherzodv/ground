@@ -161,6 +161,8 @@ pub enum AstTypeExpr {
     Struct(Vec<AstNode<AstStructItem>>),
     /// List whose element type is described by the inner `AstTypeExpr`: `[ … ]`
     List(Box<AstNode<AstTypeExpr>>),
+    /// Optional field type: `( type_expr )`
+    Optional(Box<AstNode<AstTypeExpr>>),
 }
 
 // ---------------------------------------------------------------------------

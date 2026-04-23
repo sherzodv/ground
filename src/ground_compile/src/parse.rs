@@ -282,6 +282,18 @@ impl<'a> Parser<'a> {
     fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
         let start = self.pos;
 
+        // Optional type: "( type-expr )"
+        if self.rest().starts_with('(') {
+            self.advance(1);
+            self.skip_ws();
+            let inner = self.parse_type_expr()?;
+            self.skip_ws();
+            if !self.eat(")") {
+                self.push_error(self.pos, "expected ')' after optional type");
+            }
+            return Some(self.node(start, AstTypeExpr::Optional(Box::new(inner))));
+        }
+
         // `unit` is syntax sugar for the empty struct.
         if self.at_keyword("unit") {
             self.advance("unit".len());

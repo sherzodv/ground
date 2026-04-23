@@ -147,7 +147,12 @@ fn gen_interface(name: &str, fields_def: &[IrStructFieldDef], ir: &IrRes) -> Str
                 return None;
             }
             let ts_type = field_type_to_ts(&field.field_type, ir);
-            Some(format!("  {}: {};", fname, ts_type))
+            let opt = if is_optional_field_type(&field.field_type) {
+                "?"
+            } else {
+                ""
+            };
+            Some(format!("  {}{}: {};", fname, opt, ts_type))
         })
         .collect();
 
@@ -244,6 +249,9 @@ fn collect_preferred_names_from_field_type(
                 collect_preferred_names_from_ref(r, ir, out, candidate);
             }
         }
+        IrFieldType::Optional(inner) => {
+            collect_preferred_names_from_field_type(inner, ir, out, candidate)
+        }
     }
 }
 
@@ -281,6 +289,7 @@ fn collect_shapes_from_field_type(field_type: &IrFieldType, ir: &IrRes, out: &mu
                 collect_shapes_from_ref(r, ir, out);
             }
         }
+        IrFieldType::Optional(inner) => collect_shapes_from_field_type(inner, ir, out),
     }
 }
 
@@ -373,7 +382,12 @@ fn field_type_to_ts_with_names(
             };
             format!("({union})[]")
         }
+        IrFieldType::Optional(inner) => field_type_to_ts_with_names(inner, ir, preferred_names),
     }
+}
+
+fn is_optional_field_type(field_type: &IrFieldType) -> bool {
+    matches!(field_type, IrFieldType::Optional(_))
 }
 
 fn prim_to_ts(p: &IrPrimitive) -> &'static str {

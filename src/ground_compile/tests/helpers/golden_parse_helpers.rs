@@ -88,6 +88,9 @@ pub fn show_type_expr(body: &AstTypeExpr) -> String {
         AstTypeExpr::List(inner) => {
             format!("List[{}]", show_nested_type_expr(&inner.inner))
         }
+        AstTypeExpr::Optional(inner) => {
+            format!("Optional[{}]", show_nested_type_expr(&inner.inner))
+        }
     }
 }
 

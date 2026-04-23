@@ -129,6 +129,7 @@ pub enum IrFieldType {
     Primitive(IrPrimitive),
     Ref(IrRef),       // resolved type ref: single type, enum, or typed path
     List(Vec<IrRef>), // [ type1:(opt) | type2 ] — one IrRef per element pattern
+    Optional(Box<IrFieldType>),
 }
 
 #[derive(Debug, Clone)]

@@ -1268,6 +1268,14 @@ fn resolve_type_body(body: &AstNode<AstTypeExpr>, ctx: &mut Ctx, scope: ScopeId)
             });
             IrShapeBody::Unit
         }
+
+        AstTypeExpr::Optional(_) => {
+            ctx.errors.push(IrError {
+                message: "optional body not valid for a named type definition".into(),
+                loc: ir_loc(&body.loc),
+            });
+            IrShapeBody::Unit
+        }
     }
 }
 
@@ -1440,6 +1448,10 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
         }
 
         AstTypeExpr::Unit => IrFieldType::Primitive(IrPrimitive::Reference),
+
+        AstTypeExpr::Optional(inner) => {
+            IrFieldType::Optional(Box::new(resolve_field_type(&inner.inner, ctx, scope, loc)))
+        }
     }
 }
 
@@ -1645,7 +1657,7 @@ fn pass4_register_defs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 // ---------------------------------------------------------------------------
 
 fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
-    let mut work: Vec<(DefId, Vec<AstNode<AstField>>, ScopeId)> = vec![];
+    let mut work: Vec<(DefId, Vec<AstNode<AstField>>, ScopeId, bool)> = vec![];
 
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
         let scope = ScopeId(scope_idx as u32);
@@ -1666,14 +1678,15 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                             AstDefO::Struct(items) => collect_apply_fields(items),
                             AstDefO::TypeExpr(_) => vec![],
                         };
-                        work.push((fid, fields, scope));
+                        let enforce_required = matches!(classify_def(&td.inner), DefKind::Apply);
+                        work.push((fid, fields, scope, enforce_required));
                     }
                 }
             }
         }
     }
 
-    for (fid, fields, scope) in work {
+    for (fid, fields, scope, enforce_required) in work {
         let shape_id = ctx.defs[fid.0 as usize].shape_id;
         let field_defs = match ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body) {
             Some(IrShapeBody::Struct(fields)) => fields.clone(),
@@ -1693,7 +1706,9 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
             })
             .collect();
 
-        let mut resolved: Vec<IrField> = resolve_named_fields(&fields, &field_defs, ctx, scope);
+        let required_fields = required_field_names_for_def(fid, &field_defs, ctx, enforce_required);
+        let mut resolved: Vec<IrField> =
+            resolve_named_fields(&fields, &field_defs, ctx, scope, required_fields.as_ref());
 
         // Resolve anonymous values against the unnamed field.
         if let (Some(field_idx), false) = (anon_field_idx, anon_vals.is_empty()) {
@@ -1775,6 +1790,7 @@ fn resolve_named_fields(
     field_defs: &[IrStructFieldDef],
     ctx: &mut Ctx,
     scope: ScopeId,
+    required_fields: Option<&HashSet<String>>,
 ) -> Vec<IrField> {
     // Group named fields by field name, preserving first-occurrence order.
     // The `via` bool is taken from the first occurrence of a given field.
@@ -1867,7 +1883,7 @@ fn resolve_named_fields(
     }
 
     // Pass 2: reduce group fields using the full this_fields, resolve in source order.
-    groups
+    let resolved: Vec<IrField> = groups
         .into_iter()
         .enumerate()
         .filter_map(|(i, (field_name, loc, field_idx, values, via))| {
@@ -1931,7 +1947,96 @@ fn resolve_named_fields(
                 value: ir_val,
             })
         })
+        .collect();
+
+    if let Some(required_fields) = required_fields {
+        let seen: HashSet<&str> = resolved.iter().map(|f| f.name.as_str()).collect();
+        for name in required_fields {
+            if !seen.contains(name.as_str()) {
+                ctx.errors.push(IrError {
+                    message: format!("missing field '{}'", name),
+                    loc: IrLoc {
+                        unit: scope_loc_unit(ctx, scope),
+                        start: 0,
+                        end: 0,
+                    },
+                });
+            }
+        }
+    }
+
+    resolved
+}
+
+fn is_optional_field_type(field_type: &IrFieldType) -> bool {
+    matches!(field_type, IrFieldType::Optional(_))
+}
+
+fn unwrap_optional_field_type(field_type: &IrFieldType) -> &IrFieldType {
+    match field_type {
+        IrFieldType::Optional(inner) => inner,
+        other => other,
+    }
+}
+
+fn required_field_names_for_def(
+    fid: DefId,
+    field_defs: &[IrStructFieldDef],
+    ctx: &Ctx,
+    enforce_required: bool,
+) -> Option<HashSet<String>> {
+    if !enforce_required {
+        return None;
+    }
+
+    let def = &ctx.defs[fid.0 as usize];
+    let source_fields: Vec<IrStructFieldDef> = if let Some(base_id) = def.base_def {
+        let base = &ctx.defs[base_id.0 as usize];
+        if base.mapper_fn.is_some() || !base.inputs.is_empty() {
+            base.inputs.clone()
+        } else {
+            field_defs.to_vec()
+        }
+    } else {
+        field_defs.to_vec()
+    };
+
+    Some(
+        source_fields
+            .into_iter()
+            .filter_map(|field| {
+                let name = field.name?;
+                if is_optional_field_type(&field.field_type) {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+            .collect(),
+    )
+}
+
+fn required_field_names_for_inline(field_defs: &[IrStructFieldDef]) -> HashSet<String> {
+    field_defs
+        .iter()
+        .filter_map(|field| {
+            let name = field.name.clone()?;
+            if is_optional_field_type(&field.field_type) {
+                None
+            } else {
+                Some(name)
+            }
+        })
         .collect()
+}
+
+fn scope_loc_unit(ctx: &Ctx, scope: ScopeId) -> UnitId {
+    for def in &ctx.defs {
+        if def.scope == scope {
+            return def.loc.unit;
+        }
+    }
+    UnitId(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,6 +2050,8 @@ fn resolve_value(
     scope: ScopeId,
     loc: &IrLoc,
 ) -> IrValue {
+    let field_type = unwrap_optional_field_type(field_type);
+
     // Unresolved Group segments cannot be statically resolved — pass through as Ref.
     if let AstValue::Ref(r) = v {
         if has_group(r) {
@@ -2127,7 +2234,14 @@ fn resolve_value(
                                 inputs: vec![],
                                 outputs: vec![],
                             });
-                            let fields = resolve_named_fields(ast_fields, &field_defs, ctx, scope);
+                            let required_fields = required_field_names_for_inline(&field_defs);
+                            let fields = resolve_named_fields(
+                                ast_fields,
+                                &field_defs,
+                                ctx,
+                                scope,
+                                Some(&required_fields),
+                            );
                             ctx.defs[fid.0 as usize].fields = fields;
                             return IrValue::Inst(fid);
                         }
@@ -2217,8 +2331,15 @@ fn resolve_value(
                                 inputs: vec![],
                                 outputs: vec![],
                             });
-                            let fields =
-                                resolve_named_fields(ast_fields, &inner_field_defs, ctx, scope);
+                            let required_fields =
+                                required_field_names_for_inline(&inner_field_defs);
+                            let fields = resolve_named_fields(
+                                ast_fields,
+                                &inner_field_defs,
+                                ctx,
+                                scope,
+                                Some(&required_fields),
+                            );
                             ctx.defs[fid.0 as usize].fields = fields;
                             return IrValue::Variant(
                                 shape_id,
@@ -2268,6 +2389,7 @@ fn resolve_value(
                 IrValue::List(vec![])
             }
         },
+        IrFieldType::Optional(inner) => resolve_value(v, inner, ctx, scope, loc),
     }
 }
 

@@ -366,6 +366,9 @@ fn collect_type_tokens(
             }
         }
         AstTypeExpr::List(inner) => collect_type_tokens(&inner.inner, unit, src, ir, scope, out),
+        AstTypeExpr::Optional(inner) => {
+            collect_type_tokens(&inner.inner, unit, src, ir, scope, out)
+        }
     }
 }
 

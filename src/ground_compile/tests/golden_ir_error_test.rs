@@ -388,3 +388,21 @@ fn error_mapper_fn_not_imported() {
         "error should explain scoping: {out}"
     );
 }
+
+#[test]
+fn missing_required_field_001() {
+    let out = show(
+        r#"
+        svc = { name = string  note = (string) }
+        plan api = svc {}
+    "#,
+    );
+    assert!(
+        out.contains("missing field 'name'"),
+        "expected missing required field: {out}"
+    );
+    assert!(
+        !out.contains("missing field 'note'"),
+        "optional field should be omittable: {out}"
+    );
+}

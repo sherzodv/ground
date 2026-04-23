@@ -119,6 +119,21 @@ fn def_003() {
 }
 
 #[test]
+fn optional_001() {
+    assert_eq!(
+        show("svc = { note = (string) }"),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[svc, Struct[Field#0[note, Optional[Prim(string)]]]],
+                Def#0[svc, Shape#0],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn def_004() {
     assert_eq!(
         show(

@@ -524,6 +524,7 @@ fn ir_value_to_json_typed(
     cache: &HashMap<DefId, AsmDef>,
     via: bool,
 ) -> serde_json::Value {
+    let field_type = unwrap_optional_field_type(field_type);
     match field_type {
         IrFieldType::Primitive(IrPrimitive::Ipv4) => match v {
             IrValue::Str(s) => {
@@ -651,6 +652,7 @@ fn ir_value_to_json_typed(
                 }
             }
         },
+        IrFieldType::Optional(inner) => ir_value_to_json_typed(v, inner, ir, cache, via),
     }
 }
 
@@ -702,6 +704,13 @@ pub fn asm_value_to_json(v: &AsmValue) -> serde_json::Value {
         AsmValue::List(items) => {
             serde_json::Value::Array(items.iter().map(asm_value_to_json).collect())
         }
+    }
+}
+
+fn unwrap_optional_field_type(field_type: &IrFieldType) -> &IrFieldType {
+    match field_type {
+        IrFieldType::Optional(inner) => inner,
+        other => other,
     }
 }
 

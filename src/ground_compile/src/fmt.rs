@@ -232,6 +232,9 @@ fn render_type_expr(ty: &AstTypeExpr, indent: usize, nested: bool) -> String {
             }
         }
         AstTypeExpr::List(inner) => render_list_type(&inner.inner, indent),
+        AstTypeExpr::Optional(inner) => {
+            format!("({})", render_type_expr(&inner.inner, indent, false))
+        }
     }
 }
 
