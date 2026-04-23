@@ -259,6 +259,30 @@ fn mapper_001() {
 }
 
 #[test]
+fn mapper_output_json_null_001() {
+    let grd = r#"
+        def route = make_route {
+            gateway_id = reference
+        }
+
+        plan main = route {}
+    "#;
+    let ts = r#"
+        function make_route(_i) {
+            return { gateway_id: null };
+        }
+    "#;
+    assert_eq!(
+        show_with_ts(grd, ts),
+        norm(
+            r##"
+            Def[main = route { gateway_id: Null }]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn mapper_002() {
     let grd = r#"
         endpoint = { host = string  port = integer }

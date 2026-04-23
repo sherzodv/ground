@@ -41,6 +41,7 @@ pub enum AsmValue {
     Str(String),
     Int(i64),
     Bool(bool),
+    Null,
     Ref(String),         // reference primitive (opaque)
     Variant(AsmVariant), // enum variant with type context
     DefRef(AsmDefRef),   // named def ref
@@ -788,6 +789,7 @@ pub fn asm_value_to_json(v: &AsmValue) -> serde_json::Value {
         AsmValue::Str(s) => serde_json::Value::String(s.clone()),
         AsmValue::Int(n) => serde_json::json!(*n),
         AsmValue::Bool(b) => serde_json::Value::Bool(*b),
+        AsmValue::Null => serde_json::Value::Null,
         AsmValue::Ref(s) => serde_json::Value::String(s.clone()),
         AsmValue::Variant(gv) => match &gv.payload {
             Some(p) => serde_json::json!({ gv.value.clone(): asm_value_to_json(p) }),
@@ -828,7 +830,7 @@ fn json_val_to_asm_value(v: &serde_json::Value) -> AsmValue {
             }
         }
         serde_json::Value::Bool(b) => AsmValue::Bool(*b),
-        serde_json::Value::Null => AsmValue::Str("null".into()),
+        serde_json::Value::Null => AsmValue::Null,
         serde_json::Value::Array(arr) => {
             AsmValue::List(arr.iter().map(json_val_to_asm_value).collect())
         }

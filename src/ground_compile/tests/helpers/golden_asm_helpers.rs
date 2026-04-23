@@ -13,6 +13,7 @@ pub fn show_value(v: &AsmValue) -> String {
         AsmValue::Str(s) => format!("Str({:?})", s),
         AsmValue::Int(n) => format!("Int({})", n),
         AsmValue::Bool(b) => format!("Bool({})", b),
+        AsmValue::Null => "Null".into(),
         AsmValue::Ref(s) => format!("Ref({})", s),
         AsmValue::Variant(gv) => match &gv.payload {
             None => format!("Variant({}, {:?})", gv.type_name, gv.value),
