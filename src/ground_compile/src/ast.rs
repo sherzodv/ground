@@ -1,25 +1,43 @@
 /// Ground parser level AST  — every node is wrapped in `AstNode<T>` carrying byte-offset location.
 
 // ---------------------------------------------------------------------------
+// Ids
+// ---------------------------------------------------------------------------
+
+/// Opaque handle for a source unit within a single compilation.
+/// Assigned by `parse()` in input order — `UnitId(i)` refers to `ParseReq::units[i]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnitId(pub u32);
+
+impl UnitId {
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Location & node wrapper
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstNodeLoc {
-    pub unit:  u32,
+    pub unit: UnitId,
     pub start: u32,
-    pub end:   u32,
+    pub end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstNode<T> {
-    pub loc:   AstNodeLoc,
+    pub loc: AstNodeLoc,
     pub inner: T,
 }
 
 impl<T> AstNode<T> {
-    pub fn new(unit: u32, start: u32, end: u32, inner: T) -> Self {
-        AstNode { loc: AstNodeLoc { unit, start, end }, inner }
+    pub fn new(unit: UnitId, start: u32, end: u32, inner: T) -> Self {
+        AstNode {
+            loc: AstNodeLoc { unit, start, end },
+            inner,
+        }
     }
 }
 
@@ -42,7 +60,7 @@ pub enum AstRefSegVal {
 /// `is_opt = true` when the segment was written `(ident)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstRefSeg {
-    pub value:  AstRefSegVal,
+    pub value: AstRefSegVal,
     pub is_opt: bool,
 }
 
@@ -50,8 +68,8 @@ impl AstRefSeg {
     /// Returns the plain string for Plain segments; None for Group segments.
     pub fn as_plain(&self) -> Option<&str> {
         match &self.value {
-            AstRefSegVal::Plain(s)    => Some(s.as_str()),
-            AstRefSegVal::Group(..)   => None,
+            AstRefSegVal::Plain(s) => Some(s.as_str()),
+            AstRefSegVal::Group(..) => None,
         }
     }
 }
@@ -67,7 +85,14 @@ pub struct AstRef {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AstPrimitive { String, Integer, Boolean, Reference, Ipv4, Ipv4Net }
+pub enum AstPrimitive {
+    String,
+    Integer,
+    Boolean,
+    Reference,
+    Ipv4,
+    Ipv4Net,
+}
 
 // ---------------------------------------------------------------------------
 // Unified def node — the central construct of the language
@@ -85,26 +110,26 @@ pub enum AstPrimitive { String, Integer, Boolean, Reference, Ipv4, Ipv4Net }
 ///   `name mapper`                              — shorthand def with explicit mapper and unit output
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstDef {
-    pub planned: bool,                        // true when declared with `plan`
-    pub name:    AstNode<String>,
-    pub input:   Vec<AstNode<AstDefI>>,        // fields before `=`; empty for simple defs
-    pub mapper:  Option<AstNode<AstRef>>,      // explicit mapper ref when it appears in source
-    pub output:  AstNode<AstDefO>,
+    pub planned: bool, // true when declared with `plan`
+    pub name: AstNode<String>,
+    pub input: Vec<AstNode<AstDefI>>, // fields before `=`; empty for simple defs
+    pub mapper: Option<AstNode<AstRef>>, // explicit mapper ref when it appears in source
+    pub output: AstNode<AstDefO>,
 }
 
 /// Output side of a def — what appears after `=`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstDefO {
-    Unit,                                     // bare `def name` or `name` with no `=`
-    TypeExpr(AstNode<AstTypeExpr>),           // `= type_expr`
-    Struct(Vec<AstNode<AstStructItem>>),      // `= mapper? { struct_items }`
+    Unit,                                // bare `def name` or `name` with no `=`
+    TypeExpr(AstNode<AstTypeExpr>),      // `= type_expr`
+    Struct(Vec<AstNode<AstStructItem>>), // `= mapper? { struct_items }`
 }
 
 /// Input field declaration inside a def input block or struct output body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstDefI {
-    pub name: Option<AstNode<String>>,        // None for anonymous `= type_expr`
-    pub ty:   AstNode<AstTypeExpr>,
+    pub name: Option<AstNode<String>>, // None for anonymous `= type_expr`
+    pub ty: AstNode<AstTypeExpr>,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +140,7 @@ pub struct AstDefI {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstPack {
     pub path: AstNode<AstRef>,
-    pub defs: Option<Vec<AstItem>>,           // None for bare file-level `pack std:aws`
+    pub defs: Option<Vec<AstItem>>, // None for bare file-level `pack std:aws`
 }
 
 // ---------------------------------------------------------------------------
@@ -190,30 +215,39 @@ pub enum AstValue {
     List(Vec<AstNode<AstValue>>),
     /// Inline struct literal: `{ field: value ... }`
     /// `type_hint` is present when written as `type:scaling { ... }`.
-    Struct { type_hint: Option<AstNode<AstRef>>, fields: Vec<AstNode<AstField>> },
+    Struct {
+        type_hint: Option<AstNode<AstRef>>,
+        fields: Vec<AstNode<AstField>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstField {
-    Named { name: AstNode<String>, value: AstNode<AstValue>, via: bool },
+    Named {
+        name: AstNode<String>,
+        value: AstNode<AstValue>,
+        via: bool,
+    },
     /// Anonymous value (only valid inside `inst`, not `deploy`)
     Anon(AstNode<AstValue>),
     Comment(AstNode<AstComment>),
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AstScopeId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ScopeKind { Pack, Struct }
+pub enum ScopeKind {
+    Pack,
+    Struct,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstScope {
-    pub kind:   ScopeKind,
-    pub name:   Option<AstNode<String>>,
+    pub kind: ScopeKind,
+    pub name: Option<AstNode<String>>,
     pub parent: Option<AstScopeId>,
-    pub defs:   Vec<AstItem>,
+    pub defs: Vec<AstItem>,
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +283,7 @@ pub enum AstItem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AstParseError {
     pub message: String,
-    pub loc:     AstNodeLoc,
+    pub loc: AstNodeLoc,
 }
 
 /// One source file. `path` is the chain of parent namespace names (from folder
@@ -257,9 +291,9 @@ pub struct AstParseError {
 /// `ts_src` is the co-located TypeScript source (same pack scope as `src`).
 #[derive(Debug)]
 pub struct ParseUnit {
-    pub name:   String,
-    pub path:   Vec<String>,
-    pub src:    String,
+    pub name: String,
+    pub path: Vec<String>,
+    pub src: String,
     pub ts_src: Option<String>,
 }
 
@@ -268,14 +302,19 @@ pub struct ParseReq {
     pub units: Vec<ParseUnit>,
 }
 
+/// Per-unit parse output. `ParseRes::units[UnitId.as_usize()]` is everything
+/// the rest of the compiler needs to know about one input unit.
+#[derive(Debug, Clone)]
+pub struct ParseUnitRes {
+    pub scope_id: AstScopeId,
+    pub ts_src: Option<String>,
+}
+
 /// Flat scope arena. `scopes[0]` is the synthetic root scope (unnamed, no parent).
-/// `unit_scope_ids[i]` is the leaf pack `AstScopeId` for `ParseReq::units[i]`.
-/// `unit_ts_srcs[i]` is the TypeScript source for `ParseReq::units[i]` (if any).
-/// Both vecs have the same length as `ParseReq::units`.
+/// `units[UnitId.as_usize()]` has per-unit output, in input order.
 #[derive(Debug, Clone)]
 pub struct ParseRes {
-    pub scopes:         Vec<AstScope>,
-    pub errors:         Vec<AstParseError>,
-    pub unit_scope_ids: Vec<AstScopeId>,
-    pub unit_ts_srcs:   Vec<Option<String>>,
+    pub scopes: Vec<AstScope>,
+    pub errors: Vec<AstParseError>,
+    pub units: Vec<ParseUnitRes>,
 }

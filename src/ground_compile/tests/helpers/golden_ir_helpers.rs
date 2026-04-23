@@ -9,12 +9,12 @@ use ground_compile::resolve::resolve;
 
 pub fn show_primitive(p: &IrPrimitive) -> &'static str {
     match p {
-        IrPrimitive::String    => "string",
-        IrPrimitive::Integer   => "integer",
-        IrPrimitive::Boolean   => "boolean",
+        IrPrimitive::String => "string",
+        IrPrimitive::Integer => "integer",
+        IrPrimitive::Boolean => "boolean",
         IrPrimitive::Reference => "reference",
-        IrPrimitive::Ipv4      => "ipv4",
-        IrPrimitive::Ipv4Net   => "ipv4net",
+        IrPrimitive::Ipv4 => "ipv4",
+        IrPrimitive::Ipv4Net => "ipv4net",
     }
 }
 
@@ -24,10 +24,10 @@ pub fn show_primitive(p: &IrPrimitive) -> &'static str {
 
 pub fn show_ref_seg_value(v: &IrRefSegValue) -> String {
     match v {
-        IrRefSegValue::Pack(id)  => format!("Pack#{}", id.0),
-        IrRefSegValue::Shape(id)  => format!("Shape#{}", id.0),
-        IrRefSegValue::Def(id)  => format!("Def#{}", id.0),
-        IrRefSegValue::Plain(s)  => s.clone(),
+        IrRefSegValue::Pack(id) => format!("Pack#{}", id.0),
+        IrRefSegValue::Shape(id) => format!("Shape#{}", id.0),
+        IrRefSegValue::Def(id) => format!("Def#{}", id.0),
+        IrRefSegValue::Plain(s) => s.clone(),
     }
 }
 
@@ -42,7 +42,8 @@ pub fn show_field_type(lt: &IrFieldType, ir: &IrRes) -> String {
         IrFieldType::Ref(r) => format!("IrRef[{}]", show_field_type_ref(r, ir)),
 
         IrFieldType::List(patterns) => {
-            let parts: Vec<_> = patterns.iter()
+            let parts: Vec<_> = patterns
+                .iter()
                 .map(|p| format!("IrRef[{}]", show_field_type_ref(p, ir)))
                 .collect();
             format!("List[{}]", parts.join(" | "))
@@ -55,7 +56,8 @@ fn show_field_type_ref(r: &IrRef, ir: &IrRes) -> String {
         return show_field_type_seg(&r.segments[0], ir);
     }
     // Typed path — join with ':'
-    r.segments.iter()
+    r.segments
+        .iter()
         .map(|seg| show_field_type_seg(seg, ir))
         .collect::<Vec<_>>()
         .join(":")
@@ -66,7 +68,7 @@ fn show_field_type_seg(seg: &IrRefSeg, ir: &IrRes) -> String {
         IrRefSegValue::Shape(tid) => {
             let kind = match &ir.shapes[tid.0 as usize].body {
                 IrShapeBody::Unit => "Unit",
-                IrShapeBody::Enum(_)   => "Enum",
+                IrShapeBody::Enum(_) => "Enum",
                 IrShapeBody::Struct(_) => "Struct",
                 IrShapeBody::Primitive(_) => "Prim",
             };
@@ -75,7 +77,11 @@ fn show_field_type_seg(seg: &IrRefSeg, ir: &IrRes) -> String {
         IrRefSegValue::Plain(s) => s.clone(),
         other => show_ref_seg_value(other),
     };
-    if seg.is_opt { format!("({})", inner) } else { inner }
+    if seg.is_opt {
+        format!("({})", inner)
+    } else {
+        inner
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -88,15 +94,27 @@ pub fn show_type_body(body: &IrShapeBody, ir: &IrRes) -> String {
         IrShapeBody::Primitive(p) => format!("Prim({})", show_primitive(p)),
 
         IrShapeBody::Enum(variants) => {
-            let parts: Vec<_> = variants.iter().map(|r| show_field_type_ref(r, ir)).collect();
+            let parts: Vec<_> = variants
+                .iter()
+                .map(|r| show_field_type_ref(r, ir))
+                .collect();
             format!("Enum[{}]", parts.join("|"))
         }
 
         IrShapeBody::Struct(fields) => {
-            let parts: Vec<_> = fields.iter().enumerate().map(|(idx, field)| {
-                let name = field.name.as_deref().unwrap_or("_");
-                format!("Field#{}[{}, {}]", idx, name, show_field_type(&field.field_type, ir))
-            }).collect();
+            let parts: Vec<_> = fields
+                .iter()
+                .enumerate()
+                .map(|(idx, field)| {
+                    let name = field.name.as_deref().unwrap_or("_");
+                    format!(
+                        "Field#{}[{}, {}]",
+                        idx,
+                        name,
+                        show_field_type(&field.field_type, ir)
+                    )
+                })
+                .collect();
             format!("Struct[{}]", parts.join(", "))
         }
     }
@@ -108,31 +126,39 @@ pub fn show_type_body(body: &IrShapeBody, ir: &IrRes) -> String {
 
 pub fn show_value(v: &IrValue, ir: &IrRes) -> String {
     match v {
-        IrValue::Str(s)  => format!("Str({:?})", s),
-        IrValue::Int(n)  => format!("Int({})", n),
+        IrValue::Str(s) => format!("Str({:?})", s),
+        IrValue::Int(n) => format!("Int({})", n),
         IrValue::Bool(b) => format!("Bool({})", b),
-        IrValue::Ref(s)  => format!("Ref({})", s),
+        IrValue::Ref(s) => format!("Ref({})", s),
 
-        IrValue::Variant(tid, idx, payload) => {
-            match payload {
-                None => {
-                    let variant = match &ir.shapes[tid.0 as usize].body {
-                        IrShapeBody::Enum(vs) => vs[*idx as usize].segments.first()
-                            .and_then(|s| if let IrRefSegValue::Plain(p) = &s.value { Some(p.as_str()) } else { None })
-                            .unwrap_or("?"),
-                        _ => "?",
-                    };
-                    format!("Variant(Shape#{}, {:?})", tid.0, variant)
-                }
-                Some(inner) => format!("Variant(Shape#{}, {})", tid.0, show_value(inner, ir)),
+        IrValue::Variant(tid, idx, payload) => match payload {
+            None => {
+                let variant = match &ir.shapes[tid.0 as usize].body {
+                    IrShapeBody::Enum(vs) => vs[*idx as usize]
+                        .segments
+                        .first()
+                        .and_then(|s| {
+                            if let IrRefSegValue::Plain(p) = &s.value {
+                                Some(p.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or("?"),
+                    _ => "?",
+                };
+                format!("Variant(Shape#{}, {:?})", tid.0, variant)
             }
-        }
+            Some(inner) => format!("Variant(Shape#{}, {})", tid.0, show_value(inner, ir)),
+        },
 
         IrValue::Inst(fid) => format!("Inst(Def#{})", fid.0),
 
-        IrValue::Path(segs) => {
-            segs.iter().map(|v| show_value(v, ir)).collect::<Vec<_>>().join(":")
-        }
+        IrValue::Path(segs) => segs
+            .iter()
+            .map(|v| show_value(v, ir))
+            .collect::<Vec<_>>()
+            .join(":"),
 
         IrValue::List(items) => {
             let parts: Vec<_> = items.iter().map(|v| show_value(v, ir)).collect();
@@ -146,7 +172,7 @@ pub fn show_field(f: &IrField, ir: &IrRes) -> String {
 }
 
 pub fn show_shape_entry(idx: usize, ir: &IrRes) -> String {
-    let td   = &ir.shapes[idx];
+    let td = &ir.shapes[idx];
     let name = td.name.as_deref().unwrap_or("_");
     format!("Shape#{}[{}, {}]", idx, name, show_type_body(&td.body, ir))
 }
@@ -228,12 +254,15 @@ pub fn norm(s: &str) -> String {
 #[allow(dead_code)]
 pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     let req = ParseReq {
-        units: units.into_iter().map(|(name, path, src)| ParseUnit {
-            name:   name.into(),
-            path:   path.into_iter().map(|s| s.to_string()).collect(),
-            src:    src.to_string(),
-            ts_src: None,
-        }).collect(),
+        units: units
+            .into_iter()
+            .map(|(name, path, src)| ParseUnit {
+                name: name.into(),
+                path: path.into_iter().map(|s| s.to_string()).collect(),
+                src: src.to_string(),
+                ts_src: None,
+            })
+            .collect(),
     };
     let res = parse(req);
     show_ir(resolve(res))
@@ -242,7 +271,12 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
 /// Parse + resolve `input`, format as compact multi-line string.
 pub fn show(input: &str) -> String {
     let res = parse(ParseReq {
-        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string(), ts_src: None }],
+        units: vec![ParseUnit {
+            name: "test".into(),
+            path: vec![],
+            src: input.to_string(),
+            ts_src: None,
+        }],
     });
     show_ir(resolve(res))
 }
@@ -252,9 +286,9 @@ pub fn show(input: &str) -> String {
 pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
     let res = parse(ParseReq {
         units: vec![ParseUnit {
-            name:   "test".into(),
-            path:   vec![],
-            src:    grd_src.to_string(),
+            name: "test".into(),
+            path: vec![],
+            src: grd_src.to_string(),
             ts_src: Some(ts_src.to_string()),
         }],
     });
@@ -266,12 +300,15 @@ pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
 #[allow(dead_code)]
 pub fn show_multi_ts(units: Vec<(&str, Vec<&str>, &str, Option<&str>)>) -> String {
     let req = ParseReq {
-        units: units.into_iter().map(|(name, path, src, ts)| ParseUnit {
-            name:   name.into(),
-            path:   path.into_iter().map(|s| s.to_string()).collect(),
-            src:    src.to_string(),
-            ts_src: ts.map(|s| s.to_string()),
-        }).collect(),
+        units: units
+            .into_iter()
+            .map(|(name, path, src, ts)| ParseUnit {
+                name: name.into(),
+                path: path.into_iter().map(|s| s.to_string()).collect(),
+                src: src.to_string(),
+                ts_src: ts.map(|s| s.to_string()),
+            })
+            .collect(),
     };
     let res = parse(req);
     show_ir(resolve(res))

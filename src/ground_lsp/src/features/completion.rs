@@ -5,8 +5,12 @@ use crate::workspace::{lookup_pack_path, Workspace};
 use ground_compile::ir::{IrRes, ScopeId};
 
 pub fn completion(workspace: &Workspace, params: &Value) -> Vec<Value> {
-    let Some((uri, pos)) = text_doc_uri_and_pos(params) else { return vec![]; };
-    let Some(text) = workspace.text_for_uri(&uri) else { return vec![]; };
+    let Some((uri, pos)) = text_doc_uri_and_pos(params) else {
+        return vec![];
+    };
+    let Some(text) = workspace.text_for_uri(&uri) else {
+        return vec![];
+    };
     if uri.ends_with(".ts") {
         return vec![];
     }
@@ -15,12 +19,23 @@ pub fn completion(workspace: &Workspace, params: &Value) -> Vec<Value> {
     for kw in ["def", "plan", "pack", "use", "via"] {
         items.push(completion_item(kw, 14));
     }
-    for builtin in ["string", "integer", "boolean", "reference", "ipv4", "ipv4net"] {
+    for builtin in [
+        "string",
+        "integer",
+        "boolean",
+        "reference",
+        "ipv4",
+        "ipv4net",
+    ] {
         items.push(completion_item(builtin, 7));
     }
     if let Some((analysis, scope)) = workspace.analysis_and_scope_for_uri(&uri) {
         if prefix_line.trim_start().starts_with("use") {
-            items.extend(use_completion(&analysis.res.ir, scope, prefix_line.trim_start()));
+            items.extend(use_completion(
+                &analysis.res.ir,
+                scope,
+                prefix_line.trim_start(),
+            ));
         } else {
             for name in visible_names(&analysis.res.ir, scope) {
                 items.push(completion_item(&name, 6));
@@ -46,11 +61,21 @@ fn use_completion(ir: &IrRes, scope: ScopeId, trimmed_line: &str) -> Vec<Value> 
     };
 
     let ends_with_colon = path.ends_with(':');
-    let raw_segments: Vec<&str> = if path.is_empty() { vec![] } else { path.split(':').collect() };
+    let raw_segments: Vec<&str> = if path.is_empty() {
+        vec![]
+    } else {
+        path.split(':').collect()
+    };
     let (complete, current_prefix): (Vec<&str>, &str) = if ends_with_colon {
-        (raw_segments.into_iter().filter(|s| !s.is_empty()).collect(), "")
+        (
+            raw_segments.into_iter().filter(|s| !s.is_empty()).collect(),
+            "",
+        )
     } else if let Some((last, rest)) = raw_segments.split_last() {
-        (rest.iter().copied().filter(|s| !s.is_empty()).collect(), last)
+        (
+            rest.iter().copied().filter(|s| !s.is_empty()).collect(),
+            last,
+        )
     } else {
         (vec![], "")
     };
@@ -83,7 +108,11 @@ fn use_completion(ir: &IrRes, scope: ScopeId, trimmed_line: &str) -> Vec<Value> 
     items
 }
 
-fn longest_pack_prefix<'a>(ir: &IrRes, scope: ScopeId, complete: &'a [&'a str]) -> (Option<ScopeId>, usize) {
+fn longest_pack_prefix<'a>(
+    ir: &IrRes,
+    scope: ScopeId,
+    complete: &'a [&'a str],
+) -> (Option<ScopeId>, usize) {
     for len in (1..=complete.len()).rev() {
         if let Some(found) = lookup_pack_path(ir, scope, &complete[..len]) {
             return (Some(found), len);
@@ -96,13 +125,17 @@ fn visible_pack_names(ir: &IrRes, mut scope: ScopeId) -> Vec<String> {
     let mut out = vec![];
     let mut seen = std::collections::HashSet::new();
     loop {
-        let Some(sc) = ir.scopes.get(scope.0 as usize) else { break; };
+        let Some(sc) = ir.scopes.get(scope.0 as usize) else {
+            break;
+        };
         for name in sc.packs.keys() {
             if seen.insert(name.clone()) {
                 out.push(name.clone());
             }
         }
-        let Some(parent) = sc.parent else { break; };
+        let Some(parent) = sc.parent else {
+            break;
+        };
         scope = parent;
     }
     out.sort();
@@ -110,7 +143,9 @@ fn visible_pack_names(ir: &IrRes, mut scope: ScopeId) -> Vec<String> {
 }
 
 fn child_pack_names(ir: &IrRes, scope: ScopeId) -> Vec<String> {
-    let mut out: Vec<String> = ir.scopes.get(scope.0 as usize)
+    let mut out: Vec<String> = ir
+        .scopes
+        .get(scope.0 as usize)
         .map(|s| s.packs.keys().cloned().collect())
         .unwrap_or_default();
     out.sort();
@@ -118,7 +153,9 @@ fn child_pack_names(ir: &IrRes, scope: ScopeId) -> Vec<String> {
 }
 
 fn child_name_names(ir: &IrRes, scope: ScopeId) -> Vec<String> {
-    let mut out: Vec<String> = ir.scopes.get(scope.0 as usize)
+    let mut out: Vec<String> = ir
+        .scopes
+        .get(scope.0 as usize)
         .map(|s| {
             let mut names: Vec<String> = s.defs.keys().chain(s.shapes.keys()).cloned().collect();
             names.sort();
@@ -132,14 +169,16 @@ fn child_name_names(ir: &IrRes, scope: ScopeId) -> Vec<String> {
 }
 
 fn pack_items(names: Vec<String>, prefix: &str) -> Vec<Value> {
-    names.into_iter()
+    names
+        .into_iter()
         .filter(|name| name.starts_with(prefix))
         .map(|name| completion_item(&name, 9))
         .collect()
 }
 
 fn name_items(names: Vec<String>, prefix: &str) -> Vec<Value> {
-    names.into_iter()
+    names
+        .into_iter()
         .filter(|name| name.starts_with(prefix))
         .map(|name| completion_item(&name, 6))
         .collect()
@@ -149,13 +188,22 @@ fn visible_names(ir: &IrRes, mut scope: ScopeId) -> Vec<String> {
     let mut out = vec![];
     let mut seen = std::collections::HashSet::new();
     loop {
-        let Some(sc) = ir.scopes.get(scope.0 as usize) else { break; };
-        for name in sc.packs.keys().chain(sc.shapes.keys()).chain(sc.defs.keys()) {
+        let Some(sc) = ir.scopes.get(scope.0 as usize) else {
+            break;
+        };
+        for name in sc
+            .packs
+            .keys()
+            .chain(sc.shapes.keys())
+            .chain(sc.defs.keys())
+        {
             if seen.insert(name.clone()) {
                 out.push(name.clone());
             }
         }
-        let Some(parent) = sc.parent else { break; };
+        let Some(parent) = sc.parent else {
+            break;
+        };
         scope = parent;
     }
     out.sort();

@@ -10,18 +10,23 @@ use ground_compile::resolve::resolve;
 
 pub fn show_value(v: &AsmValue) -> String {
     match v {
-        AsmValue::Str(s)              => format!("Str({:?})", s),
-        AsmValue::Int(n)              => format!("Int({})", n),
-        AsmValue::Bool(b)             => format!("Bool({})", b),
-        AsmValue::Ref(s)              => format!("Ref({})", s),
-        AsmValue::Variant(gv)         => match &gv.payload {
-            None    => format!("Variant({}, {:?})", gv.type_name, gv.value),
-            Some(p) => format!("Variant({}, {:?}, {})", gv.type_name, gv.value, show_value(p)),
+        AsmValue::Str(s) => format!("Str({:?})", s),
+        AsmValue::Int(n) => format!("Int({})", n),
+        AsmValue::Bool(b) => format!("Bool({})", b),
+        AsmValue::Ref(s) => format!("Ref({})", s),
+        AsmValue::Variant(gv) => match &gv.payload {
+            None => format!("Variant({}, {:?})", gv.type_name, gv.value),
+            Some(p) => format!(
+                "Variant({}, {:?}, {})",
+                gv.type_name,
+                gv.value,
+                show_value(p)
+            ),
         },
-        AsmValue::DefRef(ir)          => format!("DefRef({}, {})", ir.type_name, ir.name),
-        AsmValue::Def(gi)             => format!("Def[{}]", show_def_inline(gi)),
-        AsmValue::Path(segs)          => segs.iter().map(show_value).collect::<Vec<_>>().join(":"),
-        AsmValue::List(items)         => {
+        AsmValue::DefRef(ir) => format!("DefRef({}, {})", ir.type_name, ir.name),
+        AsmValue::Def(gi) => format!("Def[{}]", show_def_inline(gi)),
+        AsmValue::Path(segs) => segs.iter().map(show_value).collect::<Vec<_>>().join(":"),
+        AsmValue::List(items) => {
             let parts: Vec<_> = items.iter().map(show_value).collect();
             format!("List[{}]", parts.join(", "))
         }
@@ -40,7 +45,12 @@ fn show_def_inline(d: &AsmDef) -> String {
     if d.fields.is_empty() {
         head
     } else {
-        let fields = d.fields.iter().map(show_field).collect::<Vec<_>>().join(", ");
+        let fields = d
+            .fields
+            .iter()
+            .map(show_field)
+            .collect::<Vec<_>>()
+            .join(", ");
         format!("{head} {{ {fields} }}")
     }
 }
@@ -69,12 +79,15 @@ pub fn show(grd_src: &str) -> String {
 
 pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     let res = parse(ParseReq {
-        units: units.into_iter().map(|(name, path, src)| ParseUnit {
-            name: name.into(),
-            path: path.into_iter().map(|s| s.to_string()).collect(),
-            src: src.to_string(),
-            ts_src: None,
-        }).collect(),
+        units: units
+            .into_iter()
+            .map(|(name, path, src)| ParseUnit {
+                name: name.into(),
+                path: path.into_iter().map(|s| s.to_string()).collect(),
+                src: src.to_string(),
+                ts_src: None,
+            })
+            .collect(),
     });
     let ir = resolve(res);
     show_asm(lower(&ir, ""), ir)
@@ -84,13 +97,13 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
 pub fn show_with_ts(grd_src: &str, ts_src: &str) -> String {
     let res = parse(ParseReq {
         units: vec![ParseUnit {
-            name:   "test".into(),
-            path:   vec![],
-            src:    grd_src.to_string(),
+            name: "test".into(),
+            path: vec![],
+            src: grd_src.to_string(),
             ts_src: Some(ts_src.to_string()),
         }],
     });
-    let ir  = resolve(res);
+    let ir = resolve(res);
     show_asm(lower(&ir, ts_src), ir)
 }
 

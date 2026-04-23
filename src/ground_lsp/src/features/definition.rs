@@ -1,9 +1,7 @@
 use serde_json::{json, Value};
 
 use crate::util::{text_doc_uri_and_pos, token_at};
-use crate::workspace::{
-    definition_from_ts, resolve_ground_token, resolve_mapper_token, Workspace,
-};
+use crate::workspace::{definition_from_ts, resolve_ground_token, resolve_mapper_token, Workspace};
 
 pub fn definition(workspace: &Workspace, params: &Value) -> Option<Value> {
     let (uri, pos) = text_doc_uri_and_pos(params)?;

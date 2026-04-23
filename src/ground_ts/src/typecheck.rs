@@ -11,15 +11,14 @@
 ///
 /// Performance note: loading the 8.8 MB TypeScript bundle takes ~0.5–2 s on a
 /// cold JsRuntime. The check runs once per `compile()` call.
-
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use deno_core::{JsRuntime, RuntimeOptions};
 
 // Bundled at compile time — no network access at runtime.
 static TYPESCRIPT_JS: &str = include_str!("vendor/typescript.js");
-static HARNESS_JS:    &str = include_str!("typecheck_harness.js");
+static HARNESS_JS: &str = include_str!("typecheck_harness.js");
 /// TypeScript ES5 standard library declarations (Array, Object, JSON …).
-static LIB_ES5_DTS:   &str = include_str!("vendor/lib.es5.d.ts");
+static LIB_ES5_DTS: &str = include_str!("vendor/lib.es5.d.ts");
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -28,17 +27,17 @@ static LIB_ES5_DTS:   &str = include_str!("vendor/lib.es5.d.ts");
 #[derive(Debug, Clone)]
 pub struct TsDiagnostic {
     /// Human-readable message (multi-line flattened).
-    pub message:  String,
+    pub message: String,
     /// TypeScript diagnostic code (e.g. 2322 for "Type X is not assignable to Y").
-    pub code:     u32,
+    pub code: u32,
     /// 1 = error, 2 = warning, 3 = suggestion, 4 = message.
     pub category: u8,
     /// Virtual file name: `"decls.gen.d.ts"` or `"user.ts"`.
-    pub file:     Option<String>,
+    pub file: Option<String>,
     /// 1-based line number within `file`, if available.
-    pub line:     Option<u32>,
+    pub line: Option<u32>,
     /// 1-based column number within `file`, if available.
-    pub col:      Option<u32>,
+    pub col: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -65,16 +64,18 @@ pub fn typecheck(declarations_dts: &str, user_ts: &str) -> Result<Vec<TsDiagnost
 
     // 3. Call the harness with the three virtual file contents.
     let decls_json = serde_json::to_string(declarations_dts)?;
-    let user_json  = serde_json::to_string(user_ts)?;
-    let lib_json   = serde_json::to_string(LIB_ES5_DTS)?;
-    let call: String = format!("globalThis.__groundTypecheck({decls_json}, {user_json}, {lib_json})");
+    let user_json = serde_json::to_string(user_ts)?;
+    let lib_json = serde_json::to_string(LIB_ES5_DTS)?;
+    let call: String =
+        format!("globalThis.__groundTypecheck({decls_json}, {user_json}, {lib_json})");
 
     let handle = rt.execute_script("<typecheck>", call)?;
 
     // 4. Extract the JSON string result from V8.
     deno_core::scope!(scope, rt);
     let local = handle.open(scope);
-    let json_str = local.to_string(scope)
+    let json_str = local
+        .to_string(scope)
         .ok_or_else(|| anyhow!("typecheck harness returned non-string"))?
         .to_rust_string_lossy(scope);
 
@@ -82,14 +83,17 @@ pub fn typecheck(declarations_dts: &str, user_ts: &str) -> Result<Vec<TsDiagnost
     let raw: Vec<serde_json::Value> = serde_json::from_str(&json_str)
         .map_err(|e| anyhow!("failed to parse typecheck output: {e}\n{json_str}"))?;
 
-    let diags = raw.into_iter().map(|v| TsDiagnostic {
-        message:  v["message"] .as_str() .unwrap_or("").to_owned(),
-        code:     v["code"]    .as_u64()  .unwrap_or(0) as u32,
-        category: v["category"].as_u64()  .unwrap_or(1) as u8,
-        file:     v["file"]    .as_str()  .map(str::to_owned),
-        line:     v["line"]    .as_u64()  .map(|n| n as u32),
-        col:      v["col"]     .as_u64()  .map(|n| n as u32),
-    }).collect();
+    let diags = raw
+        .into_iter()
+        .map(|v| TsDiagnostic {
+            message: v["message"].as_str().unwrap_or("").to_owned(),
+            code: v["code"].as_u64().unwrap_or(0) as u32,
+            category: v["category"].as_u64().unwrap_or(1) as u8,
+            file: v["file"].as_str().map(str::to_owned),
+            line: v["line"].as_u64().map(|n| n as u32),
+            col: v["col"].as_u64().map(|n| n as u32),
+        })
+        .collect();
 
     Ok(diags)
 }

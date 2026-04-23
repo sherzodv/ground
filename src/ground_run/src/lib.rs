@@ -4,7 +4,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 #[derive(Clone, Copy)]
-pub enum Source { Stdout, Stderr }
+pub enum Source {
+    Stdout,
+    Stderr,
+}
 
 pub trait OutputParser: Send + 'static {
     type Event: Send;
@@ -13,16 +16,16 @@ pub trait OutputParser: Send + 'static {
 
 #[derive(Debug)]
 pub struct ExitStatus {
-    pub code:    Option<i32>,
+    pub code: Option<i32>,
     pub success: bool,
 }
 
 pub enum RunEvent<E> {
     Spawned,
-    Raw(String),           // raw stdout line, always emitted before the parsed Line
+    Raw(String), // raw stdout line, always emitted before the parsed Line
     Line(E),
-    Stderr(String),        // raw stderr line the parser returned None for
-    Exited(ExitStatus),    // always last
+    Stderr(String),     // raw stderr line the parser returned None for
+    Exited(ExitStatus), // always last
 }
 
 #[derive(Debug)]
@@ -34,14 +37,14 @@ pub enum RunError {
 impl std::fmt::Display for RunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RunError::NotFound(s)    => write!(f, "command not found: {s}"),
+            RunError::NotFound(s) => write!(f, "command not found: {s}"),
             RunError::SpawnFailed(s) => write!(f, "spawn failed: {s}"),
         }
     }
 }
 
 pub fn spawn<P: OutputParser>(
-    cmd:    &mut std::process::Command,
+    cmd: &mut std::process::Command,
     parser: P,
 ) -> Result<Receiver<RunEvent<P::Event>>, RunError> {
     let mut child = cmd
@@ -60,13 +63,15 @@ pub fn spawn<P: OutputParser>(
     let stderr = child.stderr.take().unwrap();
 
     let (tx_raw, rx_raw) = mpsc::channel::<(Source, String)>();
-    let (tx_ev,  rx_ev)  = mpsc::channel::<RunEvent<P::Event>>();
+    let (tx_ev, rx_ev) = mpsc::channel::<RunEvent<P::Event>>();
 
     // stdout reader
     let tx1 = tx_raw.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx1.send((Source::Stdout, line)).is_err() { break; }
+            if tx1.send((Source::Stdout, line)).is_err() {
+                break;
+            }
         }
     });
 
@@ -74,7 +79,9 @@ pub fn spawn<P: OutputParser>(
     let tx2 = tx_raw;
     thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if tx2.send((Source::Stderr, line)).is_err() { break; }
+            if tx2.send((Source::Stderr, line)).is_err() {
+                break;
+            }
         }
     });
 
@@ -89,15 +96,26 @@ pub fn spawn<P: OutputParser>(
                 let _ = tx_ev.send(RunEvent::Raw(line.clone()));
             }
             match parser.parse(&line, source) {
-                Some(ev) => { let _ = tx_ev.send(RunEvent::Line(ev)); }
-                None if is_stderr => { let _ = tx_ev.send(RunEvent::Stderr(line)); }
+                Some(ev) => {
+                    let _ = tx_ev.send(RunEvent::Line(ev));
+                }
+                None if is_stderr => {
+                    let _ = tx_ev.send(RunEvent::Stderr(line));
+                }
                 None => {}
             }
         }
 
-        let status = child.wait()
-            .map(|s| ExitStatus { code: s.code(), success: s.success() })
-            .unwrap_or(ExitStatus { code: None, success: false });
+        let status = child
+            .wait()
+            .map(|s| ExitStatus {
+                code: s.code(),
+                success: s.success(),
+            })
+            .unwrap_or(ExitStatus {
+                code: None,
+                success: false,
+            });
 
         let _ = tx_ev.send(RunEvent::Exited(status));
     });

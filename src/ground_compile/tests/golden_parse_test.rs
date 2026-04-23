@@ -1023,7 +1023,7 @@ fn use_006() {
 }
 
 #[test]
- fn use_009() {
+fn use_009() {
     assert_eq!(
         show("use std:service"),
         norm(
@@ -1037,7 +1037,7 @@ fn use_006() {
 }
 
 #[test]
- fn use_010() {
+fn use_010() {
     assert_eq!(
         show("use std:*"),
         norm(
@@ -1537,8 +1537,10 @@ fn pack_001() {
 #[test]
 fn pack_002() {
     assert_eq!(
-        show("pack std
-              port = http | grpc"),
+        show(
+            "pack std
+              port = http | grpc"
+        ),
         norm(
             r##"
             Scope[pack:test,

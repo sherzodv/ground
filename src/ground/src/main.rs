@@ -1,41 +1,53 @@
 mod ops_display;
 
-use std::{env, fs, io, path::{Path, PathBuf}, process};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    process,
+};
 
-use ground_be_terra::JsonUnit;
-use ground_compile::{compile, format_source, CompileReq, CompileRes, AsmDef, AsmDefRef, AsmValue, Unit};
-use ground_run::RunEvent;
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
+use ground_be_terra::JsonUnit;
+use ground_compile::{
+    compile, format_source, AsmDef, AsmDefRef, AsmValue, CompileReq, CompileRes, Unit,
+};
+use ground_run::RunEvent;
 use ops_display::{Op, TerraEnricher};
 use serde_json::Value;
 
-const GREEN:  &str = "\x1b[32m";
+const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
-const RED:    &str = "\x1b[31m";
-const BOLD:   &str = "\x1b[1m";
-const DIM:    &str = "\x1b[2m";
-const RESET:  &str = "\x1b[0m";
+const RED: &str = "\x1b[31m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+const RESET: &str = "\x1b[0m";
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     match args.as_slice() {
-        [cmd, sub] if cmd == "tf" && sub == "init"                                => cmd_tf_init(false),
-        [cmd, sub, flag] if cmd == "tf" && sub == "init" && flag == "--git-ignore" => cmd_tf_init(true),
-        [cmd, sub] if cmd == "tf" && sub == "migrate"                              => cmd_tf_migrate(),
-        [cmd, sub] if cmd == "gen" && sub == "terra"                              => cmd_gen_terra(),
-        [cmd, sub] if cmd == "gen" && sub == "types"                              => cmd_gen_types(),
-        [cmd] if cmd == "fmt"                                                     => cmd_fmt(),
-        [cmd, ..] if cmd == "fmt"                                                 => cmd_fmt(),
-        [cmd] if cmd == "status"                                                  => cmd_status(),
-        [cmd, sub] if cmd == "lsp" && sub == "start"                              => cmd_lsp_start(),
-        [cmd, sub] if cmd == "lsp" && sub == "stop"                               => cmd_lsp_stop(),
-        [cmd] if cmd == "plan"                                                     => cmd_plan_ls(),
-        [cmd, sub] if cmd == "plan" && sub == "ls"                                 => cmd_plan_ls(),
-        [cmd, name] if cmd == "plan"                                               => cmd_plan(name, false),
-        [cmd, name, flag] if cmd == "plan" && (flag == "--verbose" || flag == "-v") => cmd_plan(name, true),
-        [cmd, name] if cmd == "apply"                                              => cmd_apply(name, false),
-        [cmd, name, flag] if cmd == "apply" && (flag == "--verbose" || flag == "-v") => cmd_apply(name, true),
+        [cmd, sub] if cmd == "tf" && sub == "init" => cmd_tf_init(false),
+        [cmd, sub, flag] if cmd == "tf" && sub == "init" && flag == "--git-ignore" => {
+            cmd_tf_init(true)
+        }
+        [cmd, sub] if cmd == "tf" && sub == "migrate" => cmd_tf_migrate(),
+        [cmd, sub] if cmd == "gen" && sub == "terra" => cmd_gen_terra(),
+        [cmd, sub] if cmd == "gen" && sub == "types" => cmd_gen_types(),
+        [cmd] if cmd == "fmt" => cmd_fmt(),
+        [cmd, ..] if cmd == "fmt" => cmd_fmt(),
+        [cmd] if cmd == "status" => cmd_status(),
+        [cmd, sub] if cmd == "lsp" && sub == "start" => cmd_lsp_start(),
+        [cmd, sub] if cmd == "lsp" && sub == "stop" => cmd_lsp_stop(),
+        [cmd] if cmd == "plan" => cmd_plan_ls(),
+        [cmd, sub] if cmd == "plan" && sub == "ls" => cmd_plan_ls(),
+        [cmd, name] if cmd == "plan" => cmd_plan(name, false),
+        [cmd, name, flag] if cmd == "plan" && (flag == "--verbose" || flag == "-v") => {
+            cmd_plan(name, true)
+        }
+        [cmd, name] if cmd == "apply" => cmd_apply(name, false),
+        [cmd, name, flag] if cmd == "apply" && (flag == "--verbose" || flag == "-v") => {
+            cmd_apply(name, true)
+        }
         _ => {
             eprintln!("usage:");
             eprintln!("  ground tf init [--git-ignore]");
@@ -80,7 +92,8 @@ fn cmd_tf_init(git_ignore: bool) {
         ];
 
         let existing = fs::read_to_string(".gitignore").unwrap_or_default();
-        let to_add: Vec<&str> = needed.iter()
+        let to_add: Vec<&str> = needed
+            .iter()
             .filter(|entry| !existing.lines().any(|l| l.trim() == **entry))
             .copied()
             .collect();
@@ -117,14 +130,22 @@ fn cmd_tf_migrate() {
     with_project_root(|root| {
         let res = do_compile(root, true);
         let outputs = match ground_be_terra::generate_each(&res) {
-            Ok(o)  => o,
-            Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
         };
         write_plan_units(root, &outputs);
 
         let stamps = read_plan_stamps(&root.join(".ground/terra"));
-        let migratable: Vec<&PlanStamp> = stamps.iter()
-            .filter(|stamp| stamp.kind == "state_store" && stamp.state.as_deref() == Some("remote") && stamp.backend_present)
+        let migratable: Vec<&PlanStamp> = stamps
+            .iter()
+            .filter(|stamp| {
+                stamp.kind == "state_store"
+                    && stamp.state.as_deref() == Some("remote")
+                    && stamp.backend_present
+            })
             .collect();
 
         match migratable.len() {
@@ -160,14 +181,22 @@ fn cmd_tf_migrate() {
         write_plan_units(root, &outputs);
 
         let dir = root.join(".ground/terra").join(&plan_name);
-        let Some(rx) = terra_ops::migrate_state(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); })
-        else {
+        let Some(rx) = terra_ops::migrate_state(&dir).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }) else {
             println!("no migration needed for plan {plan_name}");
             return;
         };
 
-        let mut enricher = TerraEnricher::new(plan_name.clone(), Op::Init, provider, String::new(), lookup, true);
+        let mut enricher = TerraEnricher::new(
+            plan_name.clone(),
+            Op::Init,
+            provider,
+            String::new(),
+            lookup,
+            true,
+        );
         if !run_events(rx, &mut enricher) {
             eprintln!("error: terraform migrate failed");
             process::exit(1);
@@ -184,13 +213,40 @@ fn read_plan_stamps(terra_root: &Path) -> Vec<PlanStamp> {
 
     for entry in entries.flatten() {
         let path = entry.path().join(".ground-plan.json");
-        let Ok(src) = fs::read_to_string(&path) else { continue; };
-        let Ok(json) = serde_json::from_str::<Value>(&src) else { continue; };
-        let Some(alias) = json.get("alias").and_then(|v| v.as_str()).map(str::to_string) else { continue; };
-        let Some(kind) = json.get("kind").and_then(|v| v.as_str()).map(str::to_string) else { continue; };
-        let state = json.get("state").and_then(|v| v.as_str()).map(str::to_string);
-        let backend_present = json.get("backend_present").and_then(|v| v.as_bool()).unwrap_or(false);
-        out.push(PlanStamp { alias, kind, state, backend_present });
+        let Ok(src) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<Value>(&src) else {
+            continue;
+        };
+        let Some(alias) = json
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Some(kind) = json
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let state = json
+            .get("state")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let backend_present = json
+            .get("backend_present")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        out.push(PlanStamp {
+            alias,
+            kind,
+            state,
+            backend_present,
+        });
     }
 
     out
@@ -220,13 +276,17 @@ fn collect_grd_files(root: &Path) -> Vec<Unit> {
 
 fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
     let entries = match fs::read_dir(dir) {
-        Ok(e)  => e,
-        Err(e) => { eprintln!("warning: cannot read {:?}: {e}", dir); return; }
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("warning: cannot read {:?}: {e}", dir);
+            return;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
         // Skip hidden directories (.ground, .git, .direnv …).
-        let is_hidden = path.file_name()
+        let is_hidden = path
+            .file_name()
             .and_then(|n| n.to_str())
             .map_or(false, |n| n.starts_with('.'));
         if path.is_dir() && !is_hidden {
@@ -234,19 +294,20 @@ fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
         } else if path.extension().map_or(false, |e| e == "grd") {
             let rel = path.strip_prefix(root).unwrap_or(&path);
             // Pack path = directory components (not the filename).
-            let pack_path: Vec<String> = rel.parent()
-                .map(|p| p.components()
-                    .filter_map(|c| match c {
-                        std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
-                        _ => None,
-                    })
-                    .collect())
+            let pack_path: Vec<String> = rel
+                .parent()
+                .map(|p| {
+                    p.components()
+                        .filter_map(|c| match c {
+                            std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+                            _ => None,
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
             // Unit name: the file stem unless it is "pack" (pack.grd merges into
             // its directory scope; all other named files create a named sub-pack).
-            let stem = rel.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let name = if stem == "pack" {
                 String::new()
             } else {
@@ -254,12 +315,21 @@ fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
             };
             match fs::read_to_string(&path) {
                 Ok(src) => {
-                    let ts_src = path.with_extension("ts")
+                    let ts_src = path
+                        .with_extension("ts")
                         .to_str()
                         .and_then(|p| fs::read_to_string(p).ok());
-                    units.push(Unit { name, path: pack_path, src, ts_src });
+                    units.push(Unit {
+                        name,
+                        path: pack_path,
+                        src,
+                        ts_src,
+                    });
                 }
-                Err(e) => { eprintln!("error: {}: {e}", path.display()); process::exit(1); }
+                Err(e) => {
+                    eprintln!("error: {}: {e}", path.display());
+                    process::exit(1);
+                }
             }
         }
     }
@@ -281,7 +351,10 @@ fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
     if !res.errors.is_empty() {
         for e in &res.errors {
             if let Some(loc) = &e.loc {
-                let name = unit_names.get(loc.unit as usize).map(|s| s.as_str()).unwrap_or("?");
+                let name = unit_names
+                    .get(loc.unit.as_usize())
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
                 eprintln!("error: {}:{}:{}: {}", name, loc.line, loc.col, e.message);
             } else {
                 eprintln!("error: {}", e.message);
@@ -302,12 +375,20 @@ fn compile_and_gen(root: &Path, plan_name: &str) -> (CompileRes, Vec<JsonUnit>, 
     let res = do_compile(root, true);
 
     let outputs = match ground_be_terra::generate_each(&res) {
-        Ok(o)  => o,
-        Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
     };
 
     let Some(def) = res.defs.iter().find(|d| d.name == plan_name) else {
-        let available = res.defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ");
+        let available = res
+            .defs
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         eprintln!("error: plan '{plan_name}' not found");
         if !available.is_empty() {
             eprintln!("available plans: {available}");
@@ -316,7 +397,8 @@ fn compile_and_gen(root: &Path, plan_name: &str) -> (CompileRes, Vec<JsonUnit>, 
     };
 
     let selected_plan = def.name.clone();
-    let plan_outputs: Vec<JsonUnit> = outputs.into_iter()
+    let plan_outputs: Vec<JsonUnit> = outputs
+        .into_iter()
         .filter(|u| u.file.starts_with(&format!("{selected_plan}/")))
         .collect();
 
@@ -344,8 +426,11 @@ fn cmd_gen_terra() {
         let res = do_compile(root, true);
 
         let outputs = match ground_be_terra::generate_each(&res) {
-            Ok(o)  => o,
-            Err(e) => { eprintln!("error: {e}"); process::exit(1); }
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
         };
 
         for output in &outputs {
@@ -373,11 +458,17 @@ fn collect_grd_paths_recursive(root: &Path) -> Vec<PathBuf> {
 fn collect_grd_path_recursive(root: &Path, dir: &Path, paths: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) => { eprintln!("warning: cannot read {:?}: {e}", dir); return; }
+        Err(e) => {
+            eprintln!("warning: cannot read {:?}: {e}", dir);
+            return;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_hidden = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
+        let is_hidden = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'));
         if path.is_dir() && !is_hidden {
             collect_grd_path_recursive(root, &path, paths);
         } else if path.extension().map_or(false, |e| e == "grd") {
@@ -496,7 +587,9 @@ fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
     let mut lookup = Vec::new();
     for def in &res.defs {
         let alias_u = def.name.replace('-', "_");
-        let pfx_u = def.fields.iter()
+        let pfx_u = def
+            .fields
+            .iter()
             .find(|f| f.name == "prefix")
             .and_then(|f| match &f.value {
                 AsmValue::Str(s) | AsmValue::Ref(s) => Some(s.replace('-', "_")),
@@ -505,8 +598,8 @@ fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
             .unwrap_or_default();
         for inst_ref in collect_members(def) {
             let inst_u = inst_ref.name.replace('-', "_");
-            let key    = format!("{pfx_u}{alias_u}_{inst_u}");
-            let label  = format!("{}:{}", inst_ref.type_name, inst_ref.name);
+            let key = format!("{pfx_u}{alias_u}_{inst_u}");
+            let label = format!("{}:{}", inst_ref.type_name, inst_ref.name);
             lookup.push((key, label));
         }
     }
@@ -514,7 +607,7 @@ fn build_lookup(res: &CompileRes) -> Vec<(String, String)> {
 }
 
 fn collect_members(def: &AsmDef) -> Vec<AsmDefRef> {
-    let mut out  = Vec::new();
+    let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     seen.insert(def.name.clone());
     for f in &def.fields {
@@ -524,9 +617,9 @@ fn collect_members(def: &AsmDef) -> Vec<AsmDefRef> {
 }
 
 fn collect_refs_deep(
-    v:      &AsmValue,
-    out:    &mut Vec<AsmDefRef>,
-    seen:   &mut std::collections::HashSet<String>,
+    v: &AsmValue,
+    out: &mut Vec<AsmDefRef>,
+    seen: &mut std::collections::HashSet<String>,
 ) {
     match v {
         AsmValue::DefRef(r) => {
@@ -534,10 +627,26 @@ fn collect_refs_deep(
                 out.push(r.clone());
             }
         }
-        AsmValue::List(items) => { for i in items { collect_refs_deep(i, out, seen); } }
-        AsmValue::Path(segs) => { for s in segs { collect_refs_deep(s, out, seen); } }
-        AsmValue::Def(def) => { for f in &def.fields { collect_refs_deep(&f.value, out, seen); } }
-        AsmValue::Variant(v) => { if let Some(p) = &v.payload { collect_refs_deep(p, out, seen); } }
+        AsmValue::List(items) => {
+            for i in items {
+                collect_refs_deep(i, out, seen);
+            }
+        }
+        AsmValue::Path(segs) => {
+            for s in segs {
+                collect_refs_deep(s, out, seen);
+            }
+        }
+        AsmValue::Def(def) => {
+            for f in &def.fields {
+                collect_refs_deep(&f.value, out, seen);
+            }
+        }
+        AsmValue::Variant(v) => {
+            if let Some(p) = &v.payload {
+                collect_refs_deep(p, out, seen);
+            }
+        }
         _ => {}
     }
 }
@@ -549,22 +658,24 @@ fn collect_refs_deep(
 fn action_glyph(action: &ground_be_terra::terra_ops::Action) -> (&'static str, &'static str) {
     use ground_be_terra::terra_ops::Action::*;
     match action {
-        Create  => ("+", GREEN),
-        Update  => ("~", YELLOW),
+        Create => ("+", GREEN),
+        Update => ("~", YELLOW),
         Replace => ("±", YELLOW),
-        Delete  => ("-", RED),
+        Delete => ("-", RED),
     }
 }
 
-fn dominant_verb(changes: &[&ground_be_terra::terra_ops::ResourceChange]) -> (&'static str, &'static str) {
+fn dominant_verb(
+    changes: &[&ground_be_terra::terra_ops::ResourceChange],
+) -> (&'static str, &'static str) {
     use ground_be_terra::terra_ops::Action::*;
     let create = changes.iter().any(|c| matches!(c.action, Create));
     let delete = changes.iter().any(|c| matches!(c.action, Delete));
     let modify = changes.iter().any(|c| matches!(c.action, Update | Replace));
     match (create, delete, modify) {
-        (true,  false, false) => ("create", GREEN),
-        (false, true,  false) => ("delete", RED),
-        _                     => ("modify", YELLOW),
+        (true, false, false) => ("create", GREEN),
+        (false, true, false) => ("delete", RED),
+        _ => ("modify", YELLOW),
     }
 }
 
@@ -579,21 +690,23 @@ fn render(ev: &ops_display::DisplayEvent) {
     }
 }
 
-fn run_events(rx: std::sync::mpsc::Receiver<RunEvent<OpsEvent>>, enricher: &mut TerraEnricher) -> bool {
+fn run_events(
+    rx: std::sync::mpsc::Receiver<RunEvent<OpsEvent>>,
+    enricher: &mut TerraEnricher,
+) -> bool {
     let mut ok = true;
     for event in rx {
-        if let RunEvent::Exited(ref s) = event { ok = s.success; }
-        for d in enricher.enrich(&event) { render(&d); }
+        if let RunEvent::Exited(ref s) = event {
+            ok = s.success;
+        }
+        for d in enricher.enrich(&event) {
+            render(&d);
+        }
     }
     ok
 }
 
-fn run_init_if_needed(
-    dir: &Path,
-    plan_name: &str,
-    provider: &str,
-    verbose: bool,
-) {
+fn run_init_if_needed(dir: &Path, plan_name: &str, provider: &str, verbose: bool) {
     use ground_be_terra::terra_ops;
 
     let init = terra_ops::init_if_needed(dir);
@@ -631,7 +744,14 @@ fn run_init_if_needed(
         return;
     };
 
-    let mut enricher = TerraEnricher::new(plan_name.to_string(), Op::Init, provider.to_string(), String::new(), vec![], verbose);
+    let mut enricher = TerraEnricher::new(
+        plan_name.to_string(),
+        Op::Init,
+        provider.to_string(),
+        String::new(),
+        vec![],
+        verbose,
+    );
     if !run_events(rx, &mut enricher) {
         eprintln!("error: terraform init failed");
         process::exit(1);
@@ -640,11 +760,11 @@ fn run_init_if_needed(
 
 fn fmt_attr_val(val: &AttrVal) -> String {
     match val {
-        AttrVal::Scalar(s)   => s.clone(),
-        AttrVal::Unknown     => "(known after apply)".to_string(),
-        AttrVal::Sensitive   => "(sensitive value)".to_string(),
-        AttrVal::Null        => "null".to_string(),
-        AttrVal::Block(_)    => "{...}".to_string(),
+        AttrVal::Scalar(s) => s.clone(),
+        AttrVal::Unknown => "(known after apply)".to_string(),
+        AttrVal::Sensitive => "(sensitive value)".to_string(),
+        AttrVal::Null => "null".to_string(),
+        AttrVal::Block(_) => "{...}".to_string(),
         AttrVal::List(items) => format!("[{} items]", items.len()),
     }
 }
@@ -652,12 +772,14 @@ fn fmt_attr_val(val: &AttrVal) -> String {
 fn display_attr(val: &AttrVal, key: &str, glyph: &str, color: &str, indent: usize) {
     let pad = " ".repeat(indent);
     match val {
-        AttrVal::Null                             => {}
+        AttrVal::Null => {}
         AttrVal::Block(pairs) if pairs.is_empty() => {}
-        AttrVal::List(items)  if items.is_empty() => {}
+        AttrVal::List(items) if items.is_empty() => {}
         AttrVal::Block(pairs) => {
             println!("  {pad}{color}{glyph}{RESET} {DIM}{key}{RESET} = {{");
-            for (k, v) in pairs { display_attr(v, k, glyph, color, indent + 4); }
+            for (k, v) in pairs {
+                display_attr(v, k, glyph, color, indent + 4);
+            }
             println!("  {pad}  }}");
         }
         AttrVal::List(items) => {
@@ -666,16 +788,24 @@ fn display_attr(val: &AttrVal, key: &str, glyph: &str, color: &str, indent: usiz
                 match item {
                     AttrVal::Block(pairs) if !pairs.is_empty() => {
                         println!("    {pad}{color}{glyph}{RESET} {{");
-                        for (k, v) in pairs { display_attr(v, k, glyph, color, indent + 8); }
+                        for (k, v) in pairs {
+                            display_attr(v, k, glyph, color, indent + 8);
+                        }
                         println!("    {pad}  }},");
                     }
-                    _ => println!("    {pad}{color}{glyph}{RESET} {DIM}{}{RESET},", fmt_attr_val(item)),
+                    _ => println!(
+                        "    {pad}{color}{glyph}{RESET} {DIM}{}{RESET},",
+                        fmt_attr_val(item)
+                    ),
                 }
             }
             println!("  {pad}  ]");
         }
         _ => {
-            println!("  {pad}{color}{glyph}{RESET} {DIM}{key}{RESET} = {DIM}{}{RESET}", fmt_attr_val(val));
+            println!(
+                "  {pad}{color}{glyph}{RESET} {DIM}{key}{RESET} = {DIM}{}{RESET}",
+                fmt_attr_val(val)
+            );
         }
     }
 }
@@ -684,12 +814,16 @@ fn display_resource_attrs(change: &terra_ops::ResourceChange) {
     match change.action {
         Action::Create | Action::Replace => {
             for a in &change.attrs {
-                if let Some(val) = &a.after { display_attr(val, &a.key, "+", GREEN, 4); }
+                if let Some(val) = &a.after {
+                    display_attr(val, &a.key, "+", GREEN, 4);
+                }
             }
         }
         Action::Delete => {
             for a in &change.attrs {
-                if let Some(val) = &a.before { display_attr(val, &a.key, "-", RED, 4); }
+                if let Some(val) = &a.before {
+                    display_attr(val, &a.key, "-", RED, 4);
+                }
             }
         }
         Action::Update => {
@@ -706,14 +840,14 @@ fn display_resource_attrs(change: &terra_ops::ResourceChange) {
 }
 
 fn display_plan_summary(
-    summary:    &ground_be_terra::terra_ops::PlanSummary,
-    res:        &CompileRes,
-    plan_name:  &str,
-    provider:   &str,
-    verbose:    bool,
+    summary: &ground_be_terra::terra_ops::PlanSummary,
+    res: &CompileRes,
+    plan_name: &str,
+    provider: &str,
+    verbose: bool,
 ) {
-    use std::collections::BTreeMap;
     use ground_be_terra::terra_ops;
+    use std::collections::BTreeMap;
 
     let lookup = build_lookup(res);
     let ground_entity = |resource_name: &str| -> String {
@@ -730,7 +864,10 @@ fn display_plan_summary(
     // Group by ground entity name
     let mut groups: BTreeMap<String, Vec<&terra_ops::ResourceChange>> = BTreeMap::new();
     for c in &summary.changes {
-        groups.entry(ground_entity(&c.resource_name)).or_default().push(c);
+        groups
+            .entry(ground_entity(&c.resource_name))
+            .or_default()
+            .push(c);
     }
 
     println!();
@@ -745,8 +882,13 @@ fn display_plan_summary(
             println!("{color}{verb}{RESET} {BOLD}{entity}{RESET}");
             for c in changes {
                 let (glyph, gcolor) = action_glyph(&c.action);
-                println!("  {gcolor}{glyph}{RESET} {DIM}{}.{}{RESET}", c.resource_type, c.resource_name);
-                if verbose { display_resource_attrs(c); }
+                println!(
+                    "  {gcolor}{glyph}{RESET} {DIM}{}.{}{RESET}",
+                    c.resource_type, c.resource_name
+                );
+                if verbose {
+                    display_resource_attrs(c);
+                }
             }
             println!();
         }
@@ -770,9 +912,18 @@ fn cmd_apply(plan_name: &str, verbose: bool) {
         let dir = root.join(".ground/terra").join(&plan_name);
         run_init_if_needed(&dir, &plan_name, &provider, verbose);
 
-        let rx = terra_ops::apply(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(plan_name.clone(), Op::Apply, provider.clone(), String::new(), lookup, verbose);
+        let rx = terra_ops::apply(&dir).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            process::exit(1);
+        });
+        let mut enricher = TerraEnricher::new(
+            plan_name.clone(),
+            Op::Apply,
+            provider.clone(),
+            String::new(),
+            lookup,
+            verbose,
+        );
         if !run_events(rx, &mut enricher) {
             eprintln!("error: terraform apply failed");
             process::exit(1);
@@ -793,9 +944,18 @@ fn cmd_plan(plan_name: &str, verbose: bool) {
         let dir = root.join(".ground/terra").join(&plan_name);
         run_init_if_needed(&dir, &plan_name, &provider, verbose);
 
-        let rx = terra_ops::plan(&dir)
-            .unwrap_or_else(|e| { eprintln!("error: {e}"); process::exit(1); });
-        let mut enricher = TerraEnricher::new(plan_name.clone(), Op::Plan, provider.clone(), String::new(), lookup, verbose);
+        let rx = terra_ops::plan(&dir).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            process::exit(1);
+        });
+        let mut enricher = TerraEnricher::new(
+            plan_name.clone(),
+            Op::Plan,
+            provider.clone(),
+            String::new(),
+            lookup,
+            verbose,
+        );
 
         for event in rx {
             match event {
@@ -807,7 +967,9 @@ fn cmd_plan(plan_name: &str, verbose: bool) {
                     display_plan_summary(&summary, &res, &plan_name, &provider, verbose);
                 }
                 other => {
-                    for d in enricher.enrich(&other) { render(&d); }
+                    for d in enricher.enrich(&other) {
+                        render(&d);
+                    }
                 }
             }
         }

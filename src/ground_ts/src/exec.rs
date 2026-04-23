@@ -10,7 +10,6 @@
 /// Constraints for hook source files:
 ///   - No `import` statements (no module resolution in this embedded runtime).
 ///   - Functions may use `interface`/`type` freely — they are erased by the transpiler.
-
 use anyhow::{anyhow, Result};
 use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
 use deno_core::{JsRuntime, RuntimeOptions};
@@ -43,9 +42,7 @@ pub fn call_hook_args(ts_src: &str, fn_name: &str, args_json: &[&str]) -> Result
     let args_src = args_json.join(", ");
 
     // Call: JSON.stringify( globalThis["fn_name"](...args) )
-    let call = format!(
-        "JSON.stringify(globalThis[{fn_name:?}]({args_src}))"
-    );
+    let call = format!("JSON.stringify(globalThis[{fn_name:?}]({args_src}))");
     let handle = rt.execute_script("<call>", call)?;
 
     // Extract the JSON string from the V8 result.
@@ -58,7 +55,8 @@ pub fn call_hook_args(ts_src: &str, fn_name: &str, args_json: &[&str]) -> Result
         ));
     }
 
-    Ok(local.to_string(scope)
+    Ok(local
+        .to_string(scope)
         .ok_or_else(|| anyhow!("hook '{fn_name}' result could not be converted to string"))?
         .to_rust_string_lossy(scope))
 }
@@ -78,15 +76,15 @@ pub fn ts_to_js(ts_src: &str) -> Result<String> {
     // Interface/type declarations produce no JS output regardless, so
     // `export interface Foo {}` → `interface Foo {}` → (erased by transpiler).
     let stripped = ts_src
-        .replace("export function ",  "function ")
+        .replace("export function ", "function ")
         .replace("export async function ", "async function ")
-        .replace("export const ",    "const ")
-        .replace("export let ",      "let ")
-        .replace("export var ",      "var ");
+        .replace("export const ", "const ")
+        .replace("export let ", "let ")
+        .replace("export var ", "var ");
 
     let parsed = deno_ast::parse_module(ParseParams {
         specifier: "file:///hook.ts".parse().unwrap(),
-        text:       Arc::from(stripped.as_str()),
+        text: Arc::from(stripped.as_str()),
         media_type: MediaType::TypeScript,
         capture_tokens: false,
         scope_analysis: false,

@@ -30,11 +30,18 @@ pub fn generate_each(res: &CompileRes) -> Result<Vec<JsonUnit>, GenError> {
             Some("network") => "manifest_network.json.tera",
             _ => "manifest.json.tera",
         };
-        let rendered = render(&RenderReq {
-            entry: entry.into(),
-            units: template_units(),
-        }, &json!({ "deploy": deploy }))?;
-        out.extend(rendered.into_iter().filter(|unit| !unit.content.trim().is_empty()));
+        let rendered = render(
+            &RenderReq {
+                entry: entry.into(),
+                units: template_units(),
+            },
+            &json!({ "deploy": deploy }),
+        )?;
+        out.extend(
+            rendered
+                .into_iter()
+                .filter(|unit| !unit.content.trim().is_empty()),
+        );
     }
 
     Ok(out)
@@ -42,23 +49,50 @@ pub fn generate_each(res: &CompileRes) -> Result<Vec<JsonUnit>, GenError> {
 
 fn template_units() -> Vec<TeraUnit> {
     vec![
-        TeraUnit { file: "manifest.json.tera".into(), template: MANIFEST_TPL.into() },
-        TeraUnit { file: "manifest_network.json.tera".into(), template: MANIFEST_NETWORK_TPL.into() },
-        TeraUnit { file: "manifest_state.json.tera".into(), template: MANIFEST_STATE_TPL.into() },
-        TeraUnit { file: "main.tf.json.tera".into(), template: MAIN_TPL.into() },
-        TeraUnit { file: "network.json.tera".into(), template: NETWORK_TPL.into() },
-        TeraUnit { file: "plan-stamp.json.tera".into(), template: PLAN_STAMP_TPL.into() },
-        TeraUnit { file: "root.json.tera".into(), template: ROOT_TPL.into() },
-        TeraUnit { file: "state.json.tera".into(), template: STATE_TPL.into() },
+        TeraUnit {
+            file: "manifest.json.tera".into(),
+            template: MANIFEST_TPL.into(),
+        },
+        TeraUnit {
+            file: "manifest_network.json.tera".into(),
+            template: MANIFEST_NETWORK_TPL.into(),
+        },
+        TeraUnit {
+            file: "manifest_state.json.tera".into(),
+            template: MANIFEST_STATE_TPL.into(),
+        },
+        TeraUnit {
+            file: "main.tf.json.tera".into(),
+            template: MAIN_TPL.into(),
+        },
+        TeraUnit {
+            file: "network.json.tera".into(),
+            template: NETWORK_TPL.into(),
+        },
+        TeraUnit {
+            file: "plan-stamp.json.tera".into(),
+            template: PLAN_STAMP_TPL.into(),
+        },
+        TeraUnit {
+            file: "root.json.tera".into(),
+            template: ROOT_TPL.into(),
+        },
+        TeraUnit {
+            file: "state.json.tera".into(),
+            template: STATE_TPL.into(),
+        },
     ]
 }
 
 fn def_kind(def: &AsmDef) -> Option<&str> {
-    def.fields.iter().find(|f| f.name == "kind").and_then(|f| match &f.value {
-        AsmValue::Str(s) | AsmValue::Ref(s) => Some(s.as_str()),
-        AsmValue::Variant(v) => Some(v.value.as_str()),
-        _ => None,
-    })
+    def.fields
+        .iter()
+        .find(|f| f.name == "kind")
+        .and_then(|f| match &f.value {
+            AsmValue::Str(s) | AsmValue::Ref(s) => Some(s.as_str()),
+            AsmValue::Variant(v) => Some(v.value.as_str()),
+            _ => None,
+        })
 }
 
 fn def_to_ctx(def: &AsmDef) -> Map<String, Value> {
@@ -67,9 +101,9 @@ fn def_to_ctx(def: &AsmDef) -> Map<String, Value> {
     }
 
     let mut m = Map::new();
-    m.insert("alias".into(),    json!(def.name));
+    m.insert("alias".into(), json!(def.name));
     m.insert("provider".into(), json!("aws"));
-    m.insert("name".into(),     json!(def.name));
+    m.insert("name".into(), json!(def.name));
     for f in &def.fields {
         m.insert(f.name.clone(), asm_value_to_json_local(&f.value));
     }
@@ -79,14 +113,19 @@ fn def_to_ctx(def: &AsmDef) -> Map<String, Value> {
 fn asm_value_to_json_local(v: &AsmValue) -> Value {
     use serde_json::Value as V;
     match v {
-        AsmValue::Str(s)      => json!(s),
-        AsmValue::Int(n)      => json!(n),
-        AsmValue::Bool(b)     => json!(b),
-        AsmValue::Ref(s)      => json!(s),
+        AsmValue::Str(s) => json!(s),
+        AsmValue::Int(n) => json!(n),
+        AsmValue::Bool(b) => json!(b),
+        AsmValue::Ref(s) => json!(s),
         AsmValue::Variant(gv) => json!(gv.value),
-        AsmValue::DefRef(r)   => json!({ "type_name": r.type_name, "name": r.name }),
-        AsmValue::Def(def)    => V::Object(def.fields.iter().map(|f| (f.name.clone(), asm_value_to_json_local(&f.value))).collect()),
-        AsmValue::Path(segs)  => V::Array(segs.iter().map(asm_value_to_json_local).collect()),
+        AsmValue::DefRef(r) => json!({ "type_name": r.type_name, "name": r.name }),
+        AsmValue::Def(def) => V::Object(
+            def.fields
+                .iter()
+                .map(|f| (f.name.clone(), asm_value_to_json_local(&f.value)))
+                .collect(),
+        ),
+        AsmValue::Path(segs) => V::Array(segs.iter().map(asm_value_to_json_local).collect()),
         AsmValue::List(items) => V::Array(items.iter().map(asm_value_to_json_local).collect()),
     }
 }
@@ -94,7 +133,10 @@ fn asm_value_to_json_local(v: &AsmValue) -> Value {
 fn vpc_def_to_ctx(def: &AsmDef) -> Map<String, Value> {
     let project = def_ref_name(def, "project").unwrap_or("ground");
     let region_values = def_list_strs(def, "region");
-    let first_region = region_values.first().map(|s| s.as_str()).unwrap_or("us-east:1");
+    let first_region = region_values
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("us-east:1");
     let region_prefix = first_region.split(':').next().unwrap_or("us-east");
     let provider_region = aws_region(region_prefix);
     let project_bucket = sanitize_bucket(project);
@@ -107,17 +149,30 @@ fn vpc_def_to_ctx(def: &AsmDef) -> Map<String, Value> {
         .iter()
         .enumerate()
         .map(|(idx, raw)| {
-            let zone_cfg = def_list_defs(def, "zones").get(idx).cloned().unwrap_or_default();
+            let zone_cfg = def_list_defs(def, "zones")
+                .get(idx)
+                .cloned()
+                .unwrap_or_default();
             let parsed = parse_zone(raw);
             let n = parsed.0;
             let az = parsed.1;
             let default_public = parsed.2;
             let default_private = parsed.3;
-            let private_cidr = zone_cfg.get("private").and_then(Value::as_str).unwrap_or(&default_private).to_string();
+            let private_cidr = zone_cfg
+                .get("private")
+                .and_then(Value::as_str)
+                .unwrap_or(&default_private)
+                .to_string();
             let public_cidr = if egress == "none" {
                 None
             } else {
-                Some(zone_cfg.get("public").and_then(Value::as_str).unwrap_or(&default_public).to_string())
+                Some(
+                    zone_cfg
+                        .get("public")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&default_public)
+                        .to_string(),
+                )
             };
             let private_nat_key = match egress {
                 "shared" => Some(format!("{stem}_nat")),
@@ -175,23 +230,29 @@ fn vpc_def_to_ctx(def: &AsmDef) -> Map<String, Value> {
     m.insert("name".into(), json!(def.name));
     m.insert("kind".into(), json!("network"));
     m.insert("provider_region".into(), json!(provider_region));
-    m.insert("backend".into(), json!({
-        "bucket": format!("{project_bucket}-tfstate"),
-        "key": format!("{project_bucket}/network.tfstate"),
-        "region": provider_region,
-        "encrypt": true,
-        "use_lockfile": true,
-    }));
-    m.insert("root".into(), json!({
-        "vpc_key": format!("{stem}_vpc"),
-        "vpc_name": format!("{name_stem}-vpc"),
-        "cidr_block": def_str(def, "cidr").unwrap_or("10.0.0.0/16"),
-        "enable_dns_support": def_bool(def, "dns").unwrap_or(true),
-        "enable_dns_hostnames": def_bool(def, "dns").unwrap_or(true),
-        "gw_key": format!("{stem}_gw"),
-        "gw_name": format!("{name_stem}-gw"),
-        "has_internet_gateway": has_igw,
-    }));
+    m.insert(
+        "backend".into(),
+        json!({
+            "bucket": format!("{project_bucket}-tfstate"),
+            "key": format!("{project_bucket}/network.tfstate"),
+            "region": provider_region,
+            "encrypt": true,
+            "use_lockfile": true,
+        }),
+    );
+    m.insert(
+        "root".into(),
+        json!({
+            "vpc_key": format!("{stem}_vpc"),
+            "vpc_name": format!("{name_stem}-vpc"),
+            "cidr_block": def_str(def, "cidr").unwrap_or("10.0.0.0/16"),
+            "enable_dns_support": def_bool(def, "dns").unwrap_or(true),
+            "enable_dns_hostnames": def_bool(def, "dns").unwrap_or(true),
+            "gw_key": format!("{stem}_gw"),
+            "gw_name": format!("{name_stem}-gw"),
+            "has_internet_gateway": has_igw,
+        }),
+    );
     m.insert("zones".into(), Value::Array(zones));
     m.insert("nat_gateways".into(), Value::Array(nat_gateways));
     m
@@ -349,5 +410,4 @@ mod tests {
         }, &serde_json::json!({ "deploy": { "alias": "platform", "kind": "network", "provider_region": "us-east-1", "root": { "vpc_key": "v", "vpc_name": "n", "cidr_block": "10.0.0.0/16", "enable_dns_support": true, "enable_dns_hostnames": true, "gw_key": "g", "gw_name": "gw", "has_internet_gateway": true }, "zones": [], "nat_gateways": [] } }))
         .expect("templates should parse");
     }
-
 }

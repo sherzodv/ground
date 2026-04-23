@@ -6,8 +6,9 @@
 ///   `ShapeId`  → `IrRes::shapes[id.0]`
 ///   `DefId`    → `IrRes::defs[id.0]` (resolved Ground def)
 ///   `ScopeId`  → `IrRes::scopes[id.0]`  (`ScopeId(0)` is always the root)
-
 use std::collections::{HashMap, HashSet};
+
+pub use crate::ast::UnitId;
 
 // ---------------------------------------------------------------------------
 // Typed indices
@@ -28,9 +29,9 @@ pub struct ScopeId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrLoc {
-    pub unit:  u32,
+    pub unit: UnitId,
     pub start: u32,
-    pub end:   u32,
+    pub end: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ pub struct IrRef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrRefSeg {
-    pub value:  IrRefSegValue,
+    pub value: IrRefSegValue,
     pub is_opt: bool,
 }
 
@@ -64,7 +65,10 @@ pub enum IrRefSegValue {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScopeKind { Pack, Struct }
+pub enum ScopeKind {
+    Pack,
+    Struct,
+}
 
 /// `ScopeId(0)` is always the root scope.
 /// `ambiguous` tracks names that have been marked as conflicting (same-kind duplicates
@@ -72,16 +76,16 @@ pub enum ScopeKind { Pack, Struct }
 /// and stop parent-chain traversal; callers must use a qualified prefix to disambiguate.
 #[derive(Debug, Clone)]
 pub struct IrScope {
-    pub kind:      ScopeKind,
-    pub name:      Option<String>,
-    pub parent:    Option<ScopeId>,
-    pub shapes:    HashMap<String, ShapeId>,
-    pub defs:      HashMap<String, Vec<DefId>>,
-    pub packs:     HashMap<String, ScopeId>,
-    pub ambiguous:     HashSet<String>,
+    pub kind: ScopeKind,
+    pub name: Option<String>,
+    pub parent: Option<ScopeId>,
+    pub shapes: HashMap<String, ShapeId>,
+    pub defs: HashMap<String, Vec<DefId>>,
+    pub packs: HashMap<String, ScopeId>,
+    pub ambiguous: HashSet<String>,
     /// TypeScript function names exported from the co-located `.ts` file
     /// in this pack scope.
-    pub ts_fns:        HashSet<String>,
+    pub ts_fns: HashSet<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,23 +93,30 @@ pub struct IrScope {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrPrimitive { String, Integer, Boolean, Reference, Ipv4, Ipv4Net }
+pub enum IrPrimitive {
+    String,
+    Integer,
+    Boolean,
+    Reference,
+    Ipv4,
+    Ipv4Net,
+}
 
 /// What a named type IS.
 #[derive(Debug, Clone)]
 pub enum IrShapeBody {
     Unit,
     Primitive(IrPrimitive),
-    Enum(Vec<IrRef>),          // variant refs, order preserved; plain atom → Plain seg, typed → Shape seg
+    Enum(Vec<IrRef>), // variant refs, order preserved; plain atom → Plain seg, typed → Shape seg
     Struct(Vec<IrStructFieldDef>), // ordered fields owned by the shape
 }
 
 #[derive(Debug, Clone)]
 pub struct IrShapeDef {
-    pub name:  Option<String>, // None for anonymous inline shapes
+    pub name: Option<String>, // None for anonymous inline shapes
     pub scope: ScopeId,
-    pub loc:   IrLoc,
-    pub body:  IrShapeBody,
+    pub loc: IrLoc,
+    pub body: IrShapeBody,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,13 +127,13 @@ pub struct IrShapeDef {
 #[derive(Debug, Clone)]
 pub enum IrFieldType {
     Primitive(IrPrimitive),
-    Ref(IrRef),                // resolved type ref: single type, enum, or typed path
-    List(Vec<IrRef>),          // [ type1:(opt) | type2 ] — one IrRef per element pattern
+    Ref(IrRef),       // resolved type ref: single type, enum, or typed path
+    List(Vec<IrRef>), // [ type1:(opt) | type2 ] — one IrRef per element pattern
 }
 
 #[derive(Debug, Clone)]
 pub struct IrStructFieldDef {
-    pub name:       Option<String>,
+    pub name: Option<String>,
     pub field_type: IrFieldType,
 }
 
@@ -135,11 +146,11 @@ pub enum IrValue {
     Str(String),
     Int(i64),
     Bool(bool),
-    Ref(String),               // reference primitive (opaque) OR unresolved param ref like "{this:name}-sg"
+    Ref(String), // reference primitive (opaque) OR unresolved param ref like "{this:name}-sg"
     Variant(ShapeId, u32, Option<Box<IrValue>>), // enum shape + variant index + optional typed payload
     Inst(DefId),
-    Path(Vec<IrValue>),        // multi-segment typed path
-    List(Vec<IrValue>),        // list of validated values
+    Path(Vec<IrValue>), // multi-segment typed path
+    List(Vec<IrValue>), // list of validated values
 }
 
 // ---------------------------------------------------------------------------
@@ -149,10 +160,10 @@ pub enum IrValue {
 #[derive(Debug, Clone)]
 pub struct IrField {
     pub field_idx: u32,
-    pub name:    String,
-    pub loc:     IrLoc,
-    pub via:     bool,   // true → pass pre-resolved (post-mapper) value to enclosing mapper
-    pub value:   IrValue,
+    pub name: String,
+    pub loc: IrLoc,
+    pub via: bool, // true → pass pre-resolved (post-mapper) value to enclosing mapper
+    pub value: IrValue,
 }
 
 /// A named mapping instance — unified representation for both root definitions and instances.
@@ -165,17 +176,17 @@ pub struct IrField {
 /// carry a TypeScript transformation: `def name { inputs } = mapper_fn { outputs }`.
 #[derive(Debug, Clone)]
 pub struct IrDef {
-    pub planned:   bool,               // true when declared with `plan`
-    pub shape_id:  ShapeId,
-    pub base_def:  Option<DefId>,        // None → root def; Some → derived def/anonymous
-    pub name:      String,
-    pub type_hint: Option<String>,       // explicit type annotation from source, if present
-    pub scope:     ScopeId,
-    pub loc:       IrLoc,
-    pub fields:    Vec<IrField>,
-    pub mapper_fn: Option<String>,       // TS function name; None for non-mapper defs
-    pub inputs:    Vec<IrStructFieldDef>, // input fields (before `=` in mapper def)
-    pub outputs:   Vec<IrStructFieldDef>, // output fields (after `=` in mapper def)
+    pub planned: bool, // true when declared with `plan`
+    pub shape_id: ShapeId,
+    pub base_def: Option<DefId>, // None → root def; Some → derived def/anonymous
+    pub name: String,
+    pub type_hint: Option<String>, // explicit type annotation from source, if present
+    pub scope: ScopeId,
+    pub loc: IrLoc,
+    pub fields: Vec<IrField>,
+    pub mapper_fn: Option<String>, // TS function name; None for non-mapper defs
+    pub inputs: Vec<IrStructFieldDef>, // input fields (before `=` in mapper def)
+    pub outputs: Vec<IrStructFieldDef>, // output fields (after `=` in mapper def)
 }
 
 // ---------------------------------------------------------------------------
@@ -185,13 +196,13 @@ pub struct IrDef {
 #[derive(Debug, Clone)]
 pub struct IrError {
     pub message: String,
-    pub loc:     IrLoc,
+    pub loc: IrLoc,
 }
 
 #[derive(Debug)]
 pub struct IrRes {
-    pub shapes:   Vec<IrShapeDef>,
-    pub defs:     Vec<IrDef>,
-    pub scopes:   Vec<IrScope>,
-    pub errors:   Vec<IrError>,
+    pub shapes: Vec<IrShapeDef>,
+    pub defs: Vec<IrDef>,
+    pub scopes: Vec<IrScope>,
+    pub errors: Vec<IrError>,
 }

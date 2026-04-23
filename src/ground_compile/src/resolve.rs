@@ -9,70 +9,105 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{self, *};
-use crate::ir::*;
 use crate::ir::ScopeKind as IrScopeKind;
+use crate::ir::*;
 
 // ---------------------------------------------------------------------------
 // Resolver context
 // ---------------------------------------------------------------------------
 
 struct Ctx {
-    shapes:    Vec<IrShapeDef>,
-    defs:      Vec<IrDef>,
-    scopes:   Vec<IrScope>,
-    errors:   Vec<IrError>,
+    shapes: Vec<IrShapeDef>,
+    defs: Vec<IrDef>,
+    scopes: Vec<IrScope>,
+    errors: Vec<IrError>,
 }
 
 impl Ctx {
     fn new() -> Self {
         let root = IrScope {
-            kind:           IrScopeKind::Pack,
-            name:           None,
-            parent:         None,
-            shapes:         HashMap::new(),
-            defs:           HashMap::new(),
-            packs:          HashMap::new(),
-            ambiguous:      HashSet::new(),
-            ts_fns:         HashSet::new(),
+            kind: IrScopeKind::Pack,
+            name: None,
+            parent: None,
+            shapes: HashMap::new(),
+            defs: HashMap::new(),
+            packs: HashMap::new(),
+            ambiguous: HashSet::new(),
+            ts_fns: HashSet::new(),
         };
-        Ctx { shapes: vec![], defs: vec![], scopes: vec![root], errors: vec![] }
+        Ctx {
+            shapes: vec![],
+            defs: vec![],
+            scopes: vec![root],
+            errors: vec![],
+        }
     }
 
     fn scope_has_ts_fn(&self, scope: ScopeId, name: &str) -> bool {
         let s = &self.scopes[scope.0 as usize];
-        if s.ts_fns.contains(name) { return true; }
+        if s.ts_fns.contains(name) {
+            return true;
+        }
         s.parent.map_or(false, |p| self.scope_has_ts_fn(p, name))
     }
 
-    fn alloc_shape(&mut self, name: Option<String>, scope: ScopeId, loc: IrLoc, body: IrShapeBody) -> ShapeId {
+    fn alloc_shape(
+        &mut self,
+        name: Option<String>,
+        scope: ScopeId,
+        loc: IrLoc,
+        body: IrShapeBody,
+    ) -> ShapeId {
         let id = ShapeId(self.shapes.len() as u32);
         if let Some(n) = &name {
             if self.scopes[scope.0 as usize].shapes.contains_key(n) {
-                self.push_error(format!("duplicate type name '{}' in scope", n));
+                self.push_error(format!("duplicate type name '{}' in scope", n), loc.clone());
             } else {
                 self.scopes[scope.0 as usize].shapes.insert(n.clone(), id);
             }
         }
-        self.shapes.push(IrShapeDef { name, scope, loc, body });
+        self.shapes.push(IrShapeDef {
+            name,
+            scope,
+            loc,
+            body,
+        });
         id
     }
 
-    fn alloc_def(&mut self, planned: bool, name: String, scope: ScopeId, loc: IrLoc, shape_id: ShapeId, base_def: Option<DefId>) -> DefId {
+    fn alloc_def(
+        &mut self,
+        planned: bool,
+        name: String,
+        scope: ScopeId,
+        loc: IrLoc,
+        shape_id: ShapeId,
+        base_def: Option<DefId>,
+    ) -> DefId {
         let id = DefId(self.defs.len() as u32);
-        self.scopes[scope.0 as usize].defs
+        self.scopes[scope.0 as usize]
+            .defs
             .entry(name.clone())
             .or_default()
             .push(id);
         self.defs.push(IrDef {
             planned,
-            shape_id, base_def, name, type_hint: None, scope, loc,
-            fields: vec![], mapper_fn: None, inputs: vec![], outputs: vec![],
+            shape_id,
+            base_def,
+            name,
+            type_hint: None,
+            scope,
+            loc,
+            fields: vec![],
+            mapper_fn: None,
+            inputs: vec![],
+            outputs: vec![],
         });
         id
     }
 
-    fn push_error(&mut self, message: String) {
-        self.errors.push(IrError { message, loc: IrLoc { unit: 0, start: 0, end: 0 } });
+    fn push_error(&mut self, message: String, loc: IrLoc) {
+        self.errors.push(IrError { message, loc });
     }
 
     /// Mark `name` as ambiguous in `scope`: removes it from all namespace maps and
@@ -87,7 +122,9 @@ impl Ctx {
 
     fn lookup_shape(&self, scope: ScopeId, name: &str) -> Option<ShapeId> {
         let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
+        if s.ambiguous.contains(name) {
+            return None;
+        }
         if let Some(&id) = s.shapes.get(name) {
             if !self.is_planned_name(scope, name) {
                 return Some(id);
@@ -98,20 +135,30 @@ impl Ctx {
 
     fn lookup_def(&self, scope: ScopeId, name: &str) -> Option<DefId> {
         let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
+        if s.ambiguous.contains(name) {
+            return None;
+        }
         if let Some(ids) = s.defs.get(name) {
-            let visible: Vec<DefId> = ids.iter().copied()
+            let visible: Vec<DefId> = ids
+                .iter()
+                .copied()
                 .filter(|fid| !self.defs[fid.0 as usize].planned)
                 .collect();
-            if visible.len() == 1 { return Some(visible[0]); }
-            if !visible.is_empty() { return None; } // ambiguous type-wise — caller must use lookup_def_typed
+            if visible.len() == 1 {
+                return Some(visible[0]);
+            }
+            if !visible.is_empty() {
+                return None;
+            } // ambiguous type-wise — caller must use lookup_def_typed
         }
         s.parent.and_then(|p| self.lookup_def(p, name))
     }
 
     fn lookup_def_typed(&self, scope: ScopeId, name: &str, shape_id: ShapeId) -> Option<DefId> {
         let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
+        if s.ambiguous.contains(name) {
+            return None;
+        }
         if let Some(ids) = s.defs.get(name) {
             if let Some(&fid) = ids.iter().find(|&&fid| {
                 let def = &self.defs[fid.0 as usize];
@@ -120,28 +167,41 @@ impl Ctx {
                 return Some(fid);
             }
         }
-        s.parent.and_then(|p| self.lookup_def_typed(p, name, shape_id))
+        s.parent
+            .and_then(|p| self.lookup_def_typed(p, name, shape_id))
     }
 
     fn lookup_def_any(&self, scope: ScopeId, name: &str) -> Option<DefId> {
         let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
+        if s.ambiguous.contains(name) {
+            return None;
+        }
         if let Some(ids) = s.defs.get(name) {
-            if ids.len() == 1 { return Some(ids[0]); }
-            if !ids.is_empty() { return None; }
+            if ids.len() == 1 {
+                return Some(ids[0]);
+            }
+            if !ids.is_empty() {
+                return None;
+            }
         }
         s.parent.and_then(|p| self.lookup_def_any(p, name))
     }
 
     fn lookup_def_typed_any(&self, scope: ScopeId, name: &str, shape_id: ShapeId) -> Option<DefId> {
         let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
+        if s.ambiguous.contains(name) {
+            return None;
+        }
         if let Some(ids) = s.defs.get(name) {
-            if let Some(&fid) = ids.iter().find(|&&fid| self.def_satisfies_shape(fid, shape_id)) {
+            if let Some(&fid) = ids
+                .iter()
+                .find(|&&fid| self.def_satisfies_shape(fid, shape_id))
+            {
                 return Some(fid);
             }
         }
-        s.parent.and_then(|p| self.lookup_def_typed_any(p, name, shape_id))
+        s.parent
+            .and_then(|p| self.lookup_def_typed_any(p, name, shape_id))
     }
 
     fn def_satisfies_shape(&self, def_id: DefId, shape_id: ShapeId) -> bool {
@@ -158,8 +218,12 @@ impl Ctx {
 
     fn lookup_pack(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
         let s = &self.scopes[scope.0 as usize];
-        if s.ambiguous.contains(name) { return None; }
-        if let Some(&id) = s.packs.get(name) { return Some(id); }
+        if s.ambiguous.contains(name) {
+            return None;
+        }
+        if let Some(&id) = s.packs.get(name) {
+            return Some(id);
+        }
         s.parent.and_then(|p| self.lookup_pack(p, name))
     }
 
@@ -175,7 +239,11 @@ impl Ctx {
 }
 
 fn ir_loc(loc: &AstNodeLoc) -> IrLoc {
-    IrLoc { unit: loc.unit, start: loc.start, end: loc.end }
+    IrLoc {
+        unit: loc.unit,
+        start: loc.start,
+        end: loc.end,
+    }
 }
 
 fn builtin_primitive_from_ref(r: &AstRef) -> Option<IrPrimitive> {
@@ -210,7 +278,11 @@ fn effective_mapper_fn(td: &AstDef) -> Option<String> {
     }
 }
 
-fn lookup_base_shape_and_def(td: &AstDef, ctx: &Ctx, scope: ScopeId) -> (Option<ShapeId>, Option<DefId>) {
+fn lookup_base_shape_and_def(
+    td: &AstDef,
+    ctx: &Ctx,
+    scope: ScopeId,
+) -> (Option<ShapeId>, Option<DefId>) {
     let Some(mapper) = &td.mapper else {
         return (None, None);
     };
@@ -221,10 +293,17 @@ fn lookup_base_shape_and_def(td: &AstDef, ctx: &Ctx, scope: ScopeId) -> (Option<
     (Some(shape_id), base_def)
 }
 
-fn lookup_def_by_ref_and_shape(ref_: &AstRef, ctx: &Ctx, scope: ScopeId, shape_id: ShapeId) -> Option<DefId> {
+fn lookup_def_by_ref_and_shape(
+    ref_: &AstRef,
+    ctx: &Ctx,
+    scope: ScopeId,
+    shape_id: ShapeId,
+) -> Option<DefId> {
     let parts = qualified_plain_segments(&ref_.segments);
     let (last_qual, name) = *parts.last()?;
-    if last_qual == Some("pack") { return None; }
+    if last_qual == Some("pack") {
+        return None;
+    }
 
     let cur = if parts.len() == 1 {
         scope
@@ -239,7 +318,9 @@ fn lookup_def_by_ref_and_shape(ref_: &AstRef, ctx: &Ctx, scope: ScopeId, shape_i
 fn lookup_ts_fn_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<String> {
     let parts = qualified_plain_segments(&ref_.segments);
     let (last_qual, name) = *parts.last()?;
-    if last_qual == Some("pack") || last_qual == Some("def") { return None; }
+    if last_qual == Some("pack") || last_qual == Some("def") {
+        return None;
+    }
 
     let cur = if parts.len() == 1 {
         scope
@@ -247,7 +328,10 @@ fn lookup_ts_fn_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<Strin
         lookup_pack_path_qualified(ctx, scope, &parts[..parts.len() - 1])?
     };
 
-    ctx.scopes[cur.0 as usize].ts_fns.contains(name).then(|| name.to_string())
+    ctx.scopes[cur.0 as usize]
+        .ts_fns
+        .contains(name)
+        .then(|| name.to_string())
 }
 
 fn output_has_schema_items(output: &AstDefO) -> bool {
@@ -291,7 +375,9 @@ fn collect_apply_fields(items: &[AstNode<AstStructItem>]) -> Vec<AstNode<AstFiel
                 if fd.inner.kind != AstStructFieldKind::Set {
                     continue;
                 }
-                let AstStructFieldBody::Value(value) = &fd.inner.body else { continue; };
+                let AstStructFieldBody::Value(value) = &fd.inner.body else {
+                    continue;
+                };
                 if let Some(name) = &fd.inner.name {
                     out.push(AstNode {
                         loc: fd.loc.clone(),
@@ -304,7 +390,10 @@ fn collect_apply_fields(items: &[AstNode<AstStructItem>]) -> Vec<AstNode<AstFiel
                 }
             }
             AstStructItem::Anon(v) => {
-                out.push(AstNode { loc: v.loc.clone(), inner: AstField::Anon(v.clone()) });
+                out.push(AstNode {
+                    loc: v.loc.clone(),
+                    inner: AstField::Anon(v.clone()),
+                });
             }
             AstStructItem::Def(_) => {}
             AstStructItem::Comment(_) => {}
@@ -319,43 +408,50 @@ fn collect_apply_fields(items: &[AstNode<AstStructItem>]) -> Vec<AstNode<AstFiel
 
 /// Build the source repr of a Group segment: `{inner:repr}trailing`.
 fn group_repr(inner: &AstRef, trailing: Option<&str>) -> String {
-    let inner_repr = inner.segments.iter()
+    let inner_repr = inner
+        .segments
+        .iter()
         .filter_map(|s| s.inner.as_plain())
-        .collect::<Vec<_>>().join(":");
+        .collect::<Vec<_>>()
+        .join(":");
     format!("{{{}}}{}", inner_repr, trailing.unwrap_or(""))
 }
 
 /// True if any segment in `r` is a Group that has not been reduced to plain.
 fn has_group(r: &AstRef) -> bool {
-    r.segments.iter().any(|s| matches!(&s.inner.value, AstRefSegVal::Group(..)))
+    r.segments
+        .iter()
+        .any(|s| matches!(&s.inner.value, AstRefSegVal::Group(..)))
 }
 
 /// Convert an `AstRef` to its string repr, rendering remaining Group segments
 /// as `{inner}trailing` and joining plain segments with `:`.
 fn ref_to_repr(r: &AstRef) -> String {
-    r.segments.iter().map(|s| match &s.inner.value {
-        AstRefSegVal::Plain(v)        => v.clone(),
-        AstRefSegVal::Group(g, trail) => group_repr(g, trail.as_deref()),
-    }).collect::<Vec<_>>().join(":")
+    r.segments
+        .iter()
+        .map(|s| match &s.inner.value {
+            AstRefSegVal::Plain(v) => v.clone(),
+            AstRefSegVal::Group(g, trail) => group_repr(g, trail.as_deref()),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Attempt to reduce `{this:field_name}` to the plain value already resolved
 /// for `field_name` on the current instance.  Returns `None` if the inner ref
 /// does not match the `this:xxx` pattern or the field is not yet in the map.
 fn reduce_this_group(
-    inner:       &AstRef,
-    trailing:    Option<&str>,
+    inner: &AstRef,
+    trailing: Option<&str>,
     this_fields: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     let segs = &inner.segments;
-    if segs.len() == 2
-        && segs[0].inner.as_plain() == Some("this")
-    {
+    if segs.len() == 2 && segs[0].inner.as_plain() == Some("this") {
         if let Some(field_name) = segs[1].inner.as_plain() {
             if let Some(value) = this_fields.get(field_name) {
                 return Some(match trailing {
                     Some(t) => format!("{}{}", value, t),
-                    None    => value.clone(),
+                    None => value.clone(),
                 });
             }
         }
@@ -366,18 +462,28 @@ fn reduce_this_group(
 /// Reduce all `{this:xxx}` Group segments in `r` using already-resolved
 /// instance field values.  Non-`this` groups are left as-is.
 fn reduce_ast_ref(r: &AstRef, this_fields: &std::collections::HashMap<String, String>) -> AstRef {
-    let segments = r.segments.iter().map(|seg| {
-        let new_val = match &seg.inner.value {
-            AstRefSegVal::Group(inner, trailing) => {
-                match reduce_this_group(inner, trailing.as_deref(), this_fields) {
-                    Some(plain) => AstRefSegVal::Plain(plain),
-                    None        => seg.inner.value.clone(),
+    let segments = r
+        .segments
+        .iter()
+        .map(|seg| {
+            let new_val = match &seg.inner.value {
+                AstRefSegVal::Group(inner, trailing) => {
+                    match reduce_this_group(inner, trailing.as_deref(), this_fields) {
+                        Some(plain) => AstRefSegVal::Plain(plain),
+                        None => seg.inner.value.clone(),
+                    }
                 }
+                AstRefSegVal::Plain(_) => seg.inner.value.clone(),
+            };
+            AstNode {
+                loc: seg.loc.clone(),
+                inner: AstRefSeg {
+                    value: new_val,
+                    is_opt: seg.inner.is_opt,
+                },
             }
-            AstRefSegVal::Plain(_) => seg.inner.value.clone(),
-        };
-        AstNode { loc: seg.loc.clone(), inner: AstRefSeg { value: new_val, is_opt: seg.inner.is_opt } }
-    }).collect();
+        })
+        .collect();
     AstRef { segments }
 }
 
@@ -385,7 +491,9 @@ fn reduce_ast_ref(r: &AstRef, this_fields: &std::collections::HashMap<String, St
 /// Returns None for typed or multi-segment variants.
 fn plain_variant_name(r: &IrRef) -> Option<&str> {
     if let [seg] = r.segments.as_slice() {
-        if let IrRefSegValue::Plain(s) = &seg.value { return Some(s); }
+        if let IrRefSegValue::Plain(s) = &seg.value {
+            return Some(s);
+        }
     }
     None
 }
@@ -394,17 +502,20 @@ fn plain_variant_name(r: &IrRef) -> Option<&str> {
 /// substitution target.  Only scalar values can be plainified.
 fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
     match v {
-        IrValue::Str(s)           => Some(s.clone()),
-        IrValue::Ref(s)           => Some(s.clone()),
-        IrValue::Int(n)           => Some(n.to_string()),
+        IrValue::Str(s) => Some(s.clone()),
+        IrValue::Ref(s) => Some(s.clone()),
+        IrValue::Int(n) => Some(n.to_string()),
         IrValue::Variant(tid, idx, _) => {
             if let IrShapeBody::Enum(variants) = &ctx.shapes[tid.0 as usize].body {
-                variants.get(*idx as usize).and_then(plain_variant_name).map(|s| s.to_string())
+                variants
+                    .get(*idx as usize)
+                    .and_then(plain_variant_name)
+                    .map(|s| s.to_string())
             } else {
                 None
             }
         }
-        _                         => None,
+        _ => None,
     }
 }
 
@@ -417,7 +528,7 @@ fn ir_value_to_plain_str(v: &IrValue, ctx: &Ctx) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> IrRef {
-    let mut result    = Vec::new();
+    let mut result = Vec::new();
     let mut kind_hint: Option<&str> = None;
     let mut cur_scope = scope;
 
@@ -447,11 +558,13 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
         }
 
         let resolved = match kind_hint {
-            Some("def") => ctx.lookup_shape(cur_scope, val)
+            Some("def") => ctx
+                .lookup_shape(cur_scope, val)
                 .map(IrRefSegValue::Shape)
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
-            Some("pack") => ctx.lookup_pack(cur_scope, val)
+            Some("pack") => ctx
+                .lookup_pack(cur_scope, val)
                 .map(IrRefSegValue::Pack)
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
@@ -476,7 +589,10 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
                 continue;
             }
         }
-        result.push(IrRefSeg { value: resolved, is_opt: seg.inner.is_opt });
+        result.push(IrRefSeg {
+            value: resolved,
+            is_opt: seg.inner.is_opt,
+        });
         kind_hint = None;
     }
 
@@ -491,8 +607,11 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     // scopes[0] is root — already created in Ctx::new().
     // IR scope IDs map 1-to-1 with AST scope IDs.
     for ast_scope in parse_scopes.iter().skip(1) {
-        let parent = ast_scope.parent.map(|id| ScopeId(id.0)).unwrap_or(ScopeId(0));
-        let kind   = match ast_scope.kind {
+        let parent = ast_scope
+            .parent
+            .map(|id| ScopeId(id.0))
+            .unwrap_or(ScopeId(0));
+        let kind = match ast_scope.kind {
             ast::ScopeKind::Pack => IrScopeKind::Pack,
             ast::ScopeKind::Struct => IrScopeKind::Struct,
         };
@@ -501,13 +620,13 @@ fn pass1_mirror_scopes(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let new_id = ScopeId(ctx.scopes.len() as u32);
         ctx.scopes.push(IrScope {
             kind,
-            name:           name.clone(),
-            parent:         Some(parent),
-            shapes:         HashMap::new(),
-            defs:           HashMap::new(),
-            packs:          HashMap::new(),
-            ambiguous:      HashSet::new(),
-            ts_fns:         HashSet::new(),
+            name: name.clone(),
+            parent: Some(parent),
+            shapes: HashMap::new(),
+            defs: HashMap::new(),
+            packs: HashMap::new(),
+            ambiguous: HashSet::new(),
+            ts_fns: HashSet::new(),
         });
 
         // Only register Pack scopes by name — Type scopes are registered
@@ -536,8 +655,12 @@ fn extract_ts_fn_names(ts_src: &str) -> Vec<String> {
         if tok == "function" {
             if let Some(next) = tokens.peek() {
                 // Function name ends at `(` — trim it off.
-                let name = next.trim_end_matches('(')
-                    .split('(').next().unwrap_or("").trim();
+                let name = next
+                    .trim_end_matches('(')
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
                 if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     names.push(name.to_string());
                 }
@@ -550,12 +673,13 @@ fn extract_ts_fn_names(ts_src: &str) -> Vec<String> {
 /// Register TS function names from each unit's `ts_src` into the
 /// corresponding pack scope.
 fn pass_register_ts_fns(parse_res: &ParseRes, ctx: &mut Ctx) {
-    for (i, scope_id) in parse_res.unit_scope_ids.iter().enumerate() {
-        if let Some(Some(ts_src)) = parse_res.unit_ts_srcs.get(i) {
-            let ir_scope_id = ScopeId(scope_id.0);
-            for name in extract_ts_fn_names(ts_src) {
-                ctx.scopes[ir_scope_id.0 as usize].ts_fns.insert(name);
-            }
+    for unit in &parse_res.units {
+        let Some(ts_src) = unit.ts_src.as_deref() else {
+            continue;
+        };
+        let ir_scope_id = ScopeId(unit.scope_id.0);
+        for name in extract_ts_fn_names(ts_src) {
+            ctx.scopes[ir_scope_id.0 as usize].ts_fns.insert(name);
         }
     }
 }
@@ -573,7 +697,10 @@ fn pass_register_ts_fns(parse_res: &ParseRes, ctx: &mut Ctx) {
 //                                     visible in field value resolution).
 
 #[derive(Clone, Copy, PartialEq)]
-enum ImportKind { TypesLinksAndPacks, Insts }
+enum ImportKind {
+    TypesLinksAndPacks,
+    Insts,
+}
 
 fn pass_imports(parse_scopes: &[AstScope], ctx: &mut Ctx, kind: ImportKind) {
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
@@ -595,7 +722,9 @@ enum UseMode<'a> {
 }
 
 fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: ImportKind) {
-    let mut names: Vec<&str> = path.segments.iter()
+    let mut names: Vec<&str> = path
+        .segments
+        .iter()
         .filter_map(|s| s.inner.as_plain())
         .collect();
     if names.first().copied() == Some("pack") {
@@ -604,30 +733,54 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
 
     if names.is_empty() {
         if kind == ImportKind::TypesLinksAndPacks {
-            ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
+            ctx.errors.push(IrError {
+                message: "use: expected pack name".into(),
+                loc: loc.clone(),
+            });
         }
         return;
     }
 
     let (pack_path, mode) = if names.last().copied() == Some("*") {
         if names.len() >= 2 && names[names.len() - 2] == "def" {
-            (&names[..names.len() - 2], UseMode::ImportAll { defs_only: true })
+            (
+                &names[..names.len() - 2],
+                UseMode::ImportAll { defs_only: true },
+            )
         } else {
-            (&names[..names.len() - 1], UseMode::ImportAll { defs_only: false })
+            (
+                &names[..names.len() - 1],
+                UseMode::ImportAll { defs_only: false },
+            )
         }
     } else if names.len() >= 2 && names[names.len() - 2] == "def" {
-        (&names[..names.len() - 2], UseMode::ImportOne { name: names[names.len() - 1], defs_only: true })
+        (
+            &names[..names.len() - 2],
+            UseMode::ImportOne {
+                name: names[names.len() - 1],
+                defs_only: true,
+            },
+        )
     } else if lookup_pack_path(ctx, into, &names).is_some() {
         (&names[..], UseMode::Pack)
     } else if names.len() >= 2 {
-        (&names[..names.len() - 1], UseMode::ImportOne { name: names[names.len() - 1], defs_only: false })
+        (
+            &names[..names.len() - 1],
+            UseMode::ImportOne {
+                name: names[names.len() - 1],
+                defs_only: false,
+            },
+        )
     } else {
         (&names[..], UseMode::Pack)
     };
 
     if pack_path.is_empty() {
         if kind == ImportKind::TypesLinksAndPacks {
-            ctx.errors.push(IrError { message: "use: expected pack name".into(), loc: loc.clone() });
+            ctx.errors.push(IrError {
+                message: "use: expected pack name".into(),
+                loc: loc.clone(),
+            });
         }
         return;
     }
@@ -661,13 +814,15 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
                     if let Some(pack_id) = ctx.scopes[src.0 as usize].packs.get(name).copied() {
                         try_import_pack(name, pack_id, into, ctx, loc);
                     }
-                } else if let Some(shape_id) = ctx.scopes[src.0 as usize].shapes.get(name).copied() {
+                } else if let Some(shape_id) = ctx.scopes[src.0 as usize].shapes.get(name).copied()
+                {
                     try_import_shape(name, shape_id, into, ctx, loc);
                 }
             }
             ImportKind::Insts => {
                 if let Some(ids) = ctx.scopes[src.0 as usize].defs.get(name).cloned() {
-                    let visible: Vec<DefId> = ids.into_iter()
+                    let visible: Vec<DefId> = ids
+                        .into_iter()
                         .filter(|id| !ctx.defs[id.0 as usize].planned)
                         .collect();
                     for id in visible {
@@ -678,14 +833,18 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
         },
         UseMode::ImportAll { defs_only } => match kind {
             ImportKind::TypesLinksAndPacks => {
-                let shape_names: Vec<(String, ShapeId)> = ctx.scopes[src.0 as usize].shapes.iter()
+                let shape_names: Vec<(String, ShapeId)> = ctx.scopes[src.0 as usize]
+                    .shapes
+                    .iter()
                     .map(|(k, v)| (k.clone(), *v))
                     .collect();
                 for (name, sid) in shape_names {
                     try_import_shape(&name, sid, into, ctx, loc);
                 }
                 if !defs_only {
-                    let pack_names: Vec<(String, ScopeId)> = ctx.scopes[src.0 as usize].packs.iter()
+                    let pack_names: Vec<(String, ScopeId)> = ctx.scopes[src.0 as usize]
+                        .packs
+                        .iter()
                         .map(|(k, v)| (k.clone(), *v))
                         .collect();
                     for (name, sid) in pack_names {
@@ -694,11 +853,14 @@ fn resolve_use(path: &AstRef, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc, kind: I
                 }
             }
             ImportKind::Insts => {
-                let def_names: Vec<(String, Vec<DefId>)> = ctx.scopes[src.0 as usize].defs.iter()
+                let def_names: Vec<(String, Vec<DefId>)> = ctx.scopes[src.0 as usize]
+                    .defs
+                    .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 for (name, ids) in def_names {
-                    let visible: Vec<DefId> = ids.into_iter()
+                    let visible: Vec<DefId> = ids
+                        .into_iter()
                         .filter(|id| !ctx.defs[id.0 as usize].planned)
                         .collect();
                     for id in visible {
@@ -725,12 +887,19 @@ fn lookup_pack_path(ctx: &Ctx, scope: ScopeId, path: &[&str]) -> Option<ScopeId>
 // ---------------------------------------------------------------------------
 
 fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
-    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) {
+        return;
+    }
     // Idempotent: same pack already imported from the same scope — skip silently.
     if let Some(&existing) = ctx.scopes[into.0 as usize].packs.get(name) {
-        if existing == sid { return; }
+        if existing == sid {
+            return;
+        }
         ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            message: format!(
+                "ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate",
+                name
+            ),
             loc: loc.clone(),
         });
         ctx.mark_ambiguous(into, name);
@@ -739,21 +908,33 @@ fn try_import_pack(name: &str, sid: ScopeId, into: ScopeId, ctx: &mut Ctx, loc: 
     let conflict = ctx.scopes[into.0 as usize].shapes.contains_key(name);
     if conflict {
         ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            message: format!(
+                "ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate",
+                name
+            ),
             loc: loc.clone(),
         });
         ctx.mark_ambiguous(into, name);
     } else {
-        ctx.scopes[into.0 as usize].packs.insert(name.to_string(), sid);
+        ctx.scopes[into.0 as usize]
+            .packs
+            .insert(name.to_string(), sid);
     }
 }
 
 fn try_import_shape(name: &str, sid: ShapeId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
-    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) {
+        return;
+    }
     if let Some(&existing) = ctx.scopes[into.0 as usize].shapes.get(name) {
-        if existing == sid { return; }
+        if existing == sid {
+            return;
+        }
         ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            message: format!(
+                "ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate",
+                name
+            ),
             loc: loc.clone(),
         });
         ctx.mark_ambiguous(into, name);
@@ -762,22 +943,34 @@ fn try_import_shape(name: &str, sid: ShapeId, into: ScopeId, ctx: &mut Ctx, loc:
     let conflict = ctx.scopes[into.0 as usize].packs.contains_key(name);
     if conflict {
         ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            message: format!(
+                "ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate",
+                name
+            ),
             loc: loc.clone(),
         });
         ctx.mark_ambiguous(into, name);
     } else {
-        ctx.scopes[into.0 as usize].shapes.insert(name.to_string(), sid);
+        ctx.scopes[into.0 as usize]
+            .shapes
+            .insert(name.to_string(), sid);
     }
 }
 
 fn try_import_def(name: &str, fid: DefId, into: ScopeId, ctx: &mut Ctx, loc: &IrLoc) {
-    if ctx.scopes[into.0 as usize].ambiguous.contains(name) { return; }
+    if ctx.scopes[into.0 as usize].ambiguous.contains(name) {
+        return;
+    }
     let defs = &mut ctx.scopes[into.0 as usize].defs;
     if let Some(existing) = defs.get(name) {
-        if existing.contains(&fid) { return; }
+        if existing.contains(&fid) {
+            return;
+        }
         ctx.errors.push(IrError {
-            message: format!("ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate", name),
+            message: format!(
+                "ambiguous ref '{}': defined in multiple sources, use a prefix to disambiguate",
+                name
+            ),
             loc: loc.clone(),
         });
         ctx.mark_ambiguous(into, name);
@@ -795,25 +988,36 @@ fn pass2_register_names(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
             if let AstItem::Def(td) = def {
-                if classify_def(&td.inner) == DefKind::Apply { continue; }
+                if classify_def(&td.inner) == DefKind::Apply {
+                    continue;
+                }
                 let id = ShapeId(ctx.shapes.len() as u32);
-                ctx.scopes[scope.0 as usize].shapes.insert(td.inner.name.inner.clone(), id);
+                ctx.scopes[scope.0 as usize]
+                    .shapes
+                    .insert(td.inner.name.inner.clone(), id);
                 ctx.shapes.push(IrShapeDef {
-                    name:  Some(td.inner.name.inner.clone()),
+                    name: Some(td.inner.name.inner.clone()),
                     scope,
-                    loc:   ir_loc(&td.loc),
-                    body:  IrShapeBody::Unit,  // placeholder
+                    loc: ir_loc(&td.loc),
+                    body: IrShapeBody::Unit, // placeholder
                 });
             }
         }
     }
 }
 
-fn find_child_struct_scope(parse_scopes: &[AstScope], parent: ScopeId, name: &str) -> Option<ScopeId> {
+fn find_child_struct_scope(
+    parse_scopes: &[AstScope],
+    parent: ScopeId,
+    name: &str,
+) -> Option<ScopeId> {
     parse_scopes.iter().enumerate().find_map(|(idx, scope)| {
         let scope_parent = scope.parent.map(|id| ScopeId(id.0));
         let scope_name = scope.name.as_ref().map(|n| n.inner.as_str());
-        if scope.kind == ast::ScopeKind::Struct && scope_parent == Some(parent) && scope_name == Some(name) {
+        if scope.kind == ast::ScopeKind::Struct
+            && scope_parent == Some(parent)
+            && scope_name == Some(name)
+        {
             Some(ScopeId(idx as u32))
         } else {
             None
@@ -827,7 +1031,7 @@ fn find_child_struct_scope(parse_scopes: &[AstScope], parent: ScopeId, name: &st
 
 fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     // Collect all work upfront to avoid mid-iteration borrow issues.
-    let mut def_work:  Vec<(ShapeId, AstNode<AstDef>, ScopeId)> = vec![];
+    let mut def_work: Vec<(ShapeId, AstNode<AstDef>, ScopeId)> = vec![];
     let mut mapper_work: Vec<(ShapeId, AstNode<AstDef>, ScopeId)> = vec![];
 
     for (scope_idx, ast_scope) in parse_scopes.iter().enumerate() {
@@ -835,8 +1039,13 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         for def in &ast_scope.defs {
             if let AstItem::Def(td) = def {
                 let def_kind = classify_def(&td.inner);
-                if def_kind == DefKind::Apply { continue; }
-                if let Some(&tid) = ctx.scopes[scope.0 as usize].shapes.get(&td.inner.name.inner) {
+                if def_kind == DefKind::Apply {
+                    continue;
+                }
+                if let Some(&tid) = ctx.scopes[scope.0 as usize]
+                    .shapes
+                    .get(&td.inner.name.inner)
+                {
                     if matches!(def_kind, DefKind::Mapper | DefKind::ComposedShape) {
                         mapper_work.push((tid, td.clone(), scope));
                     } else {
@@ -848,7 +1057,8 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     }
 
     for (tid, td, scope) in def_work {
-        let body_scope = find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
+        let body_scope =
+            find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
         let body = resolve_top_def_body(&td.inner, ctx, body_scope);
         ctx.shapes[tid.0 as usize].body = body;
     }
@@ -858,18 +1068,27 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let _loc = ir_loc(&td.loc);
 
         // Resolve input fields (the fields before "=").
-        let inputs: Vec<IrStructFieldDef> = td.inner.input.iter().map(|field| {
-            let fname = field.inner.name.as_ref().map(|n| n.inner.clone());
-            let floc  = ir_loc(&field.loc);
-            let field_type = resolve_field_type(&field.inner.ty.inner, ctx, scope, &floc);
-            IrStructFieldDef { name: fname, field_type }
-        }).collect();
+        let inputs: Vec<IrStructFieldDef> = td
+            .inner
+            .input
+            .iter()
+            .map(|field| {
+                let fname = field.inner.name.as_ref().map(|n| n.inner.clone());
+                let floc = ir_loc(&field.loc);
+                let field_type = resolve_field_type(&field.inner.ty.inner, ctx, scope, &floc);
+                IrStructFieldDef {
+                    name: fname,
+                    field_type,
+                }
+            })
+            .collect();
 
         // Resolve output fields (the fields after "=").
-        let body_scope = find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
+        let body_scope =
+            find_child_struct_scope(parse_scopes, scope, &td.inner.name.inner).unwrap_or(scope);
         let outputs = match &td.inner.output.inner {
             AstDefO::Struct(items) => resolve_struct_fields(items, ctx, body_scope),
-            _                              => vec![],
+            _ => vec![],
         };
 
         let all_fields: Vec<IrStructFieldDef> = if td.inner.input.is_empty() {
@@ -885,7 +1104,11 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         } else {
             // Mapper defs include their inputs in the visible shape so downstream defs
             // can provide those values during composition.
-            inputs.iter().cloned().chain(outputs.iter().cloned()).collect()
+            inputs
+                .iter()
+                .cloned()
+                .chain(outputs.iter().cloned())
+                .collect()
         };
         ctx.shapes[shape_id.0 as usize].body = IrShapeBody::Struct(all_fields);
 
@@ -926,12 +1149,19 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         }
 
         // Find the mapping registered for this def in pass4 and attach the mapper fields.
-        let fids = ctx.scopes[scope.0 as usize].defs.get(&name).cloned().unwrap_or_default();
-        let fid = fids.iter().copied().find(|&fid| ctx.def_satisfies_shape(fid, shape_id));
+        let fids = ctx.scopes[scope.0 as usize]
+            .defs
+            .get(&name)
+            .cloned()
+            .unwrap_or_default();
+        let fid = fids
+            .iter()
+            .copied()
+            .find(|&fid| ctx.def_satisfies_shape(fid, shape_id));
         if let Some(fid) = fid {
             ctx.defs[fid.0 as usize].mapper_fn = mapper_fn;
-            ctx.defs[fid.0 as usize].inputs   = inputs;
-            ctx.defs[fid.0 as usize].outputs  = outputs;
+            ctx.defs[fid.0 as usize].inputs = inputs;
+            ctx.defs[fid.0 as usize].outputs = outputs;
         }
     }
 }
@@ -950,7 +1180,9 @@ fn pass3_resolve_types_and_links(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 // in-stack flag and left unchanged.
 
 fn flatten_alias(idx: usize, shapes: &mut Vec<IrShapeDef>, in_stack: &mut Vec<bool>) {
-    if in_stack[idx] { return; }
+    if in_stack[idx] {
+        return;
+    }
 
     let body = shapes[idx].body.clone();
     if let IrShapeBody::Enum(ref variants) = body {
@@ -988,21 +1220,17 @@ fn pass3b_flatten_alias_types(ctx: &mut Ctx) {
 fn resolve_top_def_body(td: &AstDef, ctx: &mut Ctx, scope: ScopeId) -> IrShapeBody {
     match &td.output.inner {
         AstDefO::Unit => IrShapeBody::Unit,
-        AstDefO::TypeExpr(type_node) => {
-            match &type_node.inner {
-                AstTypeExpr::Ref(r) => {
-                    if let Some(p) = builtin_primitive_from_ref(r) {
-                        return IrShapeBody::Primitive(p);
-                    }
-                    let ir_ref = resolve_ref(&r.segments, ctx, scope);
-                    IrShapeBody::Enum(vec![ir_ref])
+        AstDefO::TypeExpr(type_node) => match &type_node.inner {
+            AstTypeExpr::Ref(r) => {
+                if let Some(p) = builtin_primitive_from_ref(r) {
+                    return IrShapeBody::Primitive(p);
                 }
-                _ => resolve_type_body(type_node, ctx, scope),
+                let ir_ref = resolve_ref(&r.segments, ctx, scope);
+                IrShapeBody::Enum(vec![ir_ref])
             }
-        }
-        AstDefO::Struct(items) => {
-            IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope))
-        }
+            _ => resolve_type_body(type_node, ctx, scope),
+        },
+        AstDefO::Struct(items) => IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope)),
     }
 }
 
@@ -1022,7 +1250,8 @@ fn resolve_type_body(body: &AstNode<AstTypeExpr>, ctx: &mut Ctx, scope: ScopeId)
         }
 
         AstTypeExpr::Enum(refs) => {
-            let variants = refs.iter()
+            let variants = refs
+                .iter()
                 .map(|r| resolve_ref(&r.inner.segments, ctx, scope))
                 .collect();
             IrShapeBody::Enum(variants)
@@ -1042,7 +1271,11 @@ fn resolve_type_body(body: &AstNode<AstTypeExpr>, ctx: &mut Ctx, scope: ScopeId)
     }
 }
 
-fn resolve_struct_fields(items: &[AstNode<AstStructItem>], ctx: &mut Ctx, scope: ScopeId) -> Vec<IrStructFieldDef> {
+fn resolve_struct_fields(
+    items: &[AstNode<AstStructItem>],
+    ctx: &mut Ctx,
+    scope: ScopeId,
+) -> Vec<IrStructFieldDef> {
     let mut fields = Vec::new();
 
     for item in items {
@@ -1117,20 +1350,27 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
                 let prim = convert_primitive(p);
                 let tid = ctx.alloc_shape(None, scope, loc.clone(), IrShapeBody::Primitive(prim));
                 return IrFieldType::List(vec![IrRef {
-                    segments: vec![IrRefSeg { value: IrRefSegValue::Shape(tid), is_opt: false }],
+                    segments: vec![IrRefSeg {
+                        value: IrRefSegValue::Shape(tid),
+                        is_opt: false,
+                    }],
                 }]);
             }
             if let AstTypeExpr::Ref(r) = &inner.inner {
                 if let Some(prim) = builtin_primitive_from_ref(r) {
-                    let tid = ctx.alloc_shape(None, scope, loc.clone(), IrShapeBody::Primitive(prim));
+                    let tid =
+                        ctx.alloc_shape(None, scope, loc.clone(), IrShapeBody::Primitive(prim));
                     return IrFieldType::List(vec![IrRef {
-                        segments: vec![IrRefSeg { value: IrRefSegValue::Shape(tid), is_opt: false }],
+                        segments: vec![IrRefSeg {
+                            value: IrRefSegValue::Shape(tid),
+                            is_opt: false,
+                        }],
                     }]);
                 }
             }
             let is_single_ref = matches!(&inner.inner, AstTypeExpr::Ref(_));
             let elem_refs: Vec<AstRef> = match &inner.inner {
-                AstTypeExpr::Ref(r)     => vec![r.clone()],
+                AstTypeExpr::Ref(r) => vec![r.clone()],
                 AstTypeExpr::Enum(refs) => refs.iter().map(|r| r.inner.clone()).collect(),
                 _ => {
                     ctx.errors.push(IrError {
@@ -1140,11 +1380,15 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
                     return IrFieldType::Primitive(IrPrimitive::Reference);
                 }
             };
-            let ir_refs: Vec<IrRef> = elem_refs.iter()
+            let ir_refs: Vec<IrRef> = elem_refs
+                .iter()
                 .map(|r| resolve_ref(&r.segments, ctx, scope))
                 .collect();
             let has_typed_variant = ir_refs.iter().any(|ir_ref| {
-                ir_ref.segments.iter().any(|seg| matches!(seg.value, IrRefSegValue::Shape(_)))
+                ir_ref
+                    .segments
+                    .iter()
+                    .any(|seg| matches!(seg.value, IrRefSegValue::Shape(_)))
             });
             for (r, ir_ref) in elem_refs.iter().zip(ir_refs.iter()) {
                 // Validate unresolved refs when:
@@ -1171,34 +1415,42 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
 
         AstTypeExpr::Struct(items) => {
             let body = IrShapeBody::Struct(resolve_struct_fields(items, ctx, scope));
-            let tid  = ctx.alloc_shape(None, scope, loc.clone(), body);
-            IrFieldType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Shape(tid), is_opt: false }] })
+            let tid = ctx.alloc_shape(None, scope, loc.clone(), body);
+            IrFieldType::Ref(IrRef {
+                segments: vec![IrRefSeg {
+                    value: IrRefSegValue::Shape(tid),
+                    is_opt: false,
+                }],
+            })
         }
 
         AstTypeExpr::Enum(refs) => {
             // Anonymous inline enum — allocate an anonymous type.
-            let variants = refs.iter()
+            let variants = refs
+                .iter()
                 .map(|r| resolve_ref(&r.inner.segments, ctx, scope))
                 .collect();
             let tid = ctx.alloc_shape(None, scope, loc.clone(), IrShapeBody::Enum(variants));
-            IrFieldType::Ref(IrRef { segments: vec![IrRefSeg { value: IrRefSegValue::Shape(tid), is_opt: false }] })
+            IrFieldType::Ref(IrRef {
+                segments: vec![IrRefSeg {
+                    value: IrRefSegValue::Shape(tid),
+                    is_opt: false,
+                }],
+            })
         }
 
-        AstTypeExpr::Unit => {
-            IrFieldType::Primitive(IrPrimitive::Reference)
-        }
-
+        AstTypeExpr::Unit => IrFieldType::Primitive(IrPrimitive::Reference),
     }
 }
 
 fn convert_primitive(p: &AstPrimitive) -> IrPrimitive {
     match p {
-        AstPrimitive::String    => IrPrimitive::String,
-        AstPrimitive::Integer   => IrPrimitive::Integer,
-        AstPrimitive::Boolean   => IrPrimitive::Boolean,
+        AstPrimitive::String => IrPrimitive::String,
+        AstPrimitive::Integer => IrPrimitive::Integer,
+        AstPrimitive::Boolean => IrPrimitive::Boolean,
         AstPrimitive::Reference => IrPrimitive::Reference,
-        AstPrimitive::Ipv4      => IrPrimitive::Ipv4,
-        AstPrimitive::Ipv4Net   => IrPrimitive::Ipv4Net,
+        AstPrimitive::Ipv4 => IrPrimitive::Ipv4,
+        AstPrimitive::Ipv4Net => IrPrimitive::Ipv4Net,
     }
 }
 
@@ -1207,8 +1459,12 @@ fn parse_ipv4(raw: &str) -> Option<Ipv4Addr> {
 }
 
 fn is_valid_ipv4net(raw: &str) -> bool {
-    let Some((addr, prefix)) = raw.split_once('/') else { return false };
-    let Ok(prefix) = prefix.parse::<u8>() else { return false };
+    let Some((addr, prefix)) = raw.split_once('/') else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
     prefix <= 32 && parse_ipv4(addr).is_some()
 }
 
@@ -1219,7 +1475,9 @@ fn is_valid_ipv4net(raw: &str) -> bool {
 fn lookup_type_by_ref(ref_: &AstRef, ctx: &Ctx, scope: ScopeId) -> Option<ShapeId> {
     let parts = qualified_plain_segments(&ref_.segments);
     let (last_qual, name) = *parts.last()?;
-    if last_qual == Some("pack") { return None; }
+    if last_qual == Some("pack") {
+        return None;
+    }
 
     let cur = if parts.len() == 1 {
         scope
@@ -1257,11 +1515,15 @@ fn lookup_pack_path_qualified(
     parts: &[(Option<&str>, &str)],
 ) -> Option<ScopeId> {
     let (first_qual, first) = *parts.first()?;
-    if first_qual == Some("def") { return None; }
+    if first_qual == Some("def") {
+        return None;
+    }
 
     let mut cur = ctx.lookup_pack(scope, first)?;
     for (qual, name) in &parts[1..] {
-        if *qual == Some("def") { return None; }
+        if *qual == Some("def") {
+            return None;
+        }
         cur = *ctx.scopes[cur.0 as usize].packs.get(*name)?;
     }
     Some(cur)
@@ -1269,27 +1531,44 @@ fn lookup_pack_path_qualified(
 
 fn target_shape_from_ir_ref(pattern: &IrRef) -> Option<ShapeId> {
     let last = pattern.segments.last()?;
-    let IrRefSegValue::Shape(shape_id) = last.value else { return None; };
-    if pattern.segments[..pattern.segments.len().saturating_sub(1)].iter().all(|seg| matches!(seg.value, IrRefSegValue::Pack(_))) {
+    let IrRefSegValue::Shape(shape_id) = last.value else {
+        return None;
+    };
+    if pattern.segments[..pattern.segments.len().saturating_sub(1)]
+        .iter()
+        .all(|seg| matches!(seg.value, IrRefSegValue::Pack(_)))
+    {
         Some(shape_id)
     } else {
         None
     }
 }
 
-fn split_pack_prefix<'a>(segs: &'a [AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> (ScopeId, &'a [AstNode<AstRefSeg>]) {
+fn split_pack_prefix<'a>(
+    segs: &'a [AstNode<AstRefSeg>],
+    ctx: &Ctx,
+    scope: ScopeId,
+) -> (ScopeId, &'a [AstNode<AstRefSeg>]) {
     let mut cur = scope;
     let mut i = 0;
     while i + 1 < segs.len() {
-        let Some(name) = segs[i].inner.as_plain() else { break };
-        let Some(next) = ctx.lookup_pack(cur, name) else { break };
+        let Some(name) = segs[i].inner.as_plain() else {
+            break;
+        };
+        let Some(next) = ctx.lookup_pack(cur, name) else {
+            break;
+        };
         cur = next;
         i += 1;
     }
     (cur, &segs[i..])
 }
 
-fn scope_and_value_segs<'a>(segs: &'a [AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> (ScopeId, &'a [AstNode<AstRefSeg>]) {
+fn scope_and_value_segs<'a>(
+    segs: &'a [AstNode<AstRefSeg>],
+    ctx: &Ctx,
+    scope: ScopeId,
+) -> (ScopeId, &'a [AstNode<AstRefSeg>]) {
     if segs.len() > 1 {
         if let Some(first) = segs[0].inner.as_plain() {
             if ctx.lookup_shape(scope, first).is_some() {
@@ -1310,33 +1589,49 @@ fn pass4_register_defs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                 AstItem::Def(td) => {
                     let name = &td.inner.name.inner;
                     match classify_def(&td.inner) {
-                    DefKind::Apply => {
-                        let mapper = td.inner.mapper.as_ref().unwrap();
-                        let shape_id = match lookup_type_by_ref(&mapper.inner, ctx, scope) {
-                            Some(tid) => tid,
-                            None => {
-                                let ref_name = ref_to_repr(&mapper.inner);
-                                ctx.errors.push(IrError {
-                                    message: format!("unknown shape '{}'", ref_name),
-                                    loc: ir_loc(&mapper.loc),
-                                });
-                                continue;
-                            }
-                        };
-                        let (_, base_def) = lookup_base_shape_and_def(&td.inner, ctx, scope);
-                        ctx.alloc_def(td.inner.planned, name.clone(), scope, ir_loc(&td.loc), shape_id, base_def);
-                    }
-                    DefKind::Plain | DefKind::Mapper | DefKind::ComposedShape => {
-                        if let Some(&shape_id) = ctx.scopes[scope.0 as usize].shapes.get(name) {
-                            let base_def = if matches!(classify_def(&td.inner), DefKind::ComposedShape) {
-                                let (_, base_def) = lookup_base_shape_and_def(&td.inner, ctx, scope);
-                                base_def
-                            } else {
-                                None
+                        DefKind::Apply => {
+                            let mapper = td.inner.mapper.as_ref().unwrap();
+                            let shape_id = match lookup_type_by_ref(&mapper.inner, ctx, scope) {
+                                Some(tid) => tid,
+                                None => {
+                                    let ref_name = ref_to_repr(&mapper.inner);
+                                    ctx.errors.push(IrError {
+                                        message: format!("unknown shape '{}'", ref_name),
+                                        loc: ir_loc(&mapper.loc),
+                                    });
+                                    continue;
+                                }
                             };
-                            ctx.alloc_def(td.inner.planned, name.clone(), scope, ir_loc(&td.loc), shape_id, base_def);
+                            let (_, base_def) = lookup_base_shape_and_def(&td.inner, ctx, scope);
+                            ctx.alloc_def(
+                                td.inner.planned,
+                                name.clone(),
+                                scope,
+                                ir_loc(&td.loc),
+                                shape_id,
+                                base_def,
+                            );
                         }
-                    }
+                        DefKind::Plain | DefKind::Mapper | DefKind::ComposedShape => {
+                            if let Some(&shape_id) = ctx.scopes[scope.0 as usize].shapes.get(name) {
+                                let base_def =
+                                    if matches!(classify_def(&td.inner), DefKind::ComposedShape) {
+                                        let (_, base_def) =
+                                            lookup_base_shape_and_def(&td.inner, ctx, scope);
+                                        base_def
+                                    } else {
+                                        None
+                                    };
+                                ctx.alloc_def(
+                                    td.inner.planned,
+                                    name.clone(),
+                                    scope,
+                                    ir_loc(&td.loc),
+                                    shape_id,
+                                    base_def,
+                                );
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1356,7 +1651,10 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
             if let AstItem::Def(td) = def {
-                if matches!(classify_def(&td.inner), DefKind::Apply | DefKind::ComposedShape) {
+                if matches!(
+                    classify_def(&td.inner),
+                    DefKind::Apply | DefKind::ComposedShape
+                ) {
                     let name = &td.inner.name.inner;
                     let own_shape_id = ctx.scopes[scope.0 as usize].shapes.get(name).copied();
                     let fid = own_shape_id
@@ -1376,30 +1674,44 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
     }
 
     for (fid, fields, scope) in work {
-        let shape_id  = ctx.defs[fid.0 as usize].shape_id;
+        let shape_id = ctx.defs[fid.0 as usize].shape_id;
         let field_defs = match ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body) {
             Some(IrShapeBody::Struct(fields)) => fields.clone(),
-            _                                => vec![],
+            _ => vec![],
         };
 
         // Collect anonymous field values for the unnamed field (if any).
         let anon_field_idx = field_defs.iter().position(|f| f.name.is_none());
-        let anon_vals: Vec<&AstNode<AstValue>> = fields.iter().filter_map(|af| {
-            if let AstField::Anon(v) = &af.inner { Some(v) } else { None }
-        }).collect();
+        let anon_vals: Vec<&AstNode<AstValue>> = fields
+            .iter()
+            .filter_map(|af| {
+                if let AstField::Anon(v) = &af.inner {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let mut resolved: Vec<IrField> = resolve_named_fields(&fields, &field_defs, ctx, scope);
 
         // Resolve anonymous values against the unnamed field.
         if let (Some(field_idx), false) = (anon_field_idx, anon_vals.is_empty()) {
             let field_type = field_defs[field_idx].field_type.clone();
-            let loc       = ir_loc(&anon_vals[0].loc);
+            let loc = ir_loc(&anon_vals[0].loc);
             match &field_type {
                 IrFieldType::List(patterns) => {
-                    let items = anon_vals.iter()
+                    let items = anon_vals
+                        .iter()
                         .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
                         .collect();
-                    resolved.push(IrField { field_idx: field_idx as u32, name: "_".into(), loc, via: false, value: IrValue::List(items) });
+                    resolved.push(IrField {
+                        field_idx: field_idx as u32,
+                        name: "_".into(),
+                        loc,
+                        via: false,
+                        value: IrValue::List(items),
+                    });
                 }
                 _ => {
                     if anon_vals.len() > 1 {
@@ -1408,8 +1720,15 @@ fn pass5_resolve_def_fields(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                             loc: loc.clone(),
                         });
                     } else {
-                        let ir_val = resolve_value(&anon_vals[0].inner, &field_type, ctx, scope, &loc);
-                        resolved.push(IrField { field_idx: field_idx as u32, name: "_".into(), loc, via: false, value: ir_val });
+                        let ir_val =
+                            resolve_value(&anon_vals[0].inner, &field_type, ctx, scope, &loc);
+                        resolved.push(IrField {
+                            field_idx: field_idx as u32,
+                            name: "_".into(),
+                            loc,
+                            via: false,
+                            value: ir_val,
+                        });
                     }
                 }
             }
@@ -1424,7 +1743,10 @@ fn pass_bind_imported_bases(parse_scopes: &[AstScope], ctx: &mut Ctx) {
         let scope = ScopeId(scope_idx as u32);
         for def in &ast_scope.defs {
             let AstItem::Def(td) = def else { continue };
-            if !matches!(classify_def(&td.inner), DefKind::Apply | DefKind::ComposedShape) {
+            if !matches!(
+                classify_def(&td.inner),
+                DefKind::Apply | DefKind::ComposedShape
+            ) {
                 continue;
             }
             let name = &td.inner.name.inner;
@@ -1451,21 +1773,24 @@ fn pass_bind_imported_bases(parse_scopes: &[AstScope], ctx: &mut Ctx) {
 fn resolve_named_fields(
     ast_fields: &[AstNode<AstField>],
     field_defs: &[IrStructFieldDef],
-    ctx:        &mut Ctx,
-    scope:      ScopeId,
+    ctx: &mut Ctx,
+    scope: ScopeId,
 ) -> Vec<IrField> {
     // Group named fields by field name, preserving first-occurrence order.
     // The `via` bool is taken from the first occurrence of a given field.
     let mut groups: Vec<(String, IrLoc, usize, Vec<&AstNode<AstValue>>, bool)> = Vec::new();
 
     for af in ast_fields {
-        let AstField::Named { name, value, via } = &af.inner else { continue; };
+        let AstField::Named { name, value, via } = &af.inner else {
+            continue;
+        };
         let field_name = &name.inner;
-        let loc        = ir_loc(&name.loc);
+        let loc = ir_loc(&name.loc);
 
-        let field_idx = match field_defs.iter().position(|field| {
-            field.name.as_deref() == Some(field_name)
-        }) {
+        let field_idx = match field_defs
+            .iter()
+            .position(|field| field.name.as_deref() == Some(field_name))
+        {
             Some(idx) => idx,
             None => {
                 ctx.errors.push(IrError {
@@ -1489,171 +1814,282 @@ fn resolve_named_fields(
     let mut pre_resolved: Vec<Option<IrField>> = (0..groups.len()).map(|_| None).collect();
 
     for (i, (field_name, loc, field_idx, values, via)) in groups.iter().enumerate() {
-        if values.iter().any(|v| matches!(&v.inner, AstValue::Ref(r) if has_group(r))) { continue; }
+        if values
+            .iter()
+            .any(|v| matches!(&v.inner, AstValue::Ref(r) if has_group(r)))
+        {
+            continue;
+        }
 
         let field_type = field_defs[*field_idx].field_type.clone();
         let opt_val: Option<IrValue> = if values.len() > 1 {
             match &field_type {
                 IrFieldType::List(patterns) => {
-                    let items = values.iter()
+                    let items = values
+                        .iter()
                         .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
                         .collect();
                     Some(IrValue::List(items))
                 }
                 _ => {
                     ctx.errors.push(IrError {
-                        message: format!("multiple values defined for a non-List field '{}'", field_name),
+                        message: format!(
+                            "multiple values defined for a non-List field '{}'",
+                            field_name
+                        ),
                         loc: loc.clone(),
                     });
                     None
                 }
             }
         } else {
-            Some(resolve_value(&values[0].inner, &field_type, ctx, scope, &ir_loc(&values[0].loc)))
+            Some(resolve_value(
+                &values[0].inner,
+                &field_type,
+                ctx,
+                scope,
+                &ir_loc(&values[0].loc),
+            ))
         };
 
         if let Some(ir_val) = opt_val {
             if let Some(plain) = ir_value_to_plain_str(&ir_val, ctx) {
                 this_fields.insert(field_name.clone(), plain);
             }
-            pre_resolved[i] = Some(IrField { field_idx: *field_idx as u32, name: field_name.clone(), loc: loc.clone(), via: *via, value: ir_val });
+            pre_resolved[i] = Some(IrField {
+                field_idx: *field_idx as u32,
+                name: field_name.clone(),
+                loc: loc.clone(),
+                via: *via,
+                value: ir_val,
+            });
         }
     }
 
     // Pass 2: reduce group fields using the full this_fields, resolve in source order.
-    groups.into_iter().enumerate().filter_map(|(i, (field_name, loc, field_idx, values, via))| {
-        if let Some(cached) = pre_resolved[i].take() {
-            return Some(cached);
-        }
-
-        let field_type = field_defs[field_idx].field_type.clone();
-        let reduced: Vec<AstNode<AstValue>> = values.iter().map(|v| {
-            if let AstValue::Ref(r) = &v.inner {
-                if has_group(r) {
-                    return AstNode { loc: v.loc.clone(), inner: AstValue::Ref(reduce_ast_ref(r, &this_fields)) };
-                }
+    groups
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (field_name, loc, field_idx, values, via))| {
+            if let Some(cached) = pre_resolved[i].take() {
+                return Some(cached);
             }
-            (*v).clone()
-        }).collect();
 
-        let ir_val = if reduced.len() > 1 {
-            match &field_type {
-                IrFieldType::List(patterns) => {
-                    let items = reduced.iter()
-                        .map(|v| resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc)))
-                        .collect();
-                    IrValue::List(items)
-                }
-                _ => {
-                    ctx.errors.push(IrError {
-                        message: format!("multiple values defined for a non-List field '{}'", field_name),
-                        loc: loc.clone(),
-                    });
-                    return None;
-                }
-            }
-        } else {
-            resolve_value(&reduced[0].inner, &field_type, ctx, scope, &ir_loc(&reduced[0].loc))
-        };
+            let field_type = field_defs[field_idx].field_type.clone();
+            let reduced: Vec<AstNode<AstValue>> = values
+                .iter()
+                .map(|v| {
+                    if let AstValue::Ref(r) = &v.inner {
+                        if has_group(r) {
+                            return AstNode {
+                                loc: v.loc.clone(),
+                                inner: AstValue::Ref(reduce_ast_ref(r, &this_fields)),
+                            };
+                        }
+                    }
+                    (*v).clone()
+                })
+                .collect();
 
-        Some(IrField { field_idx: field_idx as u32, name: field_name, loc, via, value: ir_val })
-    }).collect()
+            let ir_val = if reduced.len() > 1 {
+                match &field_type {
+                    IrFieldType::List(patterns) => {
+                        let items = reduced
+                            .iter()
+                            .map(|v| {
+                                resolve_list_item(&v.inner, patterns, ctx, scope, &ir_loc(&v.loc))
+                            })
+                            .collect();
+                        IrValue::List(items)
+                    }
+                    _ => {
+                        ctx.errors.push(IrError {
+                            message: format!(
+                                "multiple values defined for a non-List field '{}'",
+                                field_name
+                            ),
+                            loc: loc.clone(),
+                        });
+                        return None;
+                    }
+                }
+            } else {
+                resolve_value(
+                    &reduced[0].inner,
+                    &field_type,
+                    ctx,
+                    scope,
+                    &ir_loc(&reduced[0].loc),
+                )
+            };
+
+            Some(IrField {
+                field_idx: field_idx as u32,
+                name: field_name,
+                loc,
+                via,
+                value: ir_val,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
 // Value resolution (guided by IrFieldType pattern)
 // ---------------------------------------------------------------------------
 
-fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+fn resolve_value(
+    v: &AstValue,
+    field_type: &IrFieldType,
+    ctx: &mut Ctx,
+    scope: ScopeId,
+    loc: &IrLoc,
+) -> IrValue {
     // Unresolved Group segments cannot be statically resolved — pass through as Ref.
     if let AstValue::Ref(r) = v {
-        if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+        if has_group(r) {
+            return IrValue::Ref(ref_to_repr(r));
+        }
     }
 
     match field_type {
         IrFieldType::Primitive(IrPrimitive::Integer) => {
             let s = match v {
                 AstValue::Ref(r) => r.segments[0].inner.as_plain().unwrap_or("").to_string(),
-                _ => { ctx.errors.push(IrError { message: "expected integer".into(), loc: loc.clone() }); return IrValue::Int(0); }
+                _ => {
+                    ctx.errors.push(IrError {
+                        message: "expected integer".into(),
+                        loc: loc.clone(),
+                    });
+                    return IrValue::Int(0);
+                }
             };
             match s.parse::<i64>() {
-                Ok(n)  => IrValue::Int(n),
-                Err(_) => { ctx.errors.push(IrError { message: format!("expected integer, got '{}'", s), loc: loc.clone() }); IrValue::Int(0) }
+                Ok(n) => IrValue::Int(n),
+                Err(_) => {
+                    ctx.errors.push(IrError {
+                        message: format!("expected integer, got '{}'", s),
+                        loc: loc.clone(),
+                    });
+                    IrValue::Int(0)
+                }
             }
         }
 
-        IrFieldType::Primitive(IrPrimitive::String) => {
-            match v {
-                AstValue::Str(s) => IrValue::Str(s.clone()),
-                _ => { ctx.errors.push(IrError { message: "expected string".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
+        IrFieldType::Primitive(IrPrimitive::String) => match v {
+            AstValue::Str(s) => IrValue::Str(s.clone()),
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected string".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::Str(String::new())
             }
-        }
+        },
 
-        IrFieldType::Primitive(IrPrimitive::Ipv4) => {
-            match v {
-                AstValue::Str(s) => {
-                    if parse_ipv4(s).is_some() {
-                        IrValue::Str(s.clone())
-                    } else {
-                        ctx.errors.push(IrError { message: format!("expected ipv4, got '{}'", s), loc: loc.clone() });
-                        IrValue::Str(String::new())
+        IrFieldType::Primitive(IrPrimitive::Ipv4) => match v {
+            AstValue::Str(s) => {
+                if parse_ipv4(s).is_some() {
+                    IrValue::Str(s.clone())
+                } else {
+                    ctx.errors.push(IrError {
+                        message: format!("expected ipv4, got '{}'", s),
+                        loc: loc.clone(),
+                    });
+                    IrValue::Str(String::new())
+                }
+            }
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected ipv4".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::Str(String::new())
+            }
+        },
+
+        IrFieldType::Primitive(IrPrimitive::Ipv4Net) => match v {
+            AstValue::Str(s) => {
+                if is_valid_ipv4net(s) {
+                    IrValue::Str(s.clone())
+                } else {
+                    ctx.errors.push(IrError {
+                        message: format!("expected ipv4net, got '{}'", s),
+                        loc: loc.clone(),
+                    });
+                    IrValue::Str(String::new())
+                }
+            }
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected ipv4net".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::Str(String::new())
+            }
+        },
+
+        IrFieldType::Primitive(IrPrimitive::Boolean) => match v {
+            AstValue::Ref(r) if r.segments.len() == 1 => {
+                match r.segments[0].inner.as_plain().unwrap_or("") {
+                    "true" => IrValue::Bool(true),
+                    "false" => IrValue::Bool(false),
+                    raw => {
+                        ctx.errors.push(IrError {
+                            message: format!("expected boolean, got '{}'", raw),
+                            loc: loc.clone(),
+                        });
+                        IrValue::Bool(false)
                     }
                 }
-                _ => { ctx.errors.push(IrError { message: "expected ipv4".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
             }
-        }
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected boolean".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::Bool(false)
+            }
+        },
 
-        IrFieldType::Primitive(IrPrimitive::Ipv4Net) => {
-            match v {
-                AstValue::Str(s) => {
-                    if is_valid_ipv4net(s) {
-                        IrValue::Str(s.clone())
-                    } else {
-                        ctx.errors.push(IrError { message: format!("expected ipv4net, got '{}'", s), loc: loc.clone() });
-                        IrValue::Str(String::new())
-                    }
-                }
-                _ => { ctx.errors.push(IrError { message: "expected ipv4net".into(), loc: loc.clone() }); IrValue::Str(String::new()) }
+        IrFieldType::Primitive(IrPrimitive::Reference) => match v {
+            AstValue::Ref(r) => IrValue::Ref(
+                r.segments
+                    .iter()
+                    .map(|s| s.inner.as_plain().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join(":"),
+            ),
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected reference".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::Ref(String::new())
             }
-        }
-
-        IrFieldType::Primitive(IrPrimitive::Boolean) => {
-            match v {
-                AstValue::Ref(r) if r.segments.len() == 1 => {
-                    match r.segments[0].inner.as_plain().unwrap_or("") {
-                        "true" => IrValue::Bool(true),
-                        "false" => IrValue::Bool(false),
-                        raw => {
-                            ctx.errors.push(IrError { message: format!("expected boolean, got '{}'", raw), loc: loc.clone() });
-                            IrValue::Bool(false)
-                        }
-                    }
-                }
-                _ => { ctx.errors.push(IrError { message: "expected boolean".into(), loc: loc.clone() }); IrValue::Bool(false) }
-            }
-        }
-
-        IrFieldType::Primitive(IrPrimitive::Reference) => {
-            match v {
-                AstValue::Ref(r) => IrValue::Ref(
-                    r.segments.iter().map(|s| s.inner.as_plain().unwrap_or("")).collect::<Vec<_>>().join(":")
-                ),
-                _ => { ctx.errors.push(IrError { message: "expected reference".into(), loc: loc.clone() }); IrValue::Ref(String::new()) }
-            }
-        }
+        },
 
         IrFieldType::Ref(pattern) => {
             // Inline struct literal `{ field: value ... }` — allocate an anonymous instance.
-            if let AstValue::Struct { type_hint, fields: ast_fields } = v {
+            if let AstValue::Struct {
+                type_hint,
+                fields: ast_fields,
+            } = v
+            {
                 if let Some(shape_id) = target_shape_from_ir_ref(pattern) {
                     match ctx.shapes.get(shape_id.0 as usize).map(|t| t.body.clone()) {
                         Some(IrShapeBody::Struct(field_defs)) => {
                             // Validate and extract shape hint if present.
                             let resolved_hint = if let Some(hint) = type_hint {
-                                let hint_name = hint.inner.segments.last()
+                                let hint_name = hint
+                                    .inner
+                                    .segments
+                                    .last()
                                     .and_then(|s| s.inner.as_plain())
                                     .unwrap_or("");
-                                let expected = ctx.shapes[shape_id.0 as usize].name.clone()
+                                let expected = ctx.shapes[shape_id.0 as usize]
+                                    .name
+                                    .clone()
                                     .unwrap_or_else(|| "?".into());
                                 if let Some(hint_tid) = lookup_type_by_ref(&hint.inner, ctx, scope)
                                     .or_else(|| ctx.lookup_shape(scope, hint_name))
@@ -1662,10 +2098,13 @@ fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: S
                                         ctx.push_error(format!(
                                             "shape hint '{}' does not match expected shape '{}'",
                                             hint_name, expected
-                                        ));
+                                        ), loc.clone());
                                     }
                                 } else if hint_name != expected {
-                                    ctx.push_error(format!("unknown shape '{}' in type hint", hint_name));
+                                    ctx.push_error(format!(
+                                        "unknown shape '{}' in type hint",
+                                        hint_name
+                                    ), loc.clone());
                                 }
                                 Some(hint_name.to_string())
                             } else {
@@ -1674,10 +2113,16 @@ fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: S
                             let fid = DefId(ctx.defs.len() as u32);
                             ctx.defs.push(IrDef {
                                 planned: false,
-                                shape_id, base_def: None,
-                                name: "_".into(), type_hint: resolved_hint,
-                                scope, loc: loc.clone(), fields: vec![],
-                                mapper_fn: None, inputs: vec![], outputs: vec![],
+                                shape_id,
+                                base_def: None,
+                                name: "_".into(),
+                                type_hint: resolved_hint,
+                                scope,
+                                loc: loc.clone(),
+                                fields: vec![],
+                                mapper_fn: None,
+                                inputs: vec![],
+                                outputs: vec![],
                             });
                             let fields = resolve_named_fields(ast_fields, &field_defs, ctx, scope);
                             ctx.defs[fid.0 as usize].fields = fields;
@@ -1687,23 +2132,32 @@ fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: S
                             // Struct literal against an enum type — hint identifies the variant.
                             let hint = match type_hint {
                                 None => {
-                                    let enum_name = ctx.shapes[shape_id.0 as usize].name.as_deref()
+                                    let enum_name = ctx.shapes[shape_id.0 as usize]
+                                        .name
+                                        .as_deref()
                                         .unwrap_or("?");
                                     ctx.push_error(format!(
-                                        "shape hint required for enum '{}'", enum_name
-                                    ));
+                                        "shape hint required for enum '{}'",
+                                        enum_name
+                                    ), loc.clone());
                                     return IrValue::Ref(String::new());
                                 }
                                 Some(h) => h,
                             };
-                            let hint_name = hint.inner.segments.last()
+                            let hint_name = hint
+                                .inner
+                                .segments
+                                .last()
                                 .and_then(|s| s.inner.as_plain())
                                 .unwrap_or("");
                             let hint_tid = match lookup_type_by_ref(&hint.inner, ctx, scope)
                                 .or_else(|| ctx.lookup_shape(scope, hint_name))
                             {
                                 None => {
-                                    ctx.push_error(format!("unknown shape '{}' in type hint", hint_name));
+                                    ctx.push_error(format!(
+                                        "unknown shape '{}' in type hint",
+                                        hint_name
+                                    ), loc.clone());
                                     return IrValue::Ref(String::new());
                                 }
                                 Some(t) => t,
@@ -1711,90 +2165,154 @@ fn resolve_value(v: &AstValue, field_type: &IrFieldType, ctx: &mut Ctx, scope: S
                             let variant_idx = variants.iter().enumerate().find_map(|(i, r)| {
                                 if let [seg] = r.segments.as_slice() {
                                     if let IrRefSegValue::Shape(vt) = &seg.value {
-                                        if *vt == hint_tid { return Some(i); }
+                                        if *vt == hint_tid {
+                                            return Some(i);
+                                        }
                                     }
                                 }
                                 None
                             });
                             let idx = match variant_idx {
                                 None => {
-                                    let enum_name = ctx.shapes[shape_id.0 as usize].name.as_deref()
+                                    let enum_name = ctx.shapes[shape_id.0 as usize]
+                                        .name
+                                        .as_deref()
                                         .unwrap_or("?");
                                     ctx.push_error(format!(
-                                        "'{}' is not a variant of '{}'", hint_name, enum_name
-                                    ));
+                                        "'{}' is not a variant of '{}'",
+                                        hint_name, enum_name
+                                    ), loc.clone());
                                     return IrValue::Ref(String::new());
                                 }
                                 Some(i) => i,
                             };
-                            let inner_field_defs = match ctx.shapes.get(hint_tid.0 as usize)
-                                .map(|t| t.body.clone())
-                            {
-                                Some(IrShapeBody::Struct(fields)) => fields,
-                                _ => {
-                                    ctx.push_error(format!(
-                                        "variant '{}' is not a struct type", hint_name
-                                    ));
-                                    return IrValue::Ref(String::new());
-                                }
-                            };
+                            let inner_field_defs =
+                                match ctx.shapes.get(hint_tid.0 as usize).map(|t| t.body.clone()) {
+                                    Some(IrShapeBody::Struct(fields)) => fields,
+                                    _ => {
+                                        ctx.push_error(format!(
+                                            "variant '{}' is not a struct type",
+                                            hint_name
+                                        ), loc.clone());
+                                        return IrValue::Ref(String::new());
+                                    }
+                                };
                             let fid = DefId(ctx.defs.len() as u32);
                             ctx.defs.push(IrDef {
                                 planned: false,
-                                shape_id: hint_tid, base_def: None,
-                                name: "_".into(), type_hint: Some(hint_name.to_string()),
-                                scope, loc: loc.clone(), fields: vec![],
-                                mapper_fn: None, inputs: vec![], outputs: vec![],
+                                shape_id: hint_tid,
+                                base_def: None,
+                                name: "_".into(),
+                                type_hint: Some(hint_name.to_string()),
+                                scope,
+                                loc: loc.clone(),
+                                fields: vec![],
+                                mapper_fn: None,
+                                inputs: vec![],
+                                outputs: vec![],
                             });
-                            let fields = resolve_named_fields(ast_fields, &inner_field_defs, ctx, scope);
+                            let fields =
+                                resolve_named_fields(ast_fields, &inner_field_defs, ctx, scope);
                             ctx.defs[fid.0 as usize].fields = fields;
-                            return IrValue::Variant(shape_id, idx as u32, Some(Box::new(IrValue::Inst(fid))));
+                            return IrValue::Variant(
+                                shape_id,
+                                idx as u32,
+                                Some(Box::new(IrValue::Inst(fid))),
+                            );
                         }
                         _ => {
-                            ctx.push_error("inline struct value requires a struct-typed field".into());
+                            ctx.push_error(
+                                "inline struct value requires a struct-typed field".into(),
+                                loc.clone(),
+                            );
                             return IrValue::Ref(String::new());
                         }
                     };
                 }
-                ctx.push_error("inline struct value only valid for a single struct-typed field".into());
+                ctx.push_error(
+                    "inline struct value only valid for a single struct-typed field".into(),
+                    loc.clone(),
+                );
                 return IrValue::Ref(String::new());
             }
             resolve_value_against_ref(v, pattern, ctx, scope, loc)
         }
 
-        IrFieldType::List(elem_patterns) => {
-            match v {
-                AstValue::List(items) => {
-                    let vals = items.iter()
-                        .map(|item| resolve_list_item(&item.inner, elem_patterns, ctx, scope, &ir_loc(&item.loc)))
-                        .collect();
-                    IrValue::List(vals)
-                }
-                _ => { ctx.errors.push(IrError { message: "expected list".into(), loc: loc.clone() }); IrValue::List(vec![]) }
+        IrFieldType::List(elem_patterns) => match v {
+            AstValue::List(items) => {
+                let vals = items
+                    .iter()
+                    .map(|item| {
+                        resolve_list_item(
+                            &item.inner,
+                            elem_patterns,
+                            ctx,
+                            scope,
+                            &ir_loc(&item.loc),
+                        )
+                    })
+                    .collect();
+                IrValue::List(vals)
             }
-        }
+            _ => {
+                ctx.errors.push(IrError {
+                    message: "expected list".into(),
+                    loc: loc.clone(),
+                });
+                IrValue::List(vec![])
+            }
+        },
     }
 }
 
-fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+fn resolve_value_against_ref(
+    v: &AstValue,
+    pattern: &IrRef,
+    ctx: &mut Ctx,
+    scope: ScopeId,
+    loc: &IrLoc,
+) -> IrValue {
     let segs = match v {
         AstValue::Ref(r) => {
-            if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+            if has_group(r) {
+                return IrValue::Ref(ref_to_repr(r));
+            }
             &r.segments
         }
-        _ => { ctx.errors.push(IrError { message: "expected ref value".into(), loc: loc.clone() }); return IrValue::Ref(String::new()); }
+        _ => {
+            ctx.errors.push(IrError {
+                message: "expected ref value".into(),
+                loc: loc.clone(),
+            });
+            return IrValue::Ref(String::new());
+        }
     };
     let (value_scope, segs) = scope_and_value_segs(segs, ctx, scope);
 
     if pattern.segments.len() == 1 {
         if segs.len() == 1 {
-            return resolve_single_seg_value(segs[0].inner.as_plain().unwrap_or(""), &pattern.segments[0], ctx, value_scope, loc);
+            return resolve_single_seg_value(
+                segs[0].inner.as_plain().unwrap_or(""),
+                &pattern.segments[0],
+                ctx,
+                value_scope,
+                loc,
+            );
         }
         let is_typed_path = segs.len() > 1
-            && segs[0].inner.as_plain().map_or(false, |v| ctx.lookup_shape(value_scope, v).is_some());
+            && segs[0]
+                .inner
+                .as_plain()
+                .map_or(false, |v| ctx.lookup_shape(value_scope, v).is_some());
         if is_typed_path {
             let inst_name = segs.last().and_then(|s| s.inner.as_plain()).unwrap_or("");
-            return resolve_single_seg_value(inst_name, &pattern.segments[0], ctx, value_scope, loc);
+            return resolve_single_seg_value(
+                inst_name,
+                &pattern.segments[0],
+                ctx,
+                value_scope,
+                loc,
+            );
         }
     }
 
@@ -1803,19 +2321,37 @@ fn resolve_value_against_ref(v: &AstValue, pattern: &IrRef, ctx: &mut Ctx, scope
         ctx.errors.push(IrError {
             message: format!(
                 "typed path has {} segment(s), expected {}",
-                segs.len(), pattern.segments.len()
+                segs.len(),
+                pattern.segments.len()
             ),
             loc: loc.clone(),
         });
     }
 
-    let vals: Vec<IrValue> = pattern.segments.iter().zip(segs.iter()).map(|(pat_seg, val_seg)| {
-        resolve_single_seg_value(val_seg.inner.as_plain().unwrap_or(""), pat_seg, ctx, value_scope, loc)
-    }).collect();
+    let vals: Vec<IrValue> = pattern
+        .segments
+        .iter()
+        .zip(segs.iter())
+        .map(|(pat_seg, val_seg)| {
+            resolve_single_seg_value(
+                val_seg.inner.as_plain().unwrap_or(""),
+                pat_seg,
+                ctx,
+                value_scope,
+                loc,
+            )
+        })
+        .collect();
     IrValue::Path(vals)
 }
 
-fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+fn resolve_single_seg_value(
+    raw: &str,
+    pat_seg: &IrRefSeg,
+    ctx: &mut Ctx,
+    scope: ScopeId,
+    loc: &IrLoc,
+) -> IrValue {
     match &pat_seg.value {
         IrRefSegValue::Shape(tid) => {
             match ctx.shapes.get(tid.0 as usize).map(|t| t.body.clone()) {
@@ -1829,11 +2365,18 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                                 }
                                 IrRefSegValue::Shape(inner_tid) => {
                                     // Use typed lookup to find instances of the inner type by name.
-                                    let iid = ctx.lookup_def_typed(scope, raw, *inner_tid)
-                                        .or_else(|| ctx.lookup_def(scope, raw)
-                                            .filter(|&i| ctx.def_satisfies_shape(i, *inner_tid)));
+                                    let iid = ctx.lookup_def_typed(scope, raw, *inner_tid).or_else(
+                                        || {
+                                            ctx.lookup_def(scope, raw)
+                                                .filter(|&i| ctx.def_satisfies_shape(i, *inner_tid))
+                                        },
+                                    );
                                     if let Some(iid) = iid {
-                                        return IrValue::Variant(*tid, idx as u32, Some(Box::new(IrValue::Inst(iid))));
+                                        return IrValue::Variant(
+                                            *tid,
+                                            idx as u32,
+                                            Some(Box::new(IrValue::Inst(iid))),
+                                        );
                                     }
                                 }
                                 _ => {}
@@ -1853,13 +2396,17 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                 }
                 Some(IrShapeBody::Struct(_)) => {
                     // Use typed lookup first — handles multi-type same-name defs.
-                    let fid = ctx.lookup_def_typed(scope, raw, *tid)
+                    let fid = ctx
+                        .lookup_def_typed(scope, raw, *tid)
                         .or_else(|| ctx.lookup_def(scope, raw));
                     match fid {
                         Some(fid) => IrValue::Inst(fid),
                         None => {
                             ctx.errors.push(IrError {
-                                message: format!("'{}' is not a known instance of Shape#{}", raw, tid.0),
+                                message: format!(
+                                    "'{}' is not a known instance of Shape#{}",
+                                    raw, tid.0
+                                ),
                                 loc: loc.clone(),
                             });
                             IrValue::Ref(raw.to_string())
@@ -1867,40 +2414,52 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                     }
                 }
                 Some(IrShapeBody::Unit) => {
-                    let fid = ctx.lookup_def_typed(scope, raw, *tid)
+                    let fid = ctx
+                        .lookup_def_typed(scope, raw, *tid)
                         .or_else(|| ctx.lookup_def(scope, raw));
                     match fid {
                         Some(fid) => IrValue::Inst(fid),
                         None => {
                             ctx.errors.push(IrError {
-                                message: format!("'{}' is not a known instance of Shape#{}", raw, tid.0),
+                                message: format!(
+                                    "'{}' is not a known instance of Shape#{}",
+                                    raw, tid.0
+                                ),
                                 loc: loc.clone(),
                             });
                             IrValue::Ref(raw.to_string())
                         }
                     }
                 }
-                Some(IrShapeBody::Primitive(IrPrimitive::Integer)) => {
-                    match raw.parse::<i64>() {
-                        Ok(n)  => IrValue::Int(n),
-                        Err(_) => { ctx.errors.push(IrError { message: format!("expected integer, got '{}'", raw), loc: loc.clone() }); IrValue::Int(0) }
+                Some(IrShapeBody::Primitive(IrPrimitive::Integer)) => match raw.parse::<i64>() {
+                    Ok(n) => IrValue::Int(n),
+                    Err(_) => {
+                        ctx.errors.push(IrError {
+                            message: format!("expected integer, got '{}'", raw),
+                            loc: loc.clone(),
+                        });
+                        IrValue::Int(0)
                     }
-                }
-                Some(IrShapeBody::Primitive(IrPrimitive::Boolean)) => {
-                    match raw {
-                        "true" => IrValue::Bool(true),
-                        "false" => IrValue::Bool(false),
-                        _ => {
-                            ctx.errors.push(IrError { message: format!("expected boolean, got '{}'", raw), loc: loc.clone() });
-                            IrValue::Bool(false)
-                        }
+                },
+                Some(IrShapeBody::Primitive(IrPrimitive::Boolean)) => match raw {
+                    "true" => IrValue::Bool(true),
+                    "false" => IrValue::Bool(false),
+                    _ => {
+                        ctx.errors.push(IrError {
+                            message: format!("expected boolean, got '{}'", raw),
+                            loc: loc.clone(),
+                        });
+                        IrValue::Bool(false)
                     }
-                }
+                },
                 Some(IrShapeBody::Primitive(IrPrimitive::Ipv4)) => {
                     if parse_ipv4(raw).is_some() {
                         IrValue::Str(raw.to_string())
                     } else {
-                        ctx.errors.push(IrError { message: format!("expected ipv4, got '{}'", raw), loc: loc.clone() });
+                        ctx.errors.push(IrError {
+                            message: format!("expected ipv4, got '{}'", raw),
+                            loc: loc.clone(),
+                        });
                         IrValue::Str(String::new())
                     }
                 }
@@ -1908,7 +2467,10 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
                     if is_valid_ipv4net(raw) {
                         IrValue::Str(raw.to_string())
                     } else {
-                        ctx.errors.push(IrError { message: format!("expected ipv4net, got '{}'", raw), loc: loc.clone() });
+                        ctx.errors.push(IrError {
+                            message: format!("expected ipv4net, got '{}'", raw),
+                            loc: loc.clone(),
+                        });
                         IrValue::Str(String::new())
                     }
                 }
@@ -1917,31 +2479,54 @@ fn resolve_single_seg_value(raw: &str, pat_seg: &IrRefSeg, ctx: &mut Ctx, scope:
             }
         }
         IrRefSegValue::Def(iid) => IrValue::Inst(*iid),
-        _                        => IrValue::Ref(raw.to_string()),
+        _ => IrValue::Ref(raw.to_string()),
     }
 }
 
-fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: ScopeId, loc: &IrLoc) -> IrValue {
+fn resolve_list_item(
+    v: &AstValue,
+    patterns: &[IrRef],
+    ctx: &mut Ctx,
+    scope: ScopeId,
+    loc: &IrLoc,
+) -> IrValue {
     // Handle inline struct literals `{ field: val ... }` — find the first matching struct pattern.
     if let AstValue::Struct { .. } = v {
         for pattern in patterns {
             if pattern.segments.len() == 1 {
                 if let IrRefSegValue::Shape(tid) = &pattern.segments[0].value {
-                    if matches!(ctx.shapes.get(tid.0 as usize).map(|t| &t.body), Some(IrShapeBody::Struct(_))) {
-                        return resolve_value(v, &IrFieldType::Ref(pattern.clone()), ctx, scope, loc);
+                    if matches!(
+                        ctx.shapes.get(tid.0 as usize).map(|t| &t.body),
+                        Some(IrShapeBody::Struct(_))
+                    ) {
+                        return resolve_value(
+                            v,
+                            &IrFieldType::Ref(pattern.clone()),
+                            ctx,
+                            scope,
+                            loc,
+                        );
                     }
                 }
             }
         }
-        ctx.errors.push(IrError { message: "list item must be a reference".into(), loc: loc.clone() });
+        ctx.errors.push(IrError {
+            message: "list item must be a reference".into(),
+            loc: loc.clone(),
+        });
         return IrValue::Ref(String::new());
     }
 
     let AstValue::Ref(r) = v else {
-        ctx.errors.push(IrError { message: "list item must be a reference".into(), loc: loc.clone() });
+        ctx.errors.push(IrError {
+            message: "list item must be a reference".into(),
+            loc: loc.clone(),
+        });
         return IrValue::Ref(String::new());
     };
-    if has_group(r) { return IrValue::Ref(ref_to_repr(r)); }
+    if has_group(r) {
+        return IrValue::Ref(ref_to_repr(r));
+    }
     let (value_scope, segs) = scope_and_value_segs(&r.segments, ctx, scope);
 
     // `def:TYPE:NAME` — explicit type-qualified instance reference.
@@ -1950,7 +2535,9 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
         let type_name = segs[1].inner.as_plain().unwrap_or("");
         let inst_name_seg = segs.get(2);
         if let Some(shape_id) = ctx.lookup_shape(value_scope, type_name) {
-            let name = inst_name_seg.and_then(|s| s.inner.as_plain()).unwrap_or(type_name);
+            let name = inst_name_seg
+                .and_then(|s| s.inner.as_plain())
+                .unwrap_or(type_name);
             if let Some(fid) = ctx.lookup_def_typed(value_scope, name, shape_id) {
                 return IrValue::Inst(fid);
             }
@@ -1970,7 +2557,10 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     // For typed-path values like `service:api`, the first segment is a type qualifier
     // and the last segment is the actual instance name.
     let is_typed_path = segs.len() > 1
-        && segs[0].inner.as_plain().map_or(false, |v| ctx.lookup_shape(value_scope, v).is_some());
+        && segs[0]
+            .inner
+            .as_plain()
+            .map_or(false, |v| ctx.lookup_shape(value_scope, v).is_some());
     let inst_name = if is_typed_path {
         segs.last().unwrap().inner.as_plain().unwrap_or("")
     } else {
@@ -1978,21 +2568,27 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     };
 
     // Find which element pattern matches this instance's type.
-    let matched_pattern = patterns.iter().find(|pattern| {
-        if let Some(base_seg) = pattern.segments.first() {
-            if let IrRefSegValue::Shape(tid) = &base_seg.value {
-                return ctx.lookup_def_typed(value_scope, inst_name, *tid).is_some();
+    let matched_pattern = patterns
+        .iter()
+        .find(|pattern| {
+            if let Some(base_seg) = pattern.segments.first() {
+                if let IrRefSegValue::Shape(tid) = &base_seg.value {
+                    return ctx.lookup_def_typed(value_scope, inst_name, *tid).is_some();
+                }
             }
-        }
-        false
-    }).or_else(|| patterns.first());
+            false
+        })
+        .or_else(|| patterns.first());
 
     // For primitive-typed patterns (e.g. `[ string ]`), join all ref segments as a string value.
     if let Some(pattern) = matched_pattern {
         if pattern.segments.len() == 1 {
             if let IrRefSegValue::Shape(tid) = &pattern.segments[0].value {
-                if let Some(IrShapeBody::Primitive(_)) = ctx.shapes.get(tid.0 as usize).map(|t| &t.body) {
-                    let s = segs.iter()
+                if let Some(IrShapeBody::Primitive(_)) =
+                    ctx.shapes.get(tid.0 as usize).map(|t| &t.body)
+                {
+                    let s = segs
+                        .iter()
                         .filter_map(|s| s.inner.as_plain())
                         .collect::<Vec<_>>()
                         .join(":");
@@ -2006,7 +2602,13 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     if is_typed_path {
         if let Some(pattern) = matched_pattern {
             if pattern.segments.len() == 1 {
-                return resolve_single_seg_value(inst_name, &pattern.segments[0], ctx, value_scope, loc);
+                return resolve_single_seg_value(
+                    inst_name,
+                    &pattern.segments[0],
+                    ctx,
+                    value_scope,
+                    loc,
+                );
             }
         }
     }
@@ -2014,7 +2616,7 @@ fn resolve_list_item(v: &AstValue, patterns: &[IrRef], ctx: &mut Ctx, scope: Sco
     let v_ref = AstValue::Ref(r.clone());
     match matched_pattern {
         Some(pattern) => resolve_value_against_ref(&v_ref, pattern, ctx, scope, loc),
-        None          => IrValue::Ref(String::new()),
+        None => IrValue::Ref(String::new()),
     }
 }
 
@@ -2039,13 +2641,17 @@ pub fn resolve(res: ParseRes) -> IrRes {
     let mut errors = ctx.errors;
     errors.extend(res.errors.iter().map(|e| IrError {
         message: e.message.clone(),
-        loc:     IrLoc { unit: e.loc.unit, start: e.loc.start, end: e.loc.end },
+        loc: IrLoc {
+            unit: e.loc.unit,
+            start: e.loc.start,
+            end: e.loc.end,
+        },
     }));
 
     IrRes {
-        shapes:    ctx.shapes,
-        defs:      ctx.defs,
-        scopes:   ctx.scopes,
+        shapes: ctx.shapes,
+        defs: ctx.defs,
+        scopes: ctx.scopes,
         errors,
     }
 }

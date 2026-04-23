@@ -14,9 +14,12 @@ fn transpile_strips_types() {
     let js = ts_to_js(ts).unwrap();
     // Types erased, function body intact
     assert!(!js.contains("interface"), "interface should be erased");
-    assert!(!js.contains(": number"),  "type annotations should be erased");
+    assert!(
+        !js.contains(": number"),
+        "type annotations should be erased"
+    );
     assert!(js.contains("function add"), "function must survive");
-    assert!(js.contains("i.a + i.b"),    "body must survive");
+    assert!(js.contains("i.a + i.b"), "body must survive");
 }
 
 #[test]
@@ -26,7 +29,10 @@ fn transpile_strips_export_modifier() {
         export function foo(i: FooI): number { return i.x * 2; }
     "#;
     let js = ts_to_js(ts).unwrap();
-    assert!(!js.contains("export"), "export modifiers should be stripped");
+    assert!(
+        !js.contains("export"),
+        "export modifiers should be stripped"
+    );
     assert!(js.contains("function foo"), "function must survive");
 }
 
@@ -110,7 +116,8 @@ fn typecheck_simple_hook() {
     use ground_ts::typecheck::typecheck;
     // Declarations: only interfaces, no `declare function` (that would clash with the
     // non-ambient function definition in user.ts and trigger TS2384).
-    let declarations = "interface MakeLabelI { key: string; }\ninterface MakeLabelO { value: string; }";
+    let declarations =
+        "interface MakeLabelI { key: string; }\ninterface MakeLabelO { value: string; }";
     let user_ts = r#"function make_label(i: MakeLabelI): MakeLabelO {
     return { value: i.key + "=prod" };
 }"#;
@@ -122,7 +129,8 @@ fn typecheck_simple_hook() {
 #[test]
 fn typecheck_catches_type_error() {
     use ground_ts::typecheck::typecheck;
-    let declarations = "interface MakeLabelI { key: string; }\ninterface MakeLabelO { value: string; }";
+    let declarations =
+        "interface MakeLabelI { key: string; }\ninterface MakeLabelO { value: string; }";
     // Return type mismatch: returns { value: number } but MakeLabelO needs string
     let user_ts = r#"function make_label(i: MakeLabelI): MakeLabelO {
     return { value: 42 };
@@ -130,6 +138,8 @@ fn typecheck_catches_type_error() {
     let diags = typecheck(declarations, user_ts).expect("typecheck engine error");
     let errors: Vec<_> = diags.iter().filter(|d| d.category == 1).collect();
     assert!(!errors.is_empty(), "expected a type error but got none");
-    assert!(errors.iter().any(|d| d.message.contains("not assignable")),
-        "expected 'not assignable' error, got: {errors:?}");
+    assert!(
+        errors.iter().any(|d| d.message.contains("not assignable")),
+        "expected 'not assignable' error, got: {errors:?}"
+    );
 }

@@ -1,12 +1,12 @@
 use crate::ast::{
     AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstNodeLoc, AstPrimitive, AstRef,
     AstRefSegVal, AstStructField, AstStructFieldBody, AstStructFieldKind, AstStructItem,
-    AstTypeExpr, AstUse, AstValue,
+    AstTypeExpr, AstUse, AstValue, UnitId,
 };
 use crate::parse::parse_file_items;
 
 pub fn format_source(src: &str) -> Result<String, Vec<String>> {
-    let (items, errors) = parse_file_items(src, 0);
+    let (items, errors) = parse_file_items(src, UnitId(0));
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.message).collect());
     }
@@ -15,7 +15,8 @@ pub fn format_source(src: &str) -> Result<String, Vec<String>> {
 
 fn render_items(items: &[AstItem], indent: usize, top_level: bool, src: &str) -> String {
     if top_level {
-        let mut uses: Vec<String> = items.iter()
+        let mut uses: Vec<String> = items
+            .iter()
             .filter_map(|item| match item {
                 AstItem::Use(_) => Some(render_item(item, indent)),
                 _ => None,
@@ -45,13 +46,20 @@ fn render_top_level_non_use_blocks(items: &[AstItem], indent: usize, src: &str) 
 
     for item in items.iter().filter(|item| !matches!(item, AstItem::Use(_))) {
         match item {
-            AstItem::Comment(c) => pending_comments.push((render_item(item, indent), c.loc.clone())),
+            AstItem::Comment(c) => {
+                pending_comments.push((render_item(item, indent), c.loc.clone()))
+            }
             _ => {
                 let rendered = render_item(item, indent);
                 if pending_comments.is_empty() {
                     blocks.push(rendered);
-                } else if pending_comments.last().map(|(_, loc)| comment_attaches(src, loc, &item_loc(item))).unwrap_or(false) {
-                    let mut lines: Vec<String> = pending_comments.iter().map(|(s, _)| s.clone()).collect();
+                } else if pending_comments
+                    .last()
+                    .map(|(_, loc)| comment_attaches(src, loc, &item_loc(item)))
+                    .unwrap_or(false)
+                {
+                    let mut lines: Vec<String> =
+                        pending_comments.iter().map(|(s, _)| s.clone()).collect();
                     lines.push(rendered);
                     blocks.push(lines.join("\n"));
                     pending_comments.clear();
@@ -96,9 +104,17 @@ fn render_item(item: &AstItem, indent: usize) -> String {
     match item {
         AstItem::Def(def) => render_def(&def.inner, indent),
         AstItem::Pack(pack) => {
-            let head = format!("{}pack {}", spaces(indent), render_ref(&pack.inner.path.inner));
+            let head = format!(
+                "{}pack {}",
+                spaces(indent),
+                render_ref(&pack.inner.path.inner)
+            );
             match &pack.inner.defs {
-                Some(defs) if !defs.is_empty() => format!("{head} {{\n{}\n{}}}", render_items(defs, indent + 2, false, ""), spaces(indent)),
+                Some(defs) if !defs.is_empty() => format!(
+                    "{head} {{\n{}\n{}}}",
+                    render_items(defs, indent + 2, false, ""),
+                    spaces(indent)
+                ),
                 Some(_) => format!("{head} {{}}"),
                 None => head,
             }
@@ -139,7 +155,11 @@ fn render_def(def: &AstDef, indent: usize) -> String {
             if matches!(head.trim_end(), x if x.ends_with('=')) {
                 format!("{head} {}", render_type_expr(&ty.inner, indent, false))
             } else if let Some(mapper) = &def.mapper {
-                format!("{head} = {} {}", render_ref(&mapper.inner), render_type_expr(&ty.inner, indent, false))
+                format!(
+                    "{head} = {} {}",
+                    render_ref(&mapper.inner),
+                    render_type_expr(&ty.inner, indent, false)
+                )
             } else {
                 format!("{head} = {}", render_type_expr(&ty.inner, indent, false))
             }
@@ -165,10 +185,23 @@ fn render_input_block(fields: &[crate::ast::AstNode<AstDefI>], indent: usize) ->
     if fields.is_empty() {
         return "{}".into();
     }
-    let parts: Vec<String> = fields.iter().map(|f| {
-        let name = f.inner.name.as_ref().map(|n| n.inner.as_str()).unwrap_or("_");
-        format!("{}{} = {}", spaces(indent + 2), name, render_type_expr(&f.inner.ty.inner, indent + 2, false))
-    }).collect();
+    let parts: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let name = f
+                .inner
+                .name
+                .as_ref()
+                .map(|n| n.inner.as_str())
+                .unwrap_or("_");
+            format!(
+                "{}{} = {}",
+                spaces(indent + 2),
+                name,
+                render_type_expr(&f.inner.ty.inner, indent + 2, false)
+            )
+        })
+        .collect();
     format!("{{\n{}\n{}}}", parts.join("\n"), spaces(indent))
 }
 
@@ -177,12 +210,23 @@ fn render_type_expr(ty: &AstTypeExpr, indent: usize, nested: bool) -> String {
         AstTypeExpr::Unit => "unit".into(),
         AstTypeExpr::Primitive(p) => render_primitive(p).into(),
         AstTypeExpr::Ref(r) => render_ref(r),
-        AstTypeExpr::Enum(items) => items.iter().map(|r| render_ref(&r.inner)).collect::<Vec<_>>().join(" | "),
+        AstTypeExpr::Enum(items) => items
+            .iter()
+            .map(|r| render_ref(&r.inner))
+            .collect::<Vec<_>>()
+            .join(" | "),
         AstTypeExpr::Struct(items) => {
             if items.is_empty() {
                 "{}".into()
             } else if can_inline_struct_items(items) && nested {
-                format!("{{ {} }}", items.iter().map(|i| render_struct_item(&i.inner, indent + 2)).collect::<Vec<_>>().join(" "))
+                format!(
+                    "{{ {} }}",
+                    items
+                        .iter()
+                        .map(|i| render_struct_item(&i.inner, indent + 2))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
             } else {
                 render_struct_items(items, indent)
             }
@@ -194,7 +238,12 @@ fn render_type_expr(ty: &AstTypeExpr, indent: usize, nested: bool) -> String {
 fn render_list_type(inner: &AstTypeExpr, indent: usize) -> String {
     let inner_s = render_type_expr(inner, indent, false);
     if inner_s.contains('\n') {
-        format!("[\n{}{}\n{}]", spaces(indent + 2), inner_s.replace('\n', &format!("\n{}", spaces(indent + 2))), spaces(indent))
+        format!(
+            "[\n{}{}\n{}]",
+            spaces(indent + 2),
+            inner_s.replace('\n', &format!("\n{}", spaces(indent + 2))),
+            spaces(indent)
+        )
     } else {
         format!("[ {} ]", inner_s)
     }
@@ -206,9 +255,19 @@ fn render_struct_items(items: &[crate::ast::AstNode<AstStructItem>], indent: usi
     }
     let inline = can_inline_struct_items(items);
     if inline {
-        return format!("{{ {} }}", items.iter().map(|i| render_struct_item(&i.inner, indent + 2)).collect::<Vec<_>>().join(" "));
+        return format!(
+            "{{ {} }}",
+            items
+                .iter()
+                .map(|i| render_struct_item(&i.inner, indent + 2))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
-    let parts: Vec<String> = items.iter().map(|i| render_struct_item_line(&i.inner, indent + 2)).collect();
+    let parts: Vec<String> = items
+        .iter()
+        .map(|i| render_struct_item_line(&i.inner, indent + 2))
+        .collect();
     format!("{{\n{}\n{}}}", parts.join("\n"), spaces(indent))
 }
 
@@ -257,7 +316,10 @@ fn render_value(value: &AstValue, indent: usize) -> String {
         AstValue::Ref(r) => render_ref(r),
         AstValue::List(items) => render_value_list(items, indent),
         AstValue::Struct { type_hint, fields } => {
-            let head = type_hint.as_ref().map(|h| format!("{} ", render_ref(&h.inner))).unwrap_or_default();
+            let head = type_hint
+                .as_ref()
+                .map(|h| format!("{} ", render_ref(&h.inner)))
+                .unwrap_or_default();
             let body = render_value_fields(fields, indent);
             format!("{head}{body}")
         }
@@ -271,7 +333,16 @@ fn render_value_list(items: &[crate::ast::AstNode<AstValue>], indent: usize) -> 
     if items.len() == 1 {
         return format!("[ {} ]", render_value(&items[0].inner, indent));
     }
-    let parts: Vec<String> = items.iter().map(|i| format!("{}{}", spaces(indent + 2), render_value(&i.inner, indent + 2))).collect();
+    let parts: Vec<String> = items
+        .iter()
+        .map(|i| {
+            format!(
+                "{}{}",
+                spaces(indent + 2),
+                render_value(&i.inner, indent + 2)
+            )
+        })
+        .collect();
     format!("[\n{}\n{}]", parts.join("\n"), spaces(indent))
 }
 
@@ -283,7 +354,10 @@ fn render_value_fields(fields: &[crate::ast::AstNode<AstField>], indent: usize) 
     if inline {
         return format!("{{ {} }}", render_field(&fields[0].inner, indent + 2));
     }
-    let parts: Vec<String> = fields.iter().map(|f| render_field_line(&f.inner, indent + 2)).collect();
+    let parts: Vec<String> = fields
+        .iter()
+        .map(|f| render_field_line(&f.inner, indent + 2))
+        .collect();
     format!("{{\n{}\n{}}}", parts.join("\n"), spaces(indent))
 }
 
@@ -317,13 +391,19 @@ fn render_comment(comment: &AstComment, indent: usize) -> String {
 }
 
 fn render_ref(r: &AstRef) -> String {
-    r.segments.iter().map(render_ref_seg).collect::<Vec<_>>().join(":")
+    r.segments
+        .iter()
+        .map(render_ref_seg)
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 fn render_ref_seg(seg: &crate::ast::AstNode<crate::ast::AstRefSeg>) -> String {
     let mut inner = match &seg.inner.value {
         AstRefSegVal::Plain(s) => s.clone(),
-        AstRefSegVal::Group(r, trailing) => format!("{{{}}}{}", render_ref(r), trailing.as_deref().unwrap_or("")),
+        AstRefSegVal::Group(r, trailing) => {
+            format!("{{{}}}{}", render_ref(r), trailing.as_deref().unwrap_or(""))
+        }
     };
     if seg.inner.is_opt {
         inner.push('?');
@@ -364,7 +444,8 @@ port=grpc|http
 
     #[test]
     fn fmt_values_and_lists() {
-        let src = r#"api=service{access: [media:http database:main] scaling: scaling{min: 1 max: 2}}"#;
+        let src =
+            r#"api=service{access: [media:http database:main] scaling: scaling{min: 1 max: 2}}"#;
         let got = format_source(src).unwrap();
         assert_eq!(got, "api = service {\n  access: [\n    media:http\n    database:main\n  ]\n  scaling: scaling {\n    min: 1\n    max: 2\n  }\n}");
     }
@@ -378,7 +459,10 @@ use pack:app
 use pack:std
 "#;
         let got = format_source(src).unwrap();
-        assert_eq!(got, "use pack:app\nuse pack:ops\nuse pack:std\n\nservice = { port = grpc | http }");
+        assert_eq!(
+            got,
+            "use pack:app\nuse pack:ops\nuse pack:std\n\nservice = { port = grpc | http }"
+        );
     }
 
     #[test]

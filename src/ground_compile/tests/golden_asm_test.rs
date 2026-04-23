@@ -2,7 +2,8 @@
 ///
 /// ASM is plan-driven: without `plan` declarations it produces no output.
 /// These tests compare the full normalized ASM output.
-#[path = "helpers/golden_asm_helpers.rs"] mod golden_asm_helpers;
+#[path = "helpers/golden_asm_helpers.rs"]
+mod golden_asm_helpers;
 use golden_asm_helpers::{norm, show, show_multi, show_with_ts};
 
 // ---------------------------------------------------------------------------
@@ -449,15 +450,17 @@ fn mapper_010() {
 #[test]
 fn mapper_011() {
     assert_eq!(
-        show_multi(
-            vec![
-                ("std", vec![], r#"service = { image = reference }"#),
-                ("app", vec![], r#"
+        show_multi(vec![
+            ("std", vec![], r#"service = { image = reference }"#),
+            (
+                "app",
+                vec![],
+                r#"
                     use std:service
                     plan api = service { image: nginx }
-                "#),
-            ]
-        ),
+                "#
+            ),
+        ]),
         norm(
             r##"
             Def[api = service { image: Ref(nginx) }]
@@ -469,18 +472,24 @@ fn mapper_011() {
 #[test]
 fn mapper_012() {
     assert_eq!(
-        show_multi(
-            vec![
-                ("std", vec![], r#"
+        show_multi(vec![
+            (
+                "std",
+                vec![],
+                r#"
                     service = { image = reference }
                     database = { engine = string }
-                "#),
-                ("app", vec![], r#"
+                "#
+            ),
+            (
+                "app",
+                vec![],
+                r#"
                     use std:def:*
                     plan api = service { image: nginx }
-                "#),
-            ]
-        ),
+                "#
+            ),
+        ]),
         norm(
             r##"
             Def[api = service { image: Ref(nginx) }]

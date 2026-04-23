@@ -3,10 +3,7 @@ use std::io::{self, BufReader, BufWriter};
 use serde_json::{json, Value};
 
 use crate::features::{
-    completion::completion,
-    definition::definition,
-    formatting::formatting,
-    hover::hover,
+    completion::completion, definition::definition, formatting::formatting, hover::hover,
     semantic_tokens::semantic_tokens,
 };
 use crate::protocol::{read_message, send_notification, send_response};
@@ -19,7 +16,10 @@ struct Server {
 
 impl Server {
     fn new(root: std::path::PathBuf) -> Self {
-        Self { workspace: Workspace::new(root), shutdown_requested: false }
+        Self {
+            workspace: Workspace::new(root),
+            shutdown_requested: false,
+        }
     }
 
     fn handle(&mut self, msg: Value, out: &mut dyn io::Write) -> io::Result<bool> {
@@ -71,11 +71,25 @@ impl Server {
                 let _ = self.workspace.reload();
                 self.publish_all(out)?;
             }
-            Some("textDocument/completion") => send_response(out, id, Value::Array(completion(&self.workspace, &params)))?,
-            Some("textDocument/definition") => send_response(out, id, definition(&self.workspace, &params).unwrap_or(Value::Null))?,
-            Some("textDocument/hover") => send_response(out, id, hover(&self.workspace, &params).unwrap_or(Value::Null))?,
-            Some("textDocument/semanticTokens/full") => send_response(out, id, semantic_tokens(&self.workspace, &params))?,
-            Some("textDocument/formatting") => send_response(out, id, Value::Array(formatting(&self.workspace, &params)))?,
+            Some("textDocument/completion") => {
+                send_response(out, id, Value::Array(completion(&self.workspace, &params)))?
+            }
+            Some("textDocument/definition") => send_response(
+                out,
+                id,
+                definition(&self.workspace, &params).unwrap_or(Value::Null),
+            )?,
+            Some("textDocument/hover") => send_response(
+                out,
+                id,
+                hover(&self.workspace, &params).unwrap_or(Value::Null),
+            )?,
+            Some("textDocument/semanticTokens/full") => {
+                send_response(out, id, semantic_tokens(&self.workspace, &params))?
+            }
+            Some("textDocument/formatting") => {
+                send_response(out, id, Value::Array(formatting(&self.workspace, &params)))?
+            }
             _ => {
                 if id.is_some() {
                     send_response(out, id, Value::Null)?;
@@ -87,10 +101,14 @@ impl Server {
 
     fn publish_all(&self, out: &mut dyn io::Write) -> io::Result<()> {
         for (uri, diagnostics) in self.workspace.diagnostics_by_uri() {
-            send_notification(out, "textDocument/publishDiagnostics", json!({
-                "uri": uri,
-                "diagnostics": diagnostics,
-            }))?;
+            send_notification(
+                out,
+                "textDocument/publishDiagnostics",
+                json!({
+                    "uri": uri,
+                    "diagnostics": diagnostics,
+                }),
+            )?;
         }
         Ok(())
     }

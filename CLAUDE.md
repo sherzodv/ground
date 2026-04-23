@@ -55,6 +55,7 @@ Ground is a systems design language. Infrastructure is derived.
 2. **Consult agents early, not late.** Ask before implementing, not after.
 3. **Implement autonomously.** Once direction is clear, write the code — no need to check in mid-task.
 4. **One consultation round per feature.** Don't loop agents repeatedly on the same task.
+5. Keep code formatted, call format after patch
 
 ## Agent coordination rules
 

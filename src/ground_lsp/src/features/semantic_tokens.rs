@@ -1,6 +1,6 @@
 use ground_compile::ast::{
     AstDef, AstDefO, AstField, AstItem, AstNode, AstRef, AstRefSegVal, AstStructFieldBody,
-    AstStructItem, AstTypeExpr, AstUse, AstValue,
+    AstStructItem, AstTypeExpr, AstUse, AstValue, UnitId,
 };
 use serde_json::{json, Value};
 
@@ -8,7 +8,11 @@ use crate::util::offset_to_line_col;
 use crate::workspace::{lookup_def_visible, lookup_pack_path, lookup_shape_visible, Workspace};
 
 pub fn semantic_tokens(workspace: &Workspace, params: &Value) -> Value {
-    let Some(uri) = params.get("textDocument").and_then(|v| v.get("uri")).and_then(Value::as_str) else {
+    let Some(uri) = params
+        .get("textDocument")
+        .and_then(|v| v.get("uri"))
+        .and_then(Value::as_str)
+    else {
         return json!({ "data": [] });
     };
     let Some(src) = workspace.text_for_uri(uri) else {
@@ -22,10 +26,10 @@ pub fn semantic_tokens(workspace: &Workspace, params: &Value) -> Value {
     };
     let mut tokens = vec![];
     push_lexical_ground_tokens(src, &mut tokens);
-    if let Some(unit_scope) = analysis.res.parse.unit_scope_ids.get(unit as usize).copied() {
+    if let Some(pu) = analysis.res.parse.units.get(unit.as_usize()) {
         collect_scope_ref_tokens(
             &analysis.res.parse.scopes,
-            unit_scope.0 as usize,
+            pu.scope_id.0 as usize,
             unit,
             src,
             &analysis.res.ir,
@@ -72,7 +76,12 @@ fn build_lexical_tokens(src: &str, is_ts: bool) -> Vec<u32> {
         while i < chars.len() {
             let c = chars[i];
             if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
-                tokens.push(Token { line: line_idx as u32, start: i as u32, len: (chars.len() - i) as u32, token_type: TOK_COMMENT });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: i as u32,
+                    len: (chars.len() - i) as u32,
+                    token_type: TOK_COMMENT,
+                });
                 break;
             }
             if c == '"' {
@@ -84,7 +93,12 @@ fn build_lexical_tokens(src: &str, is_ts: bool) -> Vec<u32> {
                 if i < chars.len() {
                     i += 1;
                 }
-                tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_STRING });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: start as u32,
+                    len: (i - start) as u32,
+                    token_type: TOK_STRING,
+                });
                 continue;
             }
             if c.is_ascii_digit() {
@@ -93,31 +107,59 @@ fn build_lexical_tokens(src: &str, is_ts: bool) -> Vec<u32> {
                 while i < chars.len() && chars[i].is_ascii_digit() {
                     i += 1;
                 }
-                tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_NUMBER });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: start as u32,
+                    len: (i - start) as u32,
+                    token_type: TOK_NUMBER,
+                });
                 continue;
             }
             if c.is_ascii_alphabetic() || c == '_' {
                 let start = i;
                 i += 1;
-                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || matches!(chars[i], '_' | '-')) {
+                while i < chars.len()
+                    && (chars[i].is_ascii_alphanumeric() || matches!(chars[i], '_' | '-'))
+                {
                     i += 1;
                 }
                 let word: String = chars[start..i].iter().collect();
                 let token_type = if is_ts {
-                    if matches!(word.as_str(), "export" | "function" | "return" | "const" | "let" | "if" | "else" | "for" | "while" | "interface" | "type") {
+                    if matches!(
+                        word.as_str(),
+                        "export"
+                            | "function"
+                            | "return"
+                            | "const"
+                            | "let"
+                            | "if"
+                            | "else"
+                            | "for"
+                            | "while"
+                            | "interface"
+                            | "type"
+                    ) {
                         Some(TOK_KEYWORD)
                     } else {
                         None
                     }
                 } else if matches!(word.as_str(), "def" | "plan" | "pack" | "use" | "via") {
                     Some(TOK_KEYWORD)
-                } else if matches!(word.as_str(), "string" | "integer" | "boolean" | "reference" | "ipv4" | "ipv4net") {
+                } else if matches!(
+                    word.as_str(),
+                    "string" | "integer" | "boolean" | "reference" | "ipv4" | "ipv4net"
+                ) {
                     Some(TOK_TYPE)
                 } else {
                     None
                 };
                 if let Some(token_type) = token_type {
-                    tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type });
+                    tokens.push(Token {
+                        line: line_idx as u32,
+                        start: start as u32,
+                        len: (i - start) as u32,
+                        token_type,
+                    });
                 }
                 continue;
             }
@@ -134,11 +176,21 @@ fn push_lexical_ground_tokens(src: &str, tokens: &mut Vec<Token>) {
         while i < chars.len() {
             let c = chars[i];
             if c == '#' {
-                tokens.push(Token { line: line_idx as u32, start: i as u32, len: (chars.len() - i) as u32, token_type: TOK_COMMENT });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: i as u32,
+                    len: (chars.len() - i) as u32,
+                    token_type: TOK_COMMENT,
+                });
                 break;
             }
             if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
-                tokens.push(Token { line: line_idx as u32, start: i as u32, len: (chars.len() - i) as u32, token_type: TOK_COMMENT });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: i as u32,
+                    len: (chars.len() - i) as u32,
+                    token_type: TOK_COMMENT,
+                });
                 break;
             }
             if c == '"' {
@@ -150,7 +202,12 @@ fn push_lexical_ground_tokens(src: &str, tokens: &mut Vec<Token>) {
                 if i < chars.len() {
                     i += 1;
                 }
-                tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_STRING });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: start as u32,
+                    len: (i - start) as u32,
+                    token_type: TOK_STRING,
+                });
                 continue;
             }
             if c.is_ascii_digit() {
@@ -159,20 +216,40 @@ fn push_lexical_ground_tokens(src: &str, tokens: &mut Vec<Token>) {
                 while i < chars.len() && chars[i].is_ascii_digit() {
                     i += 1;
                 }
-                tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_NUMBER });
+                tokens.push(Token {
+                    line: line_idx as u32,
+                    start: start as u32,
+                    len: (i - start) as u32,
+                    token_type: TOK_NUMBER,
+                });
                 continue;
             }
             if c.is_ascii_alphabetic() || c == '_' {
                 let start = i;
                 i += 1;
-                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || matches!(chars[i], '_' | '-')) {
+                while i < chars.len()
+                    && (chars[i].is_ascii_alphanumeric() || matches!(chars[i], '_' | '-'))
+                {
                     i += 1;
                 }
                 let word: String = chars[start..i].iter().collect();
                 if matches!(word.as_str(), "def" | "plan" | "pack" | "use" | "via") {
-                    tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_KEYWORD });
-                } else if matches!(word.as_str(), "string" | "integer" | "boolean" | "reference" | "ipv4" | "ipv4net") {
-                    tokens.push(Token { line: line_idx as u32, start: start as u32, len: (i - start) as u32, token_type: TOK_TYPE });
+                    tokens.push(Token {
+                        line: line_idx as u32,
+                        start: start as u32,
+                        len: (i - start) as u32,
+                        token_type: TOK_KEYWORD,
+                    });
+                } else if matches!(
+                    word.as_str(),
+                    "string" | "integer" | "boolean" | "reference" | "ipv4" | "ipv4net"
+                ) {
+                    tokens.push(Token {
+                        line: line_idx as u32,
+                        start: start as u32,
+                        len: (i - start) as u32,
+                        token_type: TOK_TYPE,
+                    });
                 }
                 continue;
             }
@@ -184,13 +261,15 @@ fn push_lexical_ground_tokens(src: &str, tokens: &mut Vec<Token>) {
 fn collect_scope_ref_tokens(
     scopes: &[ground_compile::ast::AstScope],
     scope_idx: usize,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     visible_scope: ground_compile::ir::ScopeId,
     out: &mut Vec<Token>,
 ) {
-    let Some(scope) = scopes.get(scope_idx) else { return; };
+    let Some(scope) = scopes.get(scope_idx) else {
+        return;
+    };
     for item in &scope.defs {
         collect_item_tokens(item, unit, src, ir, visible_scope, out);
     }
@@ -203,7 +282,7 @@ fn collect_scope_ref_tokens(
 
 fn collect_item_tokens(
     item: &AstItem,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -211,7 +290,15 @@ fn collect_item_tokens(
 ) {
     match item {
         AstItem::Def(def) => collect_def_tokens(&def.inner, unit, src, ir, scope, out),
-        AstItem::Pack(pack) => collect_ref_tokens(&pack.inner.path.inner, RefContext::Use, unit, src, ir, scope, out),
+        AstItem::Pack(pack) => collect_ref_tokens(
+            &pack.inner.path.inner,
+            RefContext::Use,
+            unit,
+            src,
+            ir,
+            scope,
+            out,
+        ),
         AstItem::Use(use_) => collect_use_tokens(&use_.inner, unit, src, ir, scope, out),
         AstItem::Comment(_) => {}
     }
@@ -219,7 +306,7 @@ fn collect_item_tokens(
 
 fn collect_use_tokens(
     use_: &AstUse,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -230,7 +317,7 @@ fn collect_use_tokens(
 
 fn collect_def_tokens(
     def: &AstDef,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -259,7 +346,7 @@ fn collect_def_tokens(
 
 fn collect_type_tokens(
     ty: &AstTypeExpr,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -284,7 +371,7 @@ fn collect_type_tokens(
 
 fn collect_struct_item_tokens(
     item: &AstStructItem,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -296,8 +383,12 @@ fn collect_struct_item_tokens(
                 push_name_token(name, unit, src, TOK_PROPERTY, out);
             }
             match &field.inner.body {
-                AstStructFieldBody::Type(ty) => collect_type_tokens(&ty.inner, unit, src, ir, scope, out),
-                AstStructFieldBody::Value(value) => collect_value_tokens(&value.inner, unit, src, ir, scope, out),
+                AstStructFieldBody::Type(ty) => {
+                    collect_type_tokens(&ty.inner, unit, src, ir, scope, out)
+                }
+                AstStructFieldBody::Value(value) => {
+                    collect_value_tokens(&value.inner, unit, src, ir, scope, out)
+                }
             }
         }
         AstStructItem::Anon(value) => collect_value_tokens(&value.inner, unit, src, ir, scope, out),
@@ -308,7 +399,7 @@ fn collect_struct_item_tokens(
 
 fn collect_value_tokens(
     value: &AstValue,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -332,7 +423,9 @@ fn collect_value_tokens(
                         push_name_token(name, unit, src, TOK_PROPERTY, out);
                         collect_value_tokens(&value.inner, unit, src, ir, scope, out);
                     }
-                    AstField::Anon(value) => collect_value_tokens(&value.inner, unit, src, ir, scope, out),
+                    AstField::Anon(value) => {
+                        collect_value_tokens(&value.inner, unit, src, ir, scope, out)
+                    }
                     AstField::Comment(_) => {}
                 }
             }
@@ -343,7 +436,7 @@ fn collect_value_tokens(
 fn collect_ref_tokens(
     r: &AstRef,
     ctx: RefContext,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     ir: &ground_compile::ir::IrRes,
     scope: ground_compile::ir::ScopeId,
@@ -367,7 +460,9 @@ fn collect_ref_tokens(
     let mut pack_prefix = 0usize;
     let mut prefix_parts = vec![];
     for part in &plain_parts {
-        let Some(part) = *part else { break; };
+        let Some(part) = *part else {
+            break;
+        };
         if matches!(part, "pack" | "def") {
             prefix_parts.push(part);
             pack_prefix += 1;
@@ -382,12 +477,20 @@ fn collect_ref_tokens(
         break;
     }
 
-    let remaining_plain: Vec<&str> = plain_parts.iter().skip(pack_prefix).filter_map(|p| *p).collect();
+    let remaining_plain: Vec<&str> = plain_parts
+        .iter()
+        .skip(pack_prefix)
+        .filter_map(|p| *p)
+        .collect();
     let typed_value_head_is_shape = matches!(ctx, RefContext::Value)
         && remaining_plain.len() >= 2
         && lookup_shape_visible(ir, scope, remaining_plain[0]).is_some();
 
-    let last_plain_idx = plain_parts.iter().enumerate().rev().find_map(|(i, p)| p.is_some().then_some(i));
+    let last_plain_idx = plain_parts
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, p)| p.is_some().then_some(i));
     for (idx, seg) in r.segments.iter().enumerate() {
         if seg.loc.unit != unit {
             continue;
@@ -404,13 +507,26 @@ fn collect_ref_tokens(
                 } else {
                     let remaining_idx = idx.saturating_sub(pack_prefix);
                     match ctx {
-                        RefContext::Use => Some(use_token_type(&plain_parts, idx, s, ir, scope, last_plain_idx)),
-                        RefContext::Mapper => Some(if idx == last_plain_idx.unwrap_or(idx) { TOK_FUNCTION } else { TOK_NAMESPACE }),
+                        RefContext::Use => Some(use_token_type(
+                            &plain_parts,
+                            idx,
+                            s,
+                            ir,
+                            scope,
+                            last_plain_idx,
+                        )),
+                        RefContext::Mapper => Some(if idx == last_plain_idx.unwrap_or(idx) {
+                            TOK_FUNCTION
+                        } else {
+                            TOK_NAMESPACE
+                        }),
                         RefContext::Type => Some(TOK_TYPE),
                         RefContext::Value => {
                             if typed_value_head_is_shape && remaining_idx == 0 {
                                 Some(TOK_TYPE)
-                            } else if typed_value_head_is_shape && idx == last_plain_idx.unwrap_or(idx) {
+                            } else if typed_value_head_is_shape
+                                && idx == last_plain_idx.unwrap_or(idx)
+                            {
                                 Some(TOK_VARIABLE)
                             } else if remaining_idx == 0 && last_plain_idx == Some(idx) {
                                 if lookup_def_visible(ir, scope, s).is_some() {
@@ -432,7 +548,12 @@ fn collect_ref_tokens(
             let (line, start) = offset_to_line_col(src, seg.loc.start as usize);
             let (_, end_col) = offset_to_line_col(src, seg.loc.end as usize);
             if end_col > start {
-                out.push(Token { line: line as u32, start: start as u32, len: (end_col - start) as u32, token_type });
+                out.push(Token {
+                    line: line as u32,
+                    start: start as u32,
+                    len: (end_col - start) as u32,
+                    token_type,
+                });
             }
         }
     }
@@ -447,7 +568,11 @@ fn encode_tokens(_src: &str, mut tokens: Vec<Token>) -> Vec<u32> {
     let mut prev_start = 0u32;
     for token in tokens {
         let delta_line = token.line - prev_line;
-        let delta_start = if delta_line == 0 { token.start - prev_start } else { token.start };
+        let delta_start = if delta_line == 0 {
+            token.start - prev_start
+        } else {
+            token.start
+        };
         data.extend([delta_line, delta_start, token.len, token.token_type, 0]);
         prev_line = token.line;
         prev_start = token.start;
@@ -487,7 +612,11 @@ fn use_token_type(
     }
 
     let namespace_count = cursor + pack_prefix_len;
-    let plain_idx = plain_parts[..=idx].iter().filter(|p| p.is_some()).count().saturating_sub(1);
+    let plain_idx = plain_parts[..=idx]
+        .iter()
+        .filter(|p| p.is_some())
+        .count()
+        .saturating_sub(1);
 
     if plain_idx < namespace_count {
         return TOK_NAMESPACE;
@@ -521,7 +650,7 @@ fn use_token_type(
 
 fn push_name_token(
     name: &AstNode<String>,
-    unit: u32,
+    unit: UnitId,
     src: &str,
     token_type: u32,
     out: &mut Vec<Token>,
@@ -532,6 +661,11 @@ fn push_name_token(
     let (line, start) = offset_to_line_col(src, name.loc.start as usize);
     let (_, end_col) = offset_to_line_col(src, name.loc.end as usize);
     if end_col > start {
-        out.push(Token { line: line as u32, start: start as u32, len: (end_col - start) as u32, token_type });
+        out.push(Token {
+            line: line as u32,
+            start: start as u32,
+            len: (end_col - start) as u32,
+            token_type,
+        });
     }
 }

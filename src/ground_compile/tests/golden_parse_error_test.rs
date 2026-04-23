@@ -4,7 +4,8 @@
 /// one or more `ERR: ...` lines.  The parser is error-tolerant — it
 /// continues after failures — so some valid output may precede the errors.
 
-#[path = "helpers/golden_parse_helpers.rs"] mod golden_parse_helpers;
+#[path = "helpers/golden_parse_helpers.rs"]
+mod golden_parse_helpers;
 use golden_parse_helpers::show;
 
 // ---------------------------------------------------------------------------
@@ -27,12 +28,17 @@ fn error_002() {
 fn error_003() {
     // Parser emits an error for the bad token but continues and parses the
     // valid def that follows.
-    let out = show(r##"
+    let out = show(
+        r##"
         ???
         x = a | b
-    "##);
+    "##,
+    );
     assert!(out.contains("ERR:"), "expected error, got: {out}");
-    assert!(out.contains("Def[x,"), "expected recovery parse, got: {out}");
+    assert!(
+        out.contains("Def[x,"),
+        "expected recovery parse, got: {out}"
+    );
 }
 
 // ---------------------------------------------------------------------------

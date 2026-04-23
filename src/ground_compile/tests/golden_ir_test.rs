@@ -754,14 +754,12 @@ fn import_011() {
 
 #[test]
 fn mapper_001() {
-    let out = show_multi_ts(vec![
-        (
-            "main",
-            vec![],
-            r#"def label { key = string } = make_label { value = string }"#,
-            Some("function make_label(i) { return { value: i.key }; }"),
-        ),
-    ]);
+    let out = show_multi_ts(vec![(
+        "main",
+        vec![],
+        r#"def label { key = string } = make_label { value = string }"#,
+        Some("function make_label(i) { return { value: i.key }; }"),
+    )]);
     assert!(
         !out.contains("ERR:"),
         "same-pack mapper should resolve cleanly, got: {out}"

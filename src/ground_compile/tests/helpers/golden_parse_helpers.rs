@@ -1,7 +1,7 @@
 use ground_compile::ast::{
-    AstComment, AstItem, AstDef, AstDefO, AstDefI, AstField, AstPack, AstPrimitive, AstRef,
+    AstComment, AstDef, AstDefI, AstDefO, AstField, AstItem, AstPack, AstPrimitive, AstRef,
     AstRefSegVal, AstScope, AstScopeId, AstStructField, AstStructFieldBody, AstStructFieldKind,
-    AstStructItem, AstTypeExpr, AstValue, ScopeKind, ParseReq, ParseUnit, AstUse,
+    AstStructItem, AstTypeExpr, AstUse, AstValue, ParseReq, ParseUnit, ScopeKind,
 };
 use ground_compile::parse::parse;
 
@@ -10,16 +10,23 @@ use ground_compile::parse::parse;
 #[allow(dead_code)]
 pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
     let req = ParseReq {
-        units: units.into_iter().map(|(name, path, src)| ParseUnit {
-            name:   name.into(),
-            path:   path.into_iter().map(|s| s.to_string()).collect(),
-            src:    src.to_string(),
-            ts_src: None,
-        }).collect(),
+        units: units
+            .into_iter()
+            .map(|(name, path, src)| ParseUnit {
+                name: name.into(),
+                path: path.into_iter().map(|s| s.to_string()).collect(),
+                src: src.to_string(),
+                ts_src: None,
+            })
+            .collect(),
     };
     let res = parse(req);
 
-    let mut lines: Vec<String> = res.scopes.iter().enumerate().skip(1)
+    let mut lines: Vec<String> = res
+        .scopes
+        .iter()
+        .enumerate()
+        .skip(1)
         .filter(|(_, s)| s.parent == Some(AstScopeId(0)))
         .map(|(i, _)| show_scope(&res.scopes, AstScopeId(i as u32)))
         .collect();
@@ -32,37 +39,46 @@ pub fn show_multi(units: Vec<(&str, Vec<&str>, &str)>) -> String {
 }
 
 pub fn show_ref(r: &AstRef) -> String {
-    r.segments.iter().map(|s| {
-        let inner = match &s.inner.value {
-            AstRefSegVal::Plain(v)         => v.clone(),
-            AstRefSegVal::Group(g, trail)  => format!(
-                "{{{}}}{}",
-                show_ref(g),
-                trail.as_deref().unwrap_or(""),
-            ),
-        };
-        if s.inner.is_opt { format!("{}?", inner) } else { inner }
-    }).collect::<Vec<_>>().join(":")
+    r.segments
+        .iter()
+        .map(|s| {
+            let inner = match &s.inner.value {
+                AstRefSegVal::Plain(v) => v.clone(),
+                AstRefSegVal::Group(g, trail) => {
+                    format!("{{{}}}{}", show_ref(g), trail.as_deref().unwrap_or(""),)
+                }
+            };
+            if s.inner.is_opt {
+                format!("{}?", inner)
+            } else {
+                inner
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 pub fn show_primitive(p: &AstPrimitive) -> &'static str {
     match p {
-        AstPrimitive::String    => "string",
-        AstPrimitive::Integer   => "integer",
-        AstPrimitive::Boolean   => "boolean",
+        AstPrimitive::String => "string",
+        AstPrimitive::Integer => "integer",
+        AstPrimitive::Boolean => "boolean",
         AstPrimitive::Reference => "reference",
-        AstPrimitive::Ipv4      => "ipv4",
-        AstPrimitive::Ipv4Net   => "ipv4net",
+        AstPrimitive::Ipv4 => "ipv4",
+        AstPrimitive::Ipv4Net => "ipv4net",
     }
 }
 
 pub fn show_type_expr(body: &AstTypeExpr) -> String {
     match body {
-        AstTypeExpr::Unit         => "unit".to_string(),
+        AstTypeExpr::Unit => "unit".to_string(),
         AstTypeExpr::Primitive(p) => format!("Primitive({})", show_primitive(p)),
-        AstTypeExpr::Ref(r)       => format!("Ref({})", show_ref(r)),
-        AstTypeExpr::Enum(items)  => {
-            let parts: Vec<_> = items.iter().map(|i| format!("Ref({})", show_ref(&i.inner))).collect();
+        AstTypeExpr::Ref(r) => format!("Ref({})", show_ref(r)),
+        AstTypeExpr::Enum(items) => {
+            let parts: Vec<_> = items
+                .iter()
+                .map(|i| format!("Ref({})", show_ref(&i.inner)))
+                .collect();
             format!("Enum[{}]", parts.join(" | "))
         }
         AstTypeExpr::Struct(items) => {
@@ -115,13 +131,15 @@ pub fn show_top_def_output(output: &AstDefO) -> String {
 
 pub fn show_top_def(td: &AstDef) -> String {
     let name = td.name.inner.clone();
-    let mapper = td.mapper.as_ref().map(|m| show_ref(&m.inner)).unwrap_or_else(|| "_".to_string());
+    let mapper = td
+        .mapper
+        .as_ref()
+        .map(|m| show_ref(&m.inner))
+        .unwrap_or_else(|| "_".to_string());
     let input = if td.input.is_empty() {
         "unit".to_string()
     } else {
-        let input_parts: Vec<_> = td.input.iter()
-            .map(|f| show_field_def(&f.inner))
-            .collect();
+        let input_parts: Vec<_> = td.input.iter().map(|f| show_field_def(&f.inner)).collect();
         format!("Input[{}]", input_parts.join(", "))
     };
     let output = show_top_def_output(&td.output.inner);
@@ -145,18 +163,18 @@ pub fn show_pack(p: &AstPack) -> String {
 
 pub fn show_struct_item(item: &AstStructItem) -> String {
     match item {
-        AstStructItem::Field(fd)    => show_struct_field(&fd.inner),
-        AstStructItem::Anon(v)      => format!("Anon[{}]", show_value(&v.inner)),
-        AstStructItem::Def(td)      => show_top_def(&td.inner),
-        AstStructItem::Comment(c)   => show_comment(&c.inner),
+        AstStructItem::Field(fd) => show_struct_field(&fd.inner),
+        AstStructItem::Anon(v) => format!("Anon[{}]", show_value(&v.inner)),
+        AstStructItem::Def(td) => show_top_def(&td.inner),
+        AstStructItem::Comment(c) => show_comment(&c.inner),
     }
 }
 
 pub fn show_value(v: &AstValue) -> String {
     match v {
-        AstValue::Str(s)        => format!("Str({:?})", s),
-        AstValue::Ref(r)        => format!("Ref({})", show_ref(r)),
-        AstValue::List(items)   => {
+        AstValue::Str(s) => format!("Str({:?})", s),
+        AstValue::Ref(r) => format!("Ref({})", show_ref(r)),
+        AstValue::List(items) => {
             let parts: Vec<_> = items.iter().map(|i| show_value(&i.inner)).collect();
             format!("List[{}]", parts.join(", "))
         }
@@ -173,9 +191,11 @@ pub fn show_value(v: &AstValue) -> String {
 
 pub fn show_field(f: &AstField) -> String {
     match f {
-        AstField::Named { name, value, .. } => format!("Field[{}, {}]", name.inner, show_value(&value.inner)),
-        AstField::Anon(v)                   => format!("Anon[{}]", show_value(&v.inner)),
-        AstField::Comment(c)                => show_comment(&c.inner),
+        AstField::Named { name, value, .. } => {
+            format!("Field[{}, {}]", name.inner, show_value(&value.inner))
+        }
+        AstField::Anon(v) => format!("Anon[{}]", show_value(&v.inner)),
+        AstField::Comment(c) => show_comment(&c.inner),
     }
 }
 
@@ -185,10 +205,10 @@ pub fn show_use(u: &AstUse) -> String {
 
 pub fn show_def(def: &AstItem) -> String {
     match def {
-        AstItem::Def(td)      => show_top_def(&td.inner),
-        AstItem::Pack(p)      => show_pack(&p.inner),
-        AstItem::Use(u)       => show_use(&u.inner),
-        AstItem::Comment(c)   => show_comment(&c.inner),
+        AstItem::Def(td) => show_top_def(&td.inner),
+        AstItem::Pack(p) => show_pack(&p.inner),
+        AstItem::Use(u) => show_use(&u.inner),
+        AstItem::Comment(c) => show_comment(&c.inner),
     }
 }
 
@@ -234,11 +254,20 @@ pub fn norm(s: &str) -> String {
 /// at the direct children of the synth root.
 pub fn show(input: &str) -> String {
     let req = ParseReq {
-        units: vec![ParseUnit { name: "test".into(), path: vec![], src: input.to_string(), ts_src: None }],
+        units: vec![ParseUnit {
+            name: "test".into(),
+            path: vec![],
+            src: input.to_string(),
+            ts_src: None,
+        }],
     };
     let res = parse(req);
 
-    let mut lines: Vec<String> = res.scopes.iter().enumerate().skip(1)
+    let mut lines: Vec<String> = res
+        .scopes
+        .iter()
+        .enumerate()
+        .skip(1)
         .filter(|(_, s)| s.parent == Some(AstScopeId(0)))
         .map(|(i, _)| show_scope(&res.scopes, AstScopeId(i as u32)))
         .collect();

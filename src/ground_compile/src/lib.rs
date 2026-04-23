@@ -1,12 +1,13 @@
+pub mod asm;
 pub mod ast;
+pub mod fmt;
 pub mod ir;
 pub mod parse;
 pub mod resolve;
-pub mod asm;
-pub mod fmt;
 mod ts_gen;
 
-pub use asm::{AsmDef, AsmField, AsmValue, AsmVariant, AsmDefRef, asm_value_to_json};
+pub use asm::{asm_value_to_json, AsmDef, AsmDefRef, AsmField, AsmValue, AsmVariant};
+pub use ast::UnitId;
 pub use fmt::format_source;
 
 // ---------------------------------------------------------------------------
@@ -18,9 +19,9 @@ pub struct CompileReq {
 }
 
 pub struct Unit {
-    pub name:   String,
-    pub path:   Vec<String>,
-    pub src:    String,
+    pub name: String,
+    pub path: Vec<String>,
+    pub src: String,
     /// Optional TypeScript source co-located with this unit.
     /// Mapper functions defined in `src` are implemented here.
     pub ts_src: Option<String>,
@@ -32,30 +33,34 @@ pub struct Unit {
 
 pub struct CompileError {
     pub message: String,
-    pub loc:     Option<ErrorLoc>,
+    pub loc: Option<ErrorLoc>,
 }
 
 pub struct ErrorLoc {
-    pub unit: u32,
+    pub unit: UnitId,
     pub line: u32,
-    pub col:  u32,
+    pub col: u32,
+    /// True if `line`/`col` are inside the unit's `.ts` source; false for `.grd`.
+    pub in_ts: bool,
 }
 
 pub struct CompileRes {
-    pub defs:    Vec<AsmDef>,
+    pub units: Vec<UnitId>,
+    pub defs: Vec<AsmDef>,
     pub type_units: Vec<TypeUnit>,
-    pub errors:  Vec<CompileError>,
+    pub errors: Vec<CompileError>,
 }
 
 pub struct AnalysisRes {
-    pub parse:      ast::ParseRes,
-    pub ir:         ir::IrRes,
+    pub units: Vec<UnitId>,
+    pub parse: ast::ParseRes,
+    pub ir: ir::IrRes,
     pub type_units: Vec<TypeUnit>,
-    pub errors:     Vec<CompileError>,
+    pub errors: Vec<CompileError>,
 }
 
 pub struct TypeUnit {
-    pub file:    String,
+    pub file: String,
     pub content: String,
 }
 
@@ -75,19 +80,30 @@ fn type_unit_file(path: &[String], name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 struct Prepared {
-    parse_res:  ast::ParseRes,
-    ir:         ir::IrRes,
+    unit_ids: Vec<UnitId>,
+    parse_res: ast::ParseRes,
+    ir: ir::IrRes,
     type_units: Vec<TypeUnit>,
-    errors:     Vec<CompileError>,
-    full_ts:    String,
+    errors: Vec<CompileError>,
+    full_ts: String,
 }
 
 fn prepare(req: CompileReq) -> Prepared {
-    let units: Vec<ast::ParseUnit> = req.units.into_iter().map(|u| ast::ParseUnit {
-        name: u.name, path: u.path, src: u.src, ts_src: u.ts_src,
-    }).collect();
+    let units: Vec<ast::ParseUnit> = req
+        .units
+        .into_iter()
+        .map(|u| ast::ParseUnit {
+            name: u.name,
+            path: u.path,
+            src: u.src,
+            ts_src: u.ts_src,
+        })
+        .collect();
 
-    let type_unit_files: Vec<String> = units.iter()
+    let unit_ids: Vec<UnitId> = (0..units.len()).map(|i| UnitId(i as u32)).collect();
+
+    let type_unit_files: Vec<String> = units
+        .iter()
         .map(|u| type_unit_file(&u.path, &u.name))
         .collect();
 
@@ -96,38 +112,69 @@ fn prepare(req: CompileReq) -> Prepared {
 
     let parse_req = ast::ParseReq { units };
 
-    let user_ts: String = parse_req.units.iter()
-        .filter_map(|u| u.ts_src.as_deref())
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    // Build user_ts by concatenating each unit's ts_src with "\n\n" separators,
+    // tracking the 1-based line number where each unit's content starts in the blob
+    // so TS diagnostics can be mapped back to per-unit (UnitId, line, col).
+    let mut ts_parts: Vec<&str> = Vec::new();
+    let mut ts_unit_starts: Vec<(UnitId, u32)> = Vec::new();
+    let mut cur_line: u32 = 1;
+    for (idx, u) in parse_req.units.iter().enumerate() {
+        if let Some(ts) = u.ts_src.as_deref() {
+            if !ts_parts.is_empty() {
+                cur_line += 2; // "\n\n" separator
+            }
+            ts_unit_starts.push((UnitId(idx as u32), cur_line));
+            cur_line += ts.bytes().filter(|&b| b == b'\n').count() as u32;
+            ts_parts.push(ts);
+        }
+    }
+    let user_ts: String = ts_parts.join("\n\n");
 
     let parse_res = parse::parse(parse_req);
-    let ir        = resolve::resolve(parse_res.clone());
+    let ir = resolve::resolve(parse_res.clone());
 
-    let errors: Vec<CompileError> = ir.errors.iter()
+    let errors: Vec<CompileError> = ir
+        .errors
+        .iter()
         .map(|e| {
-            let loc = srcs.get(e.loc.unit as usize).map(|src| {
+            let loc = srcs.get(e.loc.unit.as_usize()).map(|src| {
                 let (line, col) = offset_to_line_col(src, e.loc.start);
-                ErrorLoc { unit: e.loc.unit, line, col }
+                ErrorLoc {
+                    unit: e.loc.unit,
+                    line,
+                    col,
+                    in_ts: false,
+                }
             });
-            CompileError { message: e.message.clone(), loc }
+            CompileError {
+                message: e.message.clone(),
+                loc,
+            }
         })
         .collect();
 
     // Don't lower if the IR has errors — it may be in an invalid state.
     if !errors.is_empty() {
-        return Prepared { parse_res, ir, type_units: vec![], errors, full_ts: String::new() };
+        return Prepared {
+            unit_ids,
+            parse_res,
+            ir,
+            type_units: vec![],
+            errors,
+            full_ts: String::new(),
+        };
     }
 
     // Generate TypeScript interface declarations and type-compatibility assertions.
-    let generated_dts    = ts_gen::gen_mapper_interfaces(&ir);
-    let type_units = ts_gen::gen_mapper_interfaces_by_unit(&ir).into_iter()
+    let generated_dts = ts_gen::gen_mapper_interfaces(&ir);
+    let type_units = ts_gen::gen_mapper_interfaces_by_unit(&ir)
+        .into_iter()
         .filter_map(|(unit, content)| {
-            let file = type_unit_files.get(unit as usize)?.clone();
+            let file = type_unit_files.get(unit.as_usize())?.clone();
             Some(TypeUnit { file, content })
         })
         .collect();
-    let tc_assertions    = ts_gen::gen_typecheck_assertions(&ir, &user_ts);
+    let tc_assertions = ts_gen::gen_typecheck_assertions(&ir, &user_ts);
 
     // Append assertions to user_ts so TypeScript verifies each mapper implementation
     // is assignable to its declared I/O signature, even without explicit annotations.
@@ -140,21 +187,36 @@ fn prepare(req: CompileReq) -> Prepared {
     if !user_ts.is_empty() {
         match ground_ts::typecheck::typecheck(&generated_dts, &user_ts_for_check) {
             Ok(diags) => {
-                let ts_errors: Vec<CompileError> = diags.iter()
+                let ts_errors: Vec<CompileError> = diags
+                    .iter()
                     .filter(|d| d.category == 1) // 1 = error
-                    .map(|d| CompileError { message: d.message.clone(), loc: None })
+                    .map(|d| CompileError {
+                        message: d.message.clone(),
+                        loc: ts_diag_to_loc(d, &ts_unit_starts),
+                    })
                     .collect();
                 if !ts_errors.is_empty() {
-                    return Prepared { parse_res, ir, type_units: vec![], errors: ts_errors, full_ts: String::new() };
+                    return Prepared {
+                        unit_ids,
+                        parse_res,
+                        ir,
+                        type_units: vec![],
+                        errors: ts_errors,
+                        full_ts: String::new(),
+                    };
                 }
             }
             Err(e) => {
                 let msg = format!("TypeScript type-check engine error: {e}");
                 return Prepared {
+                    unit_ids,
                     parse_res,
                     ir,
                     type_units: vec![],
-                    errors: vec![CompileError { message: msg, loc: None }],
+                    errors: vec![CompileError {
+                        message: msg,
+                        loc: None,
+                    }],
                     full_ts: String::new(),
                 };
             }
@@ -167,12 +229,20 @@ fn prepare(req: CompileReq) -> Prepared {
         format!("{}\n\n{}", generated_dts, user_ts)
     };
 
-    Prepared { parse_res, ir, type_units, errors, full_ts }
+    Prepared {
+        unit_ids,
+        parse_res,
+        ir,
+        type_units,
+        errors,
+        full_ts,
+    }
 }
 
 pub fn analyze(req: CompileReq) -> AnalysisRes {
     let prepared = prepare(req);
     AnalysisRes {
+        units: prepared.unit_ids,
         parse: prepared.parse_res,
         ir: prepared.ir,
         type_units: prepared.type_units,
@@ -184,11 +254,21 @@ pub fn compile(req: CompileReq) -> CompileRes {
     let prepared = prepare(req);
 
     if !prepared.errors.is_empty() {
-        return CompileRes { defs: vec![], type_units: prepared.type_units, errors: prepared.errors };
+        return CompileRes {
+            units: prepared.unit_ids,
+            defs: vec![],
+            type_units: prepared.type_units,
+            errors: prepared.errors,
+        };
     }
 
     let ctx = asm::lower(&prepared.ir, &prepared.full_ts);
-    CompileRes { defs: ctx.defs, type_units: prepared.type_units, errors: prepared.errors }
+    CompileRes {
+        units: prepared.unit_ids,
+        defs: ctx.defs,
+        type_units: prepared.type_units,
+        errors: prepared.errors,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +278,36 @@ pub fn compile(req: CompileReq) -> CompileRes {
 fn offset_to_line_col(src: &str, offset: u32) -> (u32, u32) {
     let offset = (offset as usize).min(src.len());
     let before = &src[..offset];
-    let line   = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
-    let col    = before.rfind('\n').map_or(offset, |p| offset - p - 1) as u32 + 1;
+    let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
+    let col = before.rfind('\n').map_or(offset, |p| offset - p - 1) as u32 + 1;
     (line, col)
+}
+
+/// Map a TypeScript diagnostic back to a per-unit (UnitId, line, col) using
+/// the per-unit start-line table built when assembling `user_ts`.
+///
+/// Only `user.ts` diagnostics can be mapped. `decls.gen.d.ts` errors or
+/// diagnostics without line info return `None` — they'll surface as
+/// workspace-level messages without a squiggle.
+fn ts_diag_to_loc(
+    d: &ground_ts::typecheck::TsDiagnostic,
+    ts_unit_starts: &[(UnitId, u32)],
+) -> Option<ErrorLoc> {
+    if d.file.as_deref() != Some("user.ts") {
+        return None;
+    }
+    let line = d.line?;
+    let col = d.col.unwrap_or(1);
+    // Find the last unit whose start_line <= line.
+    let (unit, start_line) = ts_unit_starts
+        .iter()
+        .rev()
+        .copied()
+        .find(|(_, start)| *start <= line)?;
+    Some(ErrorLoc {
+        unit,
+        line: line - start_line + 1,
+        col,
+        in_ts: true,
+    })
 }

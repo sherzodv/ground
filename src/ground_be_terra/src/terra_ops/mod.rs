@@ -8,39 +8,44 @@ use std::thread;
 
 use serde_json::Value;
 
-use ground_run::{RunEvent, RunError};
 pub use ground_run::ExitStatus;
+use ground_run::{RunError, RunEvent};
 
 use parser::{Mode, TfEvent, TfParser};
 
 // -- public types ------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action { Create, Update, Replace, Delete }
+pub enum Action {
+    Create,
+    Update,
+    Replace,
+    Delete,
+}
 
 /// One attribute value as it appears in a plan diff.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttrVal {
-    Scalar(String),                  // concrete value (pre-formatted)
-    Unknown,                         // (known after apply)
-    Sensitive,                       // (sensitive value)
-    Null,                            // null / absent
-    Block(Vec<(String, AttrVal)>),   // nested object/block (sorted keys)
-    List(Vec<AttrVal>),              // list / set / tuple
+    Scalar(String),                // concrete value (pre-formatted)
+    Unknown,                       // (known after apply)
+    Sensitive,                     // (sensitive value)
+    Null,                          // null / absent
+    Block(Vec<(String, AttrVal)>), // nested object/block (sorted keys)
+    List(Vec<AttrVal>),            // list / set / tuple
 }
 
 /// How a single attribute changes across a plan action.
 pub struct AttrChange {
-    pub key:    String,
+    pub key: String,
     pub before: Option<AttrVal>,
-    pub after:  Option<AttrVal>,
+    pub after: Option<AttrVal>,
 }
 
 pub struct ResourceChange {
-    pub action:        Action,
+    pub action: Action,
     pub resource_type: String,
     pub resource_name: String,
-    pub attrs:         Vec<AttrChange>,
+    pub attrs: Vec<AttrChange>,
 }
 
 pub struct PlanSummary {
@@ -48,29 +53,75 @@ pub struct PlanSummary {
 }
 
 impl PlanSummary {
-    pub fn creates(&self)  -> usize { self.changes.iter().filter(|c| matches!(c.action, Action::Create)).count() }
-    pub fn updates(&self)  -> usize { self.changes.iter().filter(|c| matches!(c.action, Action::Update | Action::Replace)).count() }
-    pub fn destroys(&self) -> usize { self.changes.iter().filter(|c| matches!(c.action, Action::Delete)).count() }
+    pub fn creates(&self) -> usize {
+        self.changes
+            .iter()
+            .filter(|c| matches!(c.action, Action::Create))
+            .count()
+    }
+    pub fn updates(&self) -> usize {
+        self.changes
+            .iter()
+            .filter(|c| matches!(c.action, Action::Update | Action::Replace))
+            .count()
+    }
+    pub fn destroys(&self) -> usize {
+        self.changes
+            .iter()
+            .filter(|c| matches!(c.action, Action::Delete))
+            .count()
+    }
 }
 
 pub enum OpsEvent {
-    ProviderReady    { name: String, version: String },
+    ProviderReady {
+        name: String,
+        version: String,
+    },
     InitDone,
 
-    TerraformReady   { version: String },
-    Refreshing       { address: String },
-    RefreshDone      { address: String },
+    TerraformReady {
+        version: String,
+    },
+    Refreshing {
+        address: String,
+    },
+    RefreshDone {
+        address: String,
+    },
     Computing,
     ReadingPlan,
-    ResourceQueued   { address: String, action: Action },
-    ResourceApplying { address: String, action: Action },
-    ResourceDone     { address: String, action: Action, elapsed_secs: u32 },
-    ResourceFailed   { address: String, reason: String },
-    PlanReady        { summary: PlanSummary },
+    ResourceQueued {
+        address: String,
+        action: Action,
+    },
+    ResourceApplying {
+        address: String,
+        action: Action,
+    },
+    ResourceDone {
+        address: String,
+        action: Action,
+        elapsed_secs: u32,
+    },
+    ResourceFailed {
+        address: String,
+        reason: String,
+    },
+    PlanReady {
+        summary: PlanSummary,
+    },
     ApplyDone,
 
-    DriftDetected    { address: String, action: Action },
-    Warning          { message: String, detail: Option<String>, address: Option<String> },
+    DriftDetected {
+        address: String,
+        action: Action,
+    },
+    Warning {
+        message: String,
+        detail: Option<String>,
+        address: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -82,14 +133,16 @@ pub enum OpsError {
 impl std::fmt::Display for OpsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OpsError::Run(e)   => write!(f, "{e}"),
+            OpsError::Run(e) => write!(f, "{e}"),
             OpsError::Other(s) => write!(f, "{s}"),
         }
     }
 }
 
 impl From<RunError> for OpsError {
-    fn from(e: RunError) -> Self { OpsError::Run(e) }
+    fn from(e: RunError) -> Self {
+        OpsError::Run(e)
+    }
 }
 
 // -- public API --------------------------------------------------------------
@@ -106,9 +159,7 @@ pub fn init_if_needed(dir: &Path) -> Result<Option<Receiver<RunEvent<OpsEvent>>>
 
     match mode {
         InitMode::Init => run_init(dir, false).map(Some),
-        InitMode::MigrateState => Err(OpsError::Other(
-            "state migration required".into()
-        )),
+        InitMode::MigrateState => Err(OpsError::Other("state migration required".into())),
     }
 }
 
@@ -120,7 +171,7 @@ pub fn migrate_state(dir: &Path) -> Result<Option<Receiver<RunEvent<OpsEvent>>>,
     match mode {
         InitMode::MigrateState => run_init(dir, true).map(Some),
         InitMode::Init => Err(OpsError::Other(
-            "state migration is not available for this plan yet".into()
+            "state migration is not available for this plan yet".into(),
         )),
     }
 }
@@ -133,10 +184,7 @@ fn run_init(dir: &Path, migrate_state: bool) -> Result<Receiver<RunEvent<OpsEven
         cmd.arg("-migrate-state").arg("-force-copy");
     }
     cmd.arg("-input=false");
-    let raw = ground_run::spawn(
-        &mut cmd,
-        TfParser { mode: Mode::Init },
-    )?;
+    let raw = ground_run::spawn(&mut cmd, TfParser { mode: Mode::Init })?;
 
     let dir = dir.to_path_buf();
     let (tx, rx) = mpsc::channel();
@@ -147,12 +195,20 @@ fn run_init(dir: &Path, migrate_state: bool) -> Result<Receiver<RunEvent<OpsEven
                 RunEvent::Raw(s) => Some(RunEvent::Raw(s)),
                 RunEvent::Stderr(s) => Some(RunEvent::Stderr(s)),
                 RunEvent::Line(ev) => match ev {
-                    TfEvent::InitProviderDownload { name, version } =>
-                        Some(RunEvent::Line(OpsEvent::ProviderReady { name, version })),
-                    TfEvent::InitComplete =>
-                        Some(RunEvent::Line(OpsEvent::InitDone)),
-                    TfEvent::Diagnostic { severity, summary, detail, address } if severity == "error" =>
-                        Some(RunEvent::Line(OpsEvent::Warning { message: summary, detail, address })),
+                    TfEvent::InitProviderDownload { name, version } => {
+                        Some(RunEvent::Line(OpsEvent::ProviderReady { name, version }))
+                    }
+                    TfEvent::InitComplete => Some(RunEvent::Line(OpsEvent::InitDone)),
+                    TfEvent::Diagnostic {
+                        severity,
+                        summary,
+                        detail,
+                        address,
+                    } if severity == "error" => Some(RunEvent::Line(OpsEvent::Warning {
+                        message: summary,
+                        detail,
+                        address,
+                    })),
                     _ => None,
                 },
                 RunEvent::Exited(status) => {
@@ -163,7 +219,9 @@ fn run_init(dir: &Path, migrate_state: bool) -> Result<Receiver<RunEvent<OpsEven
                 }
             };
             if let Some(e) = out {
-                if tx.send(e).is_err() { break; }
+                if tx.send(e).is_err() {
+                    break;
+                }
             }
         }
     });
@@ -174,9 +232,10 @@ fn run_init(dir: &Path, migrate_state: bool) -> Result<Receiver<RunEvent<OpsEven
 pub fn plan(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
     let chdir = format!("-chdir={}", dir.to_str().unwrap_or("."));
     let raw = ground_run::spawn(
-        Command::new("terraform")
-            .args([&chdir, "plan", "-json", "-input=false", "-out=.tfplan"]),
-        TfParser { mode: Mode::PlanApply },
+        Command::new("terraform").args([&chdir, "plan", "-json", "-input=false", "-out=.tfplan"]),
+        TfParser {
+            mode: Mode::PlanApply,
+        },
     )?;
 
     let dir = dir.to_path_buf();
@@ -185,10 +244,16 @@ pub fn plan(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
     thread::spawn(move || {
         for event in raw {
             match event {
-                RunEvent::Spawned     => { let _ = tx.send(RunEvent::Spawned); }
-                RunEvent::Raw(s)      => { let _ = tx.send(RunEvent::Raw(s)); }
-                RunEvent::Stderr(s)   => { let _ = tx.send(RunEvent::Stderr(s)); }
-                RunEvent::Line(ev)    => {
+                RunEvent::Spawned => {
+                    let _ = tx.send(RunEvent::Spawned);
+                }
+                RunEvent::Raw(s) => {
+                    let _ = tx.send(RunEvent::Raw(s));
+                }
+                RunEvent::Stderr(s) => {
+                    let _ = tx.send(RunEvent::Stderr(s));
+                }
+                RunEvent::Line(ev) => {
                     if let Some(ops) = tf_to_ops(ev) {
                         let _ = tx.send(RunEvent::Line(ops));
                     }
@@ -197,8 +262,16 @@ pub fn plan(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
                     if status.success {
                         let _ = tx.send(RunEvent::Line(OpsEvent::ReadingPlan));
                         match show_json(&dir) {
-                            Ok(summary) => { let _ = tx.send(RunEvent::Line(OpsEvent::PlanReady { summary })); }
-                            Err(e)      => { let _ = tx.send(RunEvent::Line(OpsEvent::Warning { message: e, detail: None, address: None })); }
+                            Ok(summary) => {
+                                let _ = tx.send(RunEvent::Line(OpsEvent::PlanReady { summary }));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(RunEvent::Line(OpsEvent::Warning {
+                                    message: e,
+                                    detail: None,
+                                    address: None,
+                                }));
+                            }
                         }
                         let _ = std::fs::remove_file(dir.join(".tfplan"));
                     }
@@ -214,18 +287,25 @@ pub fn plan(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
 pub fn apply(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
     let chdir = format!("-chdir={}", dir.to_str().unwrap_or("."));
     let raw = ground_run::spawn(
-        Command::new("terraform")
-            .args([&chdir, "apply", "-json", "-input=false", "-auto-approve"]),
-        TfParser { mode: Mode::PlanApply },
+        Command::new("terraform").args([&chdir, "apply", "-json", "-input=false", "-auto-approve"]),
+        TfParser {
+            mode: Mode::PlanApply,
+        },
     )?;
 
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         for event in raw {
             match event {
-                RunEvent::Spawned => { let _ = tx.send(RunEvent::Spawned); }
-                RunEvent::Raw(s) => { let _ = tx.send(RunEvent::Raw(s)); }
-                RunEvent::Stderr(s) => { let _ = tx.send(RunEvent::Stderr(s)); }
+                RunEvent::Spawned => {
+                    let _ = tx.send(RunEvent::Spawned);
+                }
+                RunEvent::Raw(s) => {
+                    let _ = tx.send(RunEvent::Raw(s));
+                }
+                RunEvent::Stderr(s) => {
+                    let _ = tx.send(RunEvent::Stderr(s));
+                }
                 RunEvent::Line(ev) => {
                     if let Some(ops) = tf_to_ops(ev) {
                         let _ = tx.send(RunEvent::Line(ops));
@@ -248,26 +328,42 @@ pub fn apply(dir: &Path) -> Result<Receiver<RunEvent<OpsEvent>>, OpsError> {
 
 fn tf_to_ops(ev: TfEvent) -> Option<OpsEvent> {
     match ev {
-        TfEvent::TerraformVersion { version } =>
-            Some(OpsEvent::TerraformReady { version }),
-        TfEvent::RefreshStart { address } =>
-            Some(OpsEvent::Refreshing { address }),
-        TfEvent::RefreshComplete { address } =>
-            Some(OpsEvent::RefreshDone { address }),
-        TfEvent::PlannedChangesStart =>
-            Some(OpsEvent::Computing),
-        TfEvent::ResourcePlanned { address, action } =>
-            Some(OpsEvent::ResourceQueued { address, action }),
-        TfEvent::ResourceApplying { address, action } =>
-            Some(OpsEvent::ResourceApplying { address, action }),
-        TfEvent::ResourceDone { address, action, elapsed_secs } =>
-            Some(OpsEvent::ResourceDone { address, action, elapsed_secs }),
-        TfEvent::ResourceErrored { address, message } =>
-            Some(OpsEvent::ResourceFailed { address, reason: message }),
-        TfEvent::ResourceDrift { address, action } =>
-            Some(OpsEvent::DriftDetected { address, action }),
-        TfEvent::Diagnostic { summary, detail, address, .. } =>
-            Some(OpsEvent::Warning { message: summary, detail, address }),
+        TfEvent::TerraformVersion { version } => Some(OpsEvent::TerraformReady { version }),
+        TfEvent::RefreshStart { address } => Some(OpsEvent::Refreshing { address }),
+        TfEvent::RefreshComplete { address } => Some(OpsEvent::RefreshDone { address }),
+        TfEvent::PlannedChangesStart => Some(OpsEvent::Computing),
+        TfEvent::ResourcePlanned { address, action } => {
+            Some(OpsEvent::ResourceQueued { address, action })
+        }
+        TfEvent::ResourceApplying { address, action } => {
+            Some(OpsEvent::ResourceApplying { address, action })
+        }
+        TfEvent::ResourceDone {
+            address,
+            action,
+            elapsed_secs,
+        } => Some(OpsEvent::ResourceDone {
+            address,
+            action,
+            elapsed_secs,
+        }),
+        TfEvent::ResourceErrored { address, message } => Some(OpsEvent::ResourceFailed {
+            address,
+            reason: message,
+        }),
+        TfEvent::ResourceDrift { address, action } => {
+            Some(OpsEvent::DriftDetected { address, action })
+        }
+        TfEvent::Diagnostic {
+            summary,
+            detail,
+            address,
+            ..
+        } => Some(OpsEvent::Warning {
+            message: summary,
+            detail,
+            address,
+        }),
         _ => None,
     }
 }
@@ -307,8 +403,8 @@ fn write_init_stamp(dir: &Path) -> Result<(), String> {
     let Some(current) = load_terraform_block(dir) else {
         return Err("missing terraform config for init stamp".into());
     };
-    let current = serde_json::to_string(&current)
-        .map_err(|e| format!("failed to encode init stamp: {e}"))?;
+    let current =
+        serde_json::to_string(&current).map_err(|e| format!("failed to encode init stamp: {e}"))?;
     fs::write(dir.join(INIT_STAMP_FILE), current)
         .map_err(|e| format!("failed to write init stamp: {e}"))
 }
@@ -324,22 +420,25 @@ fn has_backend(terraform: &Value) -> bool {
 }
 
 fn should_migrate_state(dir: &Path, previous: &Value, current: &Value) -> bool {
-    has_backend(current)
-        && !has_backend(previous)
-        && dir.join("terraform.tfstate").is_file()
+    has_backend(current) && !has_backend(previous) && dir.join("terraform.tfstate").is_file()
 }
 
 /// Converts a JSON value into an `AttrVal`, resolving unknowns and sensitives.
 fn parse_attr_val(val: &Value, unknown: &Value, sensitive: &Value) -> AttrVal {
-    if unknown.as_bool() == Some(true)   { return AttrVal::Unknown; }
-    if sensitive.as_bool() == Some(true) { return AttrVal::Sensitive; }
+    if unknown.as_bool() == Some(true) {
+        return AttrVal::Unknown;
+    }
+    if sensitive.as_bool() == Some(true) {
+        return AttrVal::Sensitive;
+    }
     match val {
-        Value::Null      => AttrVal::Null,
+        Value::Null => AttrVal::Null,
         Value::String(s) => AttrVal::Scalar(format!("\"{s}\"")),
         Value::Number(n) => AttrVal::Scalar(n.to_string()),
-        Value::Bool(b)   => AttrVal::Scalar(b.to_string()),
+        Value::Bool(b) => AttrVal::Scalar(b.to_string()),
         Value::Object(m) => {
-            let mut pairs: Vec<(String, AttrVal)> = m.iter()
+            let mut pairs: Vec<(String, AttrVal)> = m
+                .iter()
                 .map(|(k, v)| {
                     let uk = unknown.get(k).unwrap_or(&Value::Null);
                     let sk = sensitive.get(k).unwrap_or(&Value::Null);
@@ -350,11 +449,23 @@ fn parse_attr_val(val: &Value, unknown: &Value, sensitive: &Value) -> AttrVal {
             AttrVal::Block(pairs)
         }
         Value::Array(arr) => {
-            let items = arr.iter().enumerate().map(|(i, v)| {
-                let uk = if let Value::Array(ua) = unknown   { ua.get(i).unwrap_or(&Value::Null) } else { &Value::Null };
-                let sk = if let Value::Array(sa) = sensitive { sa.get(i).unwrap_or(&Value::Null) } else { &Value::Null };
-                parse_attr_val(v, uk, sk)
-            }).collect();
+            let items = arr
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let uk = if let Value::Array(ua) = unknown {
+                        ua.get(i).unwrap_or(&Value::Null)
+                    } else {
+                        &Value::Null
+                    };
+                    let sk = if let Value::Array(sa) = sensitive {
+                        sa.get(i).unwrap_or(&Value::Null)
+                    } else {
+                        &Value::Null
+                    };
+                    parse_attr_val(v, uk, sk)
+                })
+                .collect();
             AttrVal::List(items)
         }
     }
@@ -362,26 +473,34 @@ fn parse_attr_val(val: &Value, unknown: &Value, sensitive: &Value) -> AttrVal {
 
 /// Builds a sorted list of `AttrChange`s from a single `resource_changes[].change` object.
 fn build_attrs(change: &Value) -> Vec<AttrChange> {
-    let before   = &change["before"];
-    let after    = &change["after"];
-    let unknown  = &change["after_unknown"];
+    let before = &change["before"];
+    let after = &change["after"];
+    let unknown = &change["after_unknown"];
     let before_s = &change["before_sensitive"];
-    let after_s  = &change["after_sensitive"];
+    let after_s = &change["after_sensitive"];
 
     let mut keys = std::collections::BTreeSet::new();
-    if let Some(m) = before.as_object() { keys.extend(m.keys().cloned()); }
-    if let Some(m) = after.as_object()  { keys.extend(m.keys().cloned()); }
+    if let Some(m) = before.as_object() {
+        keys.extend(m.keys().cloned());
+    }
+    if let Some(m) = after.as_object() {
+        keys.extend(m.keys().cloned());
+    }
 
-    keys.into_iter().map(|key| {
-        let bsk = before_s.get(&key).unwrap_or(&Value::Null);
-        let ask = after_s.get(&key).unwrap_or(&Value::Null);
-        let auk = unknown.get(&key).unwrap_or(&Value::Null);
-        AttrChange {
-            before: before.get(&key).map(|v| parse_attr_val(v, &Value::Null, bsk)),
-            after:  after.get(&key).map(|v| parse_attr_val(v, auk, ask)),
-            key,
-        }
-    }).collect()
+    keys.into_iter()
+        .map(|key| {
+            let bsk = before_s.get(&key).unwrap_or(&Value::Null);
+            let ask = after_s.get(&key).unwrap_or(&Value::Null);
+            let auk = unknown.get(&key).unwrap_or(&Value::Null);
+            AttrChange {
+                before: before
+                    .get(&key)
+                    .map(|v| parse_attr_val(v, &Value::Null, bsk)),
+                after: after.get(&key).map(|v| parse_attr_val(v, auk, ask)),
+                key,
+            }
+        })
+        .collect()
 }
 
 /// Runs `terraform show -json .tfplan` synchronously and parses a PlanSummary.
@@ -401,25 +520,25 @@ fn show_json(dir: &PathBuf) -> Result<PlanSummary, String> {
 
     let mut changes = Vec::new();
     for rc in json["resource_changes"].as_array().unwrap_or(&vec![]) {
-        let actions: Vec<&str> = rc["change"]["actions"].as_array()
+        let actions: Vec<&str> = rc["change"]["actions"]
+            .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
         let action = match actions.as_slice() {
-            ["no-op"] | ["read"]       => continue,
-            ["create"]                 => Action::Create,
-            ["update"]                 => Action::Update,
-            ["delete"]                 => Action::Delete,
-            ["delete", "create"]
-            | ["create", "delete"]     => Action::Replace,
-            _                          => continue,
+            ["no-op"] | ["read"] => continue,
+            ["create"] => Action::Create,
+            ["update"] => Action::Update,
+            ["delete"] => Action::Delete,
+            ["delete", "create"] | ["create", "delete"] => Action::Replace,
+            _ => continue,
         };
 
         changes.push(ResourceChange {
             action,
             resource_type: rc["type"].as_str().unwrap_or("").to_string(),
             resource_name: rc["name"].as_str().unwrap_or("").to_string(),
-            attrs:         build_attrs(&rc["change"]),
+            attrs: build_attrs(&rc["change"]),
         });
     }
 
@@ -434,24 +553,39 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!("ground-be-terra-{name}-{nonce}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     fn write_main_tf(dir: &PathBuf, backend_key: Option<&str>) {
-        let backend = backend_key.map(|backend_key| format!(r#",
+        let backend = backend_key
+            .map(|backend_key| {
+                format!(
+                    r#",
     "backend": {{
       "s3": {{ "bucket": "b", "key": "{backend_key}", "region": "us-east-1" }}
-    }}"#)).unwrap_or_default();
-        fs::write(dir.join("main.tf.json"), format!(r#"{{
+    }}"#
+                )
+            })
+            .unwrap_or_default();
+        fs::write(
+            dir.join("main.tf.json"),
+            format!(
+                r#"{{
   "terraform": {{
     "required_providers": {{
       "aws": {{ "source": "hashicorp/aws", "version": "~> 5.0" }}
     }}{backend}
   }}
-}}"#)).unwrap();
+}}"#
+            ),
+        )
+        .unwrap();
     }
 
     #[test]

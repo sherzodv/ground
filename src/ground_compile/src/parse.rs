@@ -1,18 +1,21 @@
 /// Recursive-descent parser ground language
-
 use crate::ast::*;
 
-
 struct Parser<'a> {
-    src:    &'a str,
-    pos:    usize,
-    unit:   u32,
+    src: &'a str,
+    pos: usize,
+    unit: UnitId,
     errors: Vec<AstParseError>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(src: &'a str, unit: u32) -> Self {
-        Parser { src, pos: 0, unit, errors: Vec::new() }
+    fn new(src: &'a str, unit: UnitId) -> Self {
+        Parser {
+            src,
+            pos: 0,
+            unit,
+            errors: Vec::new(),
+        }
     }
 
     // -- location helpers ------------------------------------------------
@@ -24,7 +27,11 @@ impl<'a> Parser<'a> {
     fn push_error(&mut self, start: usize, msg: impl Into<String>) {
         self.errors.push(AstParseError {
             message: msg.into(),
-            loc: AstNodeLoc { unit: self.unit, start: start as u32, end: self.pos as u32 },
+            loc: AstNodeLoc {
+                unit: self.unit,
+                start: start as u32,
+                end: self.pos as u32,
+            },
         });
     }
 
@@ -54,8 +61,12 @@ impl<'a> Parser<'a> {
     /// True if we are at `kw` followed by a non-ident character (or end of input).
     fn at_keyword(&self, kw: &str) -> bool {
         let rest = self.rest();
-        if !rest.starts_with(kw) { return false; }
-        rest[kw.len()..].chars().next()
+        if !rest.starts_with(kw) {
+            return false;
+        }
+        rest[kw.len()..]
+            .chars()
+            .next()
             .map_or(true, |c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
     }
 
@@ -103,10 +114,16 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let rest = self.rest();
         let first = rest.chars().next()?;
-        if !first.is_ascii_alphabetic() { return None; }
+        if !first.is_ascii_alphabetic() {
+            return None;
+        }
         let mut len = 1usize;
         for c in rest[1..].chars() {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' { len += 1; } else { break; }
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                len += 1;
+            } else {
+                break;
+            }
         }
         let value = rest[..len].to_string();
         self.advance(len);
@@ -116,7 +133,9 @@ impl<'a> Parser<'a> {
     /// `'"' [^"]* '"'`
     fn parse_string_lit(&mut self) -> Option<AstNode<String>> {
         let start = self.pos;
-        if !self.eat("\"") { return None; }
+        if !self.eat("\"") {
+            return None;
+        }
         let s_start = self.pos;
         while self.pos < self.src.len() && self.src.as_bytes()[self.pos] != b'"' {
             self.pos += 1;
@@ -134,7 +153,9 @@ impl<'a> Parser<'a> {
         let rest = self.rest();
         let is_ref_char = |c: char| c.is_ascii_alphanumeric() || "-_./".contains(c);
         let first = rest.chars().next()?;
-        if !is_ref_char(first) { return None; }
+        if !is_ref_char(first) {
+            return None;
+        }
         let len = rest.chars().take_while(|&c| is_ref_char(c)).count();
         self.advance(len);
         Some(self.src[atom_start..self.pos].to_string())
@@ -142,7 +163,9 @@ impl<'a> Parser<'a> {
 
     /// `"(" ident ")"`
     fn parse_ref_opt_atom(&mut self) -> Option<String> {
-        if !self.rest().starts_with('(') { return None; }
+        if !self.rest().starts_with('(') {
+            return None;
+        }
         let saved = self.pos;
         self.advance(1);
         let id = self.parse_ident();
@@ -156,15 +179,33 @@ impl<'a> Parser<'a> {
     fn parse_ref_seg(&mut self) -> Option<AstNode<AstRefSeg>> {
         let start = self.pos;
         if let Some(v) = self.parse_ref_opt_atom() {
-            return Some(self.node(start, AstRefSeg { value: AstRefSegVal::Plain(v), is_opt: true }));
+            return Some(self.node(
+                start,
+                AstRefSeg {
+                    value: AstRefSegVal::Plain(v),
+                    is_opt: true,
+                },
+            ));
         }
         if let Some(v) = self.parse_ref_atom() {
-            return Some(self.node(start, AstRefSeg { value: AstRefSegVal::Plain(v), is_opt: false }));
+            return Some(self.node(
+                start,
+                AstRefSeg {
+                    value: AstRefSegVal::Plain(v),
+                    is_opt: false,
+                },
+            ));
         }
         // Wildcard segment — only semantically valid as final segment of a `use` path.
         if self.rest().starts_with('*') {
             self.advance(1);
-            return Some(self.node(start, AstRefSeg { value: AstRefSegVal::Plain("*".to_string()), is_opt: false }));
+            return Some(self.node(
+                start,
+                AstRefSeg {
+                    value: AstRefSegVal::Plain("*".to_string()),
+                    is_opt: false,
+                },
+            ));
         }
         None
     }
@@ -177,16 +218,22 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let mut segments = Vec::new();
 
-        if !self.collect_ref_part(&mut segments) { return None; }
+        if !self.collect_ref_part(&mut segments) {
+            return None;
+        }
 
         loop {
             // Adjacent brace group continues this ref without a colon.
             if self.rest().starts_with('{') {
-                if !self.collect_ref_part(&mut segments) { break; }
+                if !self.collect_ref_part(&mut segments) {
+                    break;
+                }
                 continue;
             }
             let saved = self.pos;
-            if !self.eat(":") { break; }
+            if !self.eat(":") {
+                break;
+            }
             if !self.collect_ref_part(&mut segments) {
                 self.pos = saved;
                 break;
@@ -206,11 +253,14 @@ impl<'a> Parser<'a> {
             if let Some(inner) = self.parse_ref() {
                 if self.eat("}") {
                     let seg_start = saved;
-                    let trailing  = self.parse_ref_atom();
-                    out.push(self.node(seg_start, AstRefSeg {
-                        value: AstRefSegVal::Group(inner.inner, trailing),
-                        is_opt: false,
-                    }));
+                    let trailing = self.parse_ref_atom();
+                    out.push(self.node(
+                        seg_start,
+                        AstRefSeg {
+                            value: AstRefSegVal::Group(inner.inner, trailing),
+                            is_opt: false,
+                        },
+                    ));
                     return true;
                 }
             }
@@ -253,7 +303,11 @@ impl<'a> Parser<'a> {
         // Struct body: "{" struct_items "}" — used for anonymous inline struct shapes in fields
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let expr = if items.is_empty() { AstTypeExpr::Unit } else { AstTypeExpr::Struct(items) };
+            let expr = if items.is_empty() {
+                AstTypeExpr::Unit
+            } else {
+                AstTypeExpr::Struct(items)
+            };
             return Some(self.node(start, expr));
         }
 
@@ -306,11 +360,14 @@ impl<'a> Parser<'a> {
             self.advance(1); // consume `=`
             self.skip_ws();
             if let Some(ty) = self.parse_type_expr() {
-                let fd = self.node(eq_pos, AstStructField {
-                    name: None,
-                    kind: AstStructFieldKind::Def,
-                    body: AstStructFieldBody::Type(ty),
-                });
+                let fd = self.node(
+                    eq_pos,
+                    AstStructField {
+                        name: None,
+                        kind: AstStructFieldKind::Def,
+                        body: AstStructFieldBody::Type(ty),
+                    },
+                );
                 return Some(self.node(start, AstStructItem::Field(fd)));
             }
             self.pos = eq_pos;
@@ -324,11 +381,14 @@ impl<'a> Parser<'a> {
             if self.eat("=") {
                 self.skip_ws();
                 if let Some(ty) = self.parse_type_expr() {
-                    let fd = self.node(saved, AstStructField {
-                        name: Some(name),
-                        kind: AstStructFieldKind::Def,
-                        body: AstStructFieldBody::Type(ty),
-                    });
+                    let fd = self.node(
+                        saved,
+                        AstStructField {
+                            name: Some(name),
+                            kind: AstStructFieldKind::Def,
+                            body: AstStructFieldBody::Type(ty),
+                        },
+                    );
                     return Some(self.node(start, AstStructItem::Field(fd)));
                 }
             }
@@ -339,18 +399,23 @@ impl<'a> Parser<'a> {
         let saved = self.pos;
         if let Some(name) = self.parse_ident() {
             if self.eat(":") {
-                let has_ws = self.peek().map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
+                let has_ws = self
+                    .peek()
+                    .map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
                 if !has_ws {
                     self.pos = saved;
                 } else {
                     self.skip_ws();
 
                     if let Some(value) = self.parse_inst_value() {
-                        let fd = self.node(saved, AstStructField {
-                            name: Some(name),
-                            kind: AstStructFieldKind::Set,
-                            body: AstStructFieldBody::Value(value),
-                        });
+                        let fd = self.node(
+                            saved,
+                            AstStructField {
+                                name: Some(name),
+                                kind: AstStructFieldKind::Set,
+                                body: AstStructFieldBody::Value(value),
+                            },
+                        );
                         return Some(self.node(start, AstStructItem::Field(fd)));
                     }
                 }
@@ -367,17 +432,22 @@ impl<'a> Parser<'a> {
 
     /// `"{" type-struct-item* "}"`
     fn parse_struct_body(&mut self) -> Option<Vec<AstNode<AstStructItem>>> {
-        if !self.eat("{") { return None; }
+        if !self.eat("{") {
+            return None;
+        }
         let mut items = Vec::new();
         loop {
             self.skip_ws();
-            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+            if self.rest().starts_with('}') || self.pos >= self.src.len() {
+                break;
+            }
             if let Some(item) = self.parse_struct_item() {
                 items.push(item);
             } else {
-                self.push_error(self.pos, format!(
-                    "unexpected token in struct body: {:?}", self.peek()
-                ));
+                self.push_error(
+                    self.pos,
+                    format!("unexpected token in struct body: {:?}", self.peek()),
+                );
                 self.skip_past_line();
             }
         }
@@ -403,10 +473,12 @@ impl<'a> Parser<'a> {
             let mut values = Vec::new();
             loop {
                 self.skip_ws();
-                if self.rest().starts_with(']') || self.pos >= self.src.len() { break; }
+                if self.rest().starts_with(']') || self.pos >= self.src.len() {
+                    break;
+                }
                 match self.parse_inst_value() {
                     Some(v) => values.push(v),
-                    None    => break,
+                    None => break,
                 }
             }
             self.skip_ws();
@@ -423,18 +495,27 @@ impl<'a> Parser<'a> {
                 let mut fields = Vec::new();
                 loop {
                     self.skip_ws();
-                    if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                    if self.rest().starts_with('}') || self.pos >= self.src.len() {
+                        break;
+                    }
                     if let Some(item) = self.parse_inst_item() {
                         fields.push(item);
                     } else {
-                        self.push_error(self.pos, format!(
-                            "unexpected token in inline struct value: {:?}", self.peek()
-                        ));
+                        self.push_error(
+                            self.pos,
+                            format!("unexpected token in inline struct value: {:?}", self.peek()),
+                        );
                         self.skip_past_line();
                     }
                 }
                 self.eat("}");
-                return Some(self.node(start, AstValue::Struct { type_hint: Some(r), fields }));
+                return Some(self.node(
+                    start,
+                    AstValue::Struct {
+                        type_hint: Some(r),
+                        fields,
+                    },
+                ));
             }
             return Some(self.node(start, AstValue::Ref(r.inner)));
         }
@@ -445,18 +526,27 @@ impl<'a> Parser<'a> {
             let mut fields = Vec::new();
             loop {
                 self.skip_ws();
-                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                if self.rest().starts_with('}') || self.pos >= self.src.len() {
+                    break;
+                }
                 if let Some(item) = self.parse_inst_item() {
                     fields.push(item);
                 } else {
-                    self.push_error(self.pos, format!(
-                        "unexpected token in inline struct value: {:?}", self.peek()
-                    ));
+                    self.push_error(
+                        self.pos,
+                        format!("unexpected token in inline struct value: {:?}", self.peek()),
+                    );
                     self.skip_past_line();
                 }
             }
             self.eat("}");
-            return Some(self.node(start, AstValue::Struct { type_hint: None, fields }));
+            return Some(self.node(
+                start,
+                AstValue::Struct {
+                    type_hint: None,
+                    fields,
+                },
+            ));
         }
 
         None
@@ -477,7 +567,9 @@ impl<'a> Parser<'a> {
         }
 
         // Disambiguation: field requires at least one whitespace after ':'
-        let has_ws = self.peek().map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
+        let has_ws = self
+            .peek()
+            .map_or(false, |c| matches!(c, ' ' | '\t' | '\n' | '\r'));
         if !has_ws {
             self.pos = saved;
             return None;
@@ -487,9 +579,15 @@ impl<'a> Parser<'a> {
         // Detect `via` keyword: the word "via" followed by whitespace.
         let via = {
             let rest = &self.src[self.pos..];
-            let is_via = rest.starts_with("via") && rest[3..].chars().next()
-                .map_or(true, |c| !c.is_alphanumeric() && c != '_' && c != '-');
-            if is_via { self.pos += 3; self.skip_ws(); }
+            let is_via = rest.starts_with("via")
+                && rest[3..]
+                    .chars()
+                    .next()
+                    .map_or(true, |c| !c.is_alphanumeric() && c != '_' && c != '-');
+            if is_via {
+                self.pos += 3;
+                self.skip_ws();
+            }
             is_via
         };
 
@@ -511,7 +609,9 @@ impl<'a> Parser<'a> {
         if let Some(comment) = self.parse_comment() {
             return Some(self.node(start, AstField::Comment(comment)));
         }
-        if let Some(f) = self.try_parse_inst_field() { return Some(f); }
+        if let Some(f) = self.try_parse_inst_field() {
+            return Some(f);
+        }
         if let Some(v) = self.parse_inst_value() {
             return Some(self.node(start, AstField::Anon(v)));
         }
@@ -522,7 +622,9 @@ impl<'a> Parser<'a> {
 
     fn parse_use(&mut self) -> Option<AstNode<AstUse>> {
         let start = self.pos;
-        if !self.at_keyword("use") { return None; }
+        if !self.at_keyword("use") {
+            return None;
+        }
         self.advance("use".len());
         self.skip_ws();
         let path = self.parse_ref()?;
@@ -534,28 +636,38 @@ impl<'a> Parser<'a> {
     /// `"pack" ref ("{" def* "}")?`
     fn parse_pack(&mut self) -> Option<AstNode<AstPack>> {
         let start = self.pos;
-        if !self.at_keyword("pack") { return None; }
+        if !self.at_keyword("pack") {
+            return None;
+        }
         let saved = self.pos;
         self.advance("pack".len());
         self.skip_ws();
         let path = match self.parse_ref() {
             Some(r) => r,
-            None    => { self.pos = saved; return None; }
+            None => {
+                self.pos = saved;
+                return None;
+            }
         };
         self.skip_ws();
         let defs = if self.eat("{") {
             let mut defs = Vec::new();
             loop {
                 self.skip_ws();
-                if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+                if self.rest().starts_with('}') || self.pos >= self.src.len() {
+                    break;
+                }
                 if let Some(def) = self.parse_def() {
                     defs.push(def);
                 } else {
-                    self.push_error(self.pos, format!(
-                        "unexpected token in pack body: {:?}", self.peek()
-                    ));
+                    self.push_error(
+                        self.pos,
+                        format!("unexpected token in pack body: {:?}", self.peek()),
+                    );
                     self.skip_to_next_def();
-                    if self.pos >= self.src.len() { break; }
+                    if self.pos >= self.src.len() {
+                        break;
+                    }
                 }
             }
             self.eat("}");
@@ -575,33 +687,48 @@ impl<'a> Parser<'a> {
         let saved = self.pos;
         let name = self.parse_ident()?;
         self.skip_ws();
-        if !self.eat("=") { self.pos = saved; return None; }
+        if !self.eat("=") {
+            self.pos = saved;
+            return None;
+        }
         self.skip_ws();
         let ty = match self.parse_type_expr() {
             Some(t) => t,
             None => {
-                self.push_error(self.pos, format!(
-                    "expected type expression for field '{}'", name.inner
-                ));
+                self.push_error(
+                    self.pos,
+                    format!("expected type expression for field '{}'", name.inner),
+                );
                 return None;
             }
         };
-        Some(self.node(start, AstDefI { name: Some(name), ty }))
+        Some(self.node(
+            start,
+            AstDefI {
+                name: Some(name),
+                ty,
+            },
+        ))
     }
 
     /// `"{" (ident "=" type_expr)* "}"` — input field block in `def name { … } = …`
     fn parse_field_block(&mut self) -> Vec<AstNode<AstDefI>> {
-        if !self.eat("{") { return vec![]; }
+        if !self.eat("{") {
+            return vec![];
+        }
         let mut fields = Vec::new();
         loop {
             self.skip_ws();
-            if self.rest().starts_with('}') || self.pos >= self.src.len() { break; }
+            if self.rest().starts_with('}') || self.pos >= self.src.len() {
+                break;
+            }
             if let Some(f) = self.parse_named_field_def() {
                 fields.push(f);
             } else {
-                self.push_error(self.pos, format!(
-                    "unexpected token in def input block: {:?}", self.peek()
-                ));
+                self.push_error(
+                    self.pos,
+                    format!("unexpected token in def input block: {:?}", self.peek()),
+                );
                 self.skip_past_line();
             }
         }
@@ -619,7 +746,11 @@ impl<'a> Parser<'a> {
         // Direct struct body
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let output = if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) };
+            let output = if items.is_empty() {
+                AstDefO::Unit
+            } else {
+                AstDefO::Struct(items)
+            };
             return (None, self.node(start, output));
         }
 
@@ -629,7 +760,11 @@ impl<'a> Parser<'a> {
             self.skip_ws();
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                let output = if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) };
+                let output = if items.is_empty() {
+                    AstDefO::Unit
+                } else {
+                    AstDefO::Struct(items)
+                };
                 return (Some(mapper_ref), self.node(start, output));
             }
             self.pos = saved; // not a mapper — backtrack
@@ -640,21 +775,33 @@ impl<'a> Parser<'a> {
             return (None, self.node(start, AstDefO::TypeExpr(te)));
         }
 
-        self.push_error(self.pos, "expected type expression or struct body after '='");
+        self.push_error(
+            self.pos,
+            "expected type expression or struct body after '='",
+        );
         (None, self.node(start, AstDefO::Struct(vec![])))
     }
 
     /// `"def" ident input? ("=" mapper? output)?`
     /// `"plan" ident input? ("=" mapper? output)?`
-    fn parse_top_def_with_keyword(&mut self, keyword: &str, planned: bool) -> Option<AstNode<AstDef>> {
+    fn parse_top_def_with_keyword(
+        &mut self,
+        keyword: &str,
+        planned: bool,
+    ) -> Option<AstNode<AstDef>> {
         let start = self.pos;
-        if !self.at_keyword(keyword) { return None; }
+        if !self.at_keyword(keyword) {
+            return None;
+        }
         let saved = self.pos;
         self.advance(keyword.len());
         self.skip_ws();
         let name = match self.parse_ident() {
             Some(n) => n,
-            None    => { self.pos = saved; return None; }
+            None => {
+                self.pos = saved;
+                return None;
+            }
         };
         self.skip_ws();
 
@@ -674,13 +821,16 @@ impl<'a> Parser<'a> {
             (None, self.node(output_start, AstDefO::Unit))
         };
 
-        Some(self.node(start, AstDef {
-            planned,
-            name,
-            input,
-            mapper: mapper_opt,
-            output,
-        }))
+        Some(self.node(
+            start,
+            AstDef {
+                planned,
+                name,
+                input,
+                mapper: mapper_opt,
+                output,
+            },
+        ))
     }
 
     /// Keyword-free def.
@@ -703,27 +853,33 @@ impl<'a> Parser<'a> {
         let saved = self.pos;
 
         // Skip if this looks like a keyword
-        if self.at_keyword("use")  || self.at_keyword("pack") || self.at_keyword("plan")
-        || self.at_keyword("def") {
+        if self.at_keyword("use")
+            || self.at_keyword("pack")
+            || self.at_keyword("plan")
+            || self.at_keyword("def")
+        {
             return None;
         }
 
         let name = match self.parse_ident() {
             Some(n) => n,
-            None    => return None,
+            None => return None,
         };
         self.skip_ws();
 
         if self.rest().starts_with('{') {
             let input = self.parse_field_block();
             let output = self.node(self.pos, AstDefO::Unit);
-            return Some(self.node(start, AstDef {
-                planned: false,
-                name,
-                input,
-                mapper: None,
-                output,
-            }));
+            return Some(self.node(
+                start,
+                AstDef {
+                    planned: false,
+                    name,
+                    input,
+                    mapper: None,
+                    output,
+                },
+            ));
         }
 
         if !self.eat("=") {
@@ -733,18 +889,25 @@ impl<'a> Parser<'a> {
                 let out_start = self.pos;
                 let output = if self.rest().starts_with('{') {
                     let items = self.parse_struct_body().unwrap_or_default();
-                    let output = if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) };
+                    let output = if items.is_empty() {
+                        AstDefO::Unit
+                    } else {
+                        AstDefO::Struct(items)
+                    };
                     self.node(out_start, output)
                 } else {
                     self.node(out_start, AstDefO::Unit)
                 };
-                return Some(self.node(start, AstDef {
-                    planned: false,
-                    name,
-                    input: vec![],
-                    mapper: Some(mapper_name),
-                    output,
-                }));
+                return Some(self.node(
+                    start,
+                    AstDef {
+                        planned: false,
+                        name,
+                        input: vec![],
+                        mapper: Some(mapper_name),
+                        output,
+                    },
+                ));
             }
             self.pos = mapper_saved;
             self.pos = saved;
@@ -757,14 +920,24 @@ impl<'a> Parser<'a> {
         // Direct struct body: `name = { field = type ... }` — type alias
         if self.rest().starts_with('{') {
             let items = self.parse_struct_body().unwrap_or_default();
-            let output = self.node(out_start, if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) });
-            return Some(self.node(start, AstDef {
-                planned: false,
-                name,
-                input: vec![],
-                mapper: None,
-                output,
-            }));
+            let output = self.node(
+                out_start,
+                if items.is_empty() {
+                    AstDefO::Unit
+                } else {
+                    AstDefO::Struct(items)
+                },
+            );
+            return Some(self.node(
+                start,
+                AstDef {
+                    planned: false,
+                    name,
+                    input: vec![],
+                    mapper: None,
+                    output,
+                },
+            ));
         }
 
         // Try explicit mapper ref: `name = ref_expr { ... }`
@@ -774,14 +947,24 @@ impl<'a> Parser<'a> {
             // If followed by `{`, this is a def with explicit mapper ref and struct body.
             if self.rest().starts_with('{') {
                 let items = self.parse_struct_body().unwrap_or_default();
-                let output = self.node(out_start, if items.is_empty() { AstDefO::Unit } else { AstDefO::Struct(items) });
-                return Some(self.node(start, AstDef {
-                    planned: false,
-                    name,
-                    input: vec![],
-                    mapper: Some(ref_node),
-                    output,
-                }));
+                let output = self.node(
+                    out_start,
+                    if items.is_empty() {
+                        AstDefO::Unit
+                    } else {
+                        AstDefO::Struct(items)
+                    },
+                );
+                return Some(self.node(
+                    start,
+                    AstDef {
+                        planned: false,
+                        name,
+                        input: vec![],
+                        mapper: Some(ref_node),
+                        output,
+                    },
+                ));
             }
             self.pos = ref_saved; // backtrack — fall through to type expr
         }
@@ -789,24 +972,33 @@ impl<'a> Parser<'a> {
         // Type expression (ref, enum, list, primitive): `name = type_expr`
         if let Some(te) = self.parse_type_expr() {
             let output = self.node(out_start, AstDefO::TypeExpr(te));
-            return Some(self.node(start, AstDef {
+            return Some(self.node(
+                start,
+                AstDef {
+                    planned: false,
+                    name,
+                    input: vec![],
+                    mapper: None,
+                    output,
+                },
+            ));
+        }
+
+        self.push_error(
+            self.pos,
+            "expected type expression or struct body after '='",
+        );
+        let output = self.node(out_start, AstDefO::Struct(vec![]));
+        Some(self.node(
+            start,
+            AstDef {
                 planned: false,
                 name,
                 input: vec![],
                 mapper: None,
                 output,
-            }));
-        }
-
-        self.push_error(self.pos, "expected type expression or struct body after '='");
-        let output = self.node(out_start, AstDefO::Struct(vec![]));
-        Some(self.node(start, AstDef {
-            planned: false,
-            name,
-            input: vec![],
-            mapper: None,
-            output,
-        }))
+            },
+        ))
     }
 
     fn parse_def(&mut self) -> Option<AstItem> {
@@ -814,16 +1006,26 @@ impl<'a> Parser<'a> {
             return Some(AstItem::Comment(comment));
         }
         if self.at_keyword("pack") {
-            if let Some(p) = self.parse_pack() { return Some(AstItem::Pack(p)); }
+            if let Some(p) = self.parse_pack() {
+                return Some(AstItem::Pack(p));
+            }
         }
-        if self.at_keyword("use")  { return self.parse_use().map(AstItem::Use); }
+        if self.at_keyword("use") {
+            return self.parse_use().map(AstItem::Use);
+        }
         if self.at_keyword("plan") {
-            if let Some(td) = self.parse_top_def_with_keyword("plan", true) { return Some(AstItem::Def(td)); }
+            if let Some(td) = self.parse_top_def_with_keyword("plan", true) {
+                return Some(AstItem::Def(td));
+            }
         }
         if self.at_keyword("def") {
-            if let Some(td) = self.parse_top_def_with_keyword("def", false) { return Some(AstItem::Def(td)); }
+            if let Some(td) = self.parse_top_def_with_keyword("def", false) {
+                return Some(AstItem::Def(td));
+            }
         }
-        if let Some(td) = self.parse_top_def_no_keyword() { return Some(AstItem::Def(td)); }
+        if let Some(td) = self.parse_top_def_no_keyword() {
+            return Some(AstItem::Def(td));
+        }
         None
     }
 
@@ -834,7 +1036,9 @@ impl<'a> Parser<'a> {
         while self.pos < self.src.len() {
             let b = self.src.as_bytes()[self.pos];
             self.pos += 1;
-            if b == b'\n' { break; }
+            if b == b'\n' {
+                break;
+            }
         }
     }
 
@@ -853,18 +1057,28 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Some(_) => { self.pos += 1; }
+            Some(_) => {
+                self.pos += 1;
+            }
         }
 
         loop {
             self.skip_ws();
-            if self.pos >= self.src.len() { break; }
-            if self.at_keyword("use")  || self.at_keyword("type")  || self.at_keyword("link")
-            || self.at_keyword("pack") || self.at_keyword("plan")
-            || self.at_keyword("def") {
+            if self.pos >= self.src.len() {
                 break;
             }
-            if self.peek().map_or(false, |c| c.is_ascii_alphabetic()) { break; }
+            if self.at_keyword("use")
+                || self.at_keyword("type")
+                || self.at_keyword("link")
+                || self.at_keyword("pack")
+                || self.at_keyword("plan")
+                || self.at_keyword("def")
+            {
+                break;
+            }
+            if self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+                break;
+            }
             self.pos += 1;
         }
     }
@@ -875,16 +1089,21 @@ impl<'a> Parser<'a> {
         let mut defs = Vec::new();
         loop {
             self.skip_ws();
-            if self.pos >= self.src.len() { break; }
+            if self.pos >= self.src.len() {
+                break;
+            }
             if let Some(def) = self.parse_def() {
                 defs.push(def);
             } else {
                 let err_pos = self.pos;
-                self.push_error(err_pos, format!(
-                    "unexpected token at top level: {:?}", self.peek()
-                ));
+                self.push_error(
+                    err_pos,
+                    format!("unexpected token at top level: {:?}", self.peek()),
+                );
                 self.skip_to_next_def();
-                if self.pos >= self.src.len() { break; }
+                if self.pos >= self.src.len() {
+                    break;
+                }
             }
         }
         defs
@@ -895,7 +1114,6 @@ impl<'a> Parser<'a> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-
 fn find_or_create_scope(scopes: &mut Vec<AstScope>, name: &str, parent: AstScopeId) -> AstScopeId {
     for (i, scope) in scopes.iter().enumerate() {
         if scope.parent == Some(parent) {
@@ -905,12 +1123,21 @@ fn find_or_create_scope(scopes: &mut Vec<AstScope>, name: &str, parent: AstScope
         }
     }
     let id = AstScopeId(scopes.len() as u32);
-    let name_node = AstNode::new(0, 0, 0, name.to_string());
-    scopes.push(AstScope { kind: ScopeKind::Pack, name: Some(name_node), parent: Some(parent), defs: vec![] });
+    let name_node = AstNode::new(UnitId(0), 0, 0, name.to_string());
+    scopes.push(AstScope {
+        kind: ScopeKind::Pack,
+        name: Some(name_node),
+        parent: Some(parent),
+        defs: vec![],
+    });
     id
 }
 
-fn find_or_create_struct_scope(scopes: &mut Vec<AstScope>, name: &AstNode<String>, parent: AstScopeId) -> AstScopeId {
+fn find_or_create_struct_scope(
+    scopes: &mut Vec<AstScope>,
+    name: &AstNode<String>,
+    parent: AstScopeId,
+) -> AstScopeId {
     for (i, scope) in scopes.iter().enumerate() {
         if scope.parent == Some(parent)
             && scope.kind == ScopeKind::Struct
@@ -962,12 +1189,15 @@ fn hoist_nested_defs_in_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId) 
         }
 
         if !hoisted.is_empty() {
-            let struct_scope_id = find_or_create_struct_scope(scopes, &parent_name.unwrap(), scope_id);
+            let struct_scope_id =
+                find_or_create_struct_scope(scopes, &parent_name.unwrap(), scope_id);
             scopes[struct_scope_id.0 as usize].defs.extend(hoisted);
         }
     }
 
-    let child_scope_ids: Vec<AstScopeId> = scopes.iter().enumerate()
+    let child_scope_ids: Vec<AstScopeId> = scopes
+        .iter()
+        .enumerate()
         .filter_map(|(i, s)| (s.parent == Some(scope_id)).then_some(AstScopeId(i as u32)))
         .collect();
     for child_id in child_scope_ids {
@@ -975,21 +1205,32 @@ fn hoist_nested_defs_in_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId) 
     }
 }
 
-fn find_or_create_pack_path(scopes: &mut Vec<AstScope>, path: &AstRef, parent: AstScopeId) -> AstScopeId {
+fn find_or_create_pack_path(
+    scopes: &mut Vec<AstScope>,
+    path: &AstRef,
+    parent: AstScopeId,
+) -> AstScopeId {
     let mut cur = parent;
     for seg in &path.segments {
-        let Some(name) = seg.inner.as_plain() else { continue; };
+        let Some(name) = seg.inner.as_plain() else {
+            continue;
+        };
         cur = find_or_create_scope(scopes, name, cur);
     }
     cur
 }
 
-fn materialize_items_into_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId, items: Vec<AstItem>) {
+fn materialize_items_into_scope(
+    scopes: &mut Vec<AstScope>,
+    scope_id: AstScopeId,
+    items: Vec<AstItem>,
+) {
     let mut active_scope = scope_id;
     for item in items {
         match item {
             AstItem::Pack(pack_node) => {
-                let pack_scope = find_or_create_pack_path(scopes, &pack_node.inner.path.inner, active_scope);
+                let pack_scope =
+                    find_or_create_pack_path(scopes, &pack_node.inner.path.inner, active_scope);
                 if let Some(defs) = pack_node.inner.defs {
                     materialize_items_into_scope(scopes, pack_scope, defs);
                 } else {
@@ -1002,11 +1243,15 @@ fn materialize_items_into_scope(scopes: &mut Vec<AstScope>, scope_id: AstScopeId
 }
 
 pub fn parse(req: ParseReq) -> ParseRes {
-    let root = AstScope { kind: ScopeKind::Pack, name: None, parent: None, defs: vec![] };
+    let root = AstScope {
+        kind: ScopeKind::Pack,
+        name: None,
+        parent: None,
+        defs: vec![],
+    };
     let mut scopes = vec![root];
     let mut errors = Vec::new();
-    let mut unit_scope_ids = Vec::with_capacity(req.units.len());
-    let mut unit_ts_srcs   = Vec::with_capacity(req.units.len());
+    let mut units = Vec::with_capacity(req.units.len());
 
     for (unit_idx, unit) in req.units.iter().enumerate() {
         let mut parent_id = AstScopeId(0);
@@ -1018,20 +1263,26 @@ pub fn parse(req: ParseReq) -> ParseRes {
         } else {
             find_or_create_scope(&mut scopes, &unit.name, parent_id)
         };
-        unit_scope_ids.push(leaf_id);
-        unit_ts_srcs.push(unit.ts_src.clone());
+        units.push(ParseUnitRes {
+            scope_id: leaf_id,
+            ts_src: unit.ts_src.clone(),
+        });
 
-        let mut p = Parser::new(&unit.src, unit_idx as u32);
+        let mut p = Parser::new(&unit.src, UnitId(unit_idx as u32));
         let items = p.parse_system();
         errors.extend(p.errors);
         materialize_items_into_scope(&mut scopes, leaf_id, items);
         hoist_nested_defs_in_scope(&mut scopes, leaf_id);
     }
 
-    ParseRes { scopes, errors, unit_scope_ids, unit_ts_srcs }
+    ParseRes {
+        scopes,
+        errors,
+        units,
+    }
 }
 
-pub fn parse_file_items(src: &str, unit: u32) -> (Vec<AstItem>, Vec<AstParseError>) {
+pub fn parse_file_items(src: &str, unit: UnitId) -> (Vec<AstItem>, Vec<AstParseError>) {
     let mut p = Parser::new(src, unit);
     let items = p.parse_system();
     (items, p.errors)
