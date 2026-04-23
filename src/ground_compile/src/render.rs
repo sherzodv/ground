@@ -339,6 +339,9 @@ fn tuple_pair_list_to_obj(
     defs: &[AsmDef],
     seen: &mut HashSet<(String, String)>,
 ) -> Option<serde_json::Map<String, Value>> {
+    if items.is_empty() {
+        return None;
+    }
     let mut obj = serde_json::Map::new();
     for item in items {
         let crate::asm::AsmValue::Tuple(parts) = item else {

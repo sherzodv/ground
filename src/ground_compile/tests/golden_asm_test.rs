@@ -155,6 +155,63 @@ fn primitive_list_string_literals_001() {
 }
 
 #[test]
+fn recursive_nested_rule_security_groups_001() {
+    assert_eq!(
+        show(
+            r##"
+            def security_group {
+                def rule {
+                    security_groups = ([ security_group ])
+                }
+                ingress = ([ def:rule ])
+            }
+
+            app = security_group {}
+            plan main = security_group {
+                ingress: [ {
+                    security_groups: [ app ]
+                } ]
+            }
+        "##,
+        ),
+        norm(
+            r##"
+            Def[main = security_group { ingress: List[Def[_ = rule { security_groups: List[DefRef(security_group, app)] }]] }]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn render_empty_list_stays_array_001() {
+    let ctx = render_ctx_for_plan(
+        &compile(CompileReq {
+            units: vec![Unit {
+                name: "test".into(),
+                path: vec![],
+                src: r##"
+                    pack test
+
+                    def sg {
+                        ingress = [ string ]
+                    }
+
+                    plan app = sg {
+                        ingress: [ ]
+                    }
+                "##
+                .into(),
+                ts_src: None,
+            }],
+        }),
+        "app",
+    )
+    .expect("render ctx");
+
+    assert_eq!(ctx["defs"][0]["as_obj"]["ingress"], serde_json::json!([]));
+}
+
+#[test]
 fn nested_enum_cross_pack_composition_001() {
     assert_eq!(
         show_multi(vec![
