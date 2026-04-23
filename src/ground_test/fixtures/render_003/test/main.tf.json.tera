@@ -4,7 +4,7 @@
     {
       "plan": "{{ def.name }}",
       "file": "summary.txt",
-      "template": "summary.txt.tera"
+      "template": "test:summary.txt.tera"
     }
     {%- endfor %}
   ]

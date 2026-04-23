@@ -4,7 +4,6 @@ use ground_gen::{render as gen_render, GenError, RenderReq, TeraUnit};
 use serde_json::{json, Value};
 
 use crate::asm::{asm_value_to_json, AsmDef, AsmField};
-use crate::ir::{IrScope, ScopeId};
 use crate::{CompileError, CompileRes, ErrorLoc, PlanRoot};
 
 /// Template file addressable by pack path. Collected by the CLI from disk
@@ -13,6 +12,7 @@ use crate::{CompileError, CompileRes, ErrorLoc, PlanRoot};
 pub struct TemplateUnit {
     pub path: Vec<String>,
     pub file: String,
+    pub id: String,
     pub content: String,
 }
 
@@ -74,10 +74,12 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
     }
 
     for (pack, plans) in &groups {
-        let pack_templates: Vec<&TemplateUnit> =
-            templates.iter().filter(|t| &t.path == pack).collect();
+        let pack_templates: Vec<&TemplateUnit> = templates
+            .iter()
+            .filter(|t| &t.path == pack && t.file == manifest_name)
+            .collect();
 
-        if !pack_templates.iter().any(|t| t.file == manifest_name) {
+        if pack_templates.is_empty() {
             errors.push(plan_pack_error(
                 format!(
                     "no \"{manifest_name}\" found in pack \"{}\" (required by plan(s): {})",
@@ -92,20 +94,9 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
             ));
             continue;
         }
+        let manifest_template = pack_templates[0];
 
-        let Some(plan_scope) = plans.first().map(|p| p.scope) else {
-            continue;
-        };
-        let visible_packs = visible_pack_paths(&res.scopes, plan_scope);
-        let units =
-            match collect_visible_templates(templates, &visible_packs, pack, &manifest_name, plans)
-            {
-                Ok(units) => units,
-                Err(err) => {
-                    errors.push(err);
-                    continue;
-                }
-            };
+        let units = collect_all_templates(templates);
 
         let defs_json: Vec<Value> = plans
             .iter()
@@ -129,7 +120,7 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
 
         match gen_render(
             &RenderReq {
-                entry: manifest_name.clone(),
+                entry: manifest_template.id.clone(),
                 units,
                 pretty_print: target.out_type == "json",
             },
@@ -183,103 +174,14 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
     RenderRes { units: out, errors }
 }
 
-fn collect_visible_templates(
-    templates: &[TemplateUnit],
-    visible_packs: &[Vec<String>],
-    manifest_pack: &[String],
-    manifest_name: &str,
-    plans: &[&PlanRoot],
-) -> Result<Vec<TeraUnit>, CompileError> {
-    let mut by_file: BTreeMap<String, (&TemplateUnit, Vec<String>)> = BTreeMap::new();
-
-    for pack in visible_packs {
-        for template in templates.iter().filter(|t| &t.path == pack) {
-            if template.file == manifest_name && template.path != manifest_pack {
-                continue;
-            }
-
-            match by_file.get(&template.file) {
-                Some((prev, prev_pack)) if prev.path != template.path => {
-                    return Err(plan_pack_error(
-                        format!(
-                            "render error in pack \"{}\": helper template \"{}\" is ambiguous between packs \"{}\" and \"{}\"",
-                            pack_display(manifest_pack),
-                            template.file,
-                            pack_display(prev_pack),
-                            pack_display(&template.path),
-                        ),
-                        plans,
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    by_file.insert(template.file.clone(), (template, template.path.clone()));
-                }
-            }
-        }
-    }
-
-    Ok(by_file
-        .into_values()
-        .map(|(t, _)| TeraUnit {
-            file: t.file.clone(),
+fn collect_all_templates(templates: &[TemplateUnit]) -> Vec<TeraUnit> {
+    templates
+        .iter()
+        .map(|t| TeraUnit {
+            file: t.id.clone(),
             template: t.content.clone(),
         })
-        .collect())
-}
-
-fn visible_pack_paths(scopes: &[IrScope], mut scope: ScopeId) -> Vec<Vec<String>> {
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    loop {
-        if let Some(path) = scope_pack_path(scopes, scope) {
-            if seen.insert(path.clone()) {
-                out.push(path);
-            }
-        }
-
-        let Some(sc) = scopes.get(scope.0 as usize) else {
-            break;
-        };
-
-        let mut imported: Vec<_> = sc.packs.values().copied().collect();
-        imported.sort_by_key(|sid| sid.0);
-        for imported_scope in imported {
-            if let Some(path) = scope_pack_path(scopes, imported_scope) {
-                if seen.insert(path.clone()) {
-                    out.push(path);
-                }
-            }
-        }
-
-        let Some(parent) = sc.parent else {
-            break;
-        };
-        scope = parent;
-    }
-
-    out
-}
-
-fn scope_pack_path(scopes: &[IrScope], mut scope: ScopeId) -> Option<Vec<String>> {
-    let mut out = Vec::new();
-
-    loop {
-        let sc = scopes.get(scope.0 as usize)?;
-        if matches!(sc.kind, crate::ir::ScopeKind::Pack) {
-            if let Some(name) = &sc.name {
-                out.push(name.clone());
-            }
-        }
-        let Some(parent) = sc.parent else {
-            break;
-        };
-        scope = parent;
-    }
-
-    out.reverse();
-    Some(out)
+        .collect()
 }
 
 fn plan_pack_error(message: String, plans: &[&PlanRoot]) -> CompileError {

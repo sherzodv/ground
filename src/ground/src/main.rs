@@ -481,11 +481,20 @@ fn collect_templates_recursive(root: &Path, dir: &Path, units: &mut Vec<Template
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
+        let id = rel
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(":");
 
         match fs::read_to_string(&path) {
             Ok(content) => units.push(TemplateUnit {
                 path: pack_path,
                 file,
+                id,
                 content,
             }),
             Err(e) => {

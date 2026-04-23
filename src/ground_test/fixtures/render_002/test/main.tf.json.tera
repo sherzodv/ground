@@ -1,9 +1,9 @@
-{% import "_files.tera" as files -%}
+{% import "test:_files.tera" as files -%}
 {
   "files": [
     {% for def in defs -%}
-    {{ files::unit(plan=def.name, path="summary.txt", template="summary.txt.tera") }},
-    {{ files::unit(plan=def.name, path="values.txt", template="values.txt.tera") }}
+    {{ files::unit(plan=def.name, path="summary.txt", template="test:summary.txt.tera") }},
+    {{ files::unit(plan=def.name, path="values.txt", template="test:values.txt.tera") }}
     {%- endfor %}
   ]
 }

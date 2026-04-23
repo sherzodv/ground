@@ -152,6 +152,14 @@ mod golden {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+            let id = rel
+                .components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(":");
             let pack_path: Vec<String> = rel
                 .parent()
                 .map(|p| {
@@ -179,6 +187,7 @@ mod golden {
             out.push(TemplateUnit {
                 path: pack_path,
                 file,
+                id,
                 content,
             });
         }

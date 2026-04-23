@@ -254,4 +254,27 @@ region={{ deploy.region }}
             "{\n  \"b\": 1,\n  \"a\": {\n    \"x\": true\n  }\n}"
         );
     }
+
+    #[test]
+    fn render_supports_colon_template_names() {
+        let req = RenderReq {
+            entry: "test:main.tf.json.tera".into(),
+            units: vec![
+                TeraUnit {
+                    file: "test:main.tf.json.tera".into(),
+                    template: r#"{ "files": [ { "file": "main.tf.json", "template": "std:aws:tf:vpc.tf.json.tera" } ] }"#.into(),
+                },
+                TeraUnit {
+                    file: "std:aws:tf:vpc.tf.json.tera".into(),
+                    template: r#"{"ok":true}"#.into(),
+                },
+            ],
+            pretty_print: true,
+        };
+
+        let out = render(&req, &json!({})).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].file, "main.tf.json");
+        assert_eq!(out[0].content, "{\n  \"ok\": true\n}");
+    }
 }

@@ -1,4 +1,4 @@
-{% import "_content.tera" as content -%}
+{% import "test:_content.tera" as content -%}
 {% for def in defs -%}
 {{ content::values(def=def) }}
 {% endfor %}
