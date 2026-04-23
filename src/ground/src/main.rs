@@ -8,8 +8,8 @@ use std::{
 
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
 use ground_compile::{
-    compile, format_source, render as compile_render, AsmDef, AsmDefRef, AsmValue, CompileReq,
-    CompileRes, RenderTarget, RenderUnit, TemplateUnit, Unit,
+    compile, format_source, render as compile_render, render_ctx_for_plan, AsmDef, AsmDefRef,
+    AsmValue, CompileReq, CompileRes, RenderTarget, RenderUnit, TemplateUnit, Unit,
 };
 use ground_run::RunEvent;
 use ops_display::{Op, TerraEnricher};
@@ -37,6 +37,7 @@ fn main() {
         [cmd] if cmd == "fmt" => cmd_fmt(),
         [cmd, ..] if cmd == "fmt" => cmd_fmt(),
         [cmd] if cmd == "status" => cmd_status(),
+        [cmd, name] if cmd == "asm" => cmd_asm(name),
         [cmd, sub] if cmd == "lsp" && sub == "start" => cmd_lsp_start(),
         [cmd, sub] if cmd == "lsp" && sub == "stop" => cmd_lsp_stop(),
         [cmd] if cmd == "plan" => cmd_plan_ls(),
@@ -58,6 +59,7 @@ fn main() {
             eprintln!("  ground tf migrate");
             eprintln!("  ground fmt");
             eprintln!("  ground status");
+            eprintln!("  ground asm <plan>");
             eprintln!("  ground lsp start");
             eprintln!("  ground lsp stop");
             eprintln!("  ground plan ls");
@@ -734,6 +736,37 @@ fn cmd_fmt() {
 
 fn cmd_status() {
     with_project_root(|root| println!("{}", root.display()));
+}
+
+fn cmd_asm(plan_name: &str) {
+    with_project_root(|root| {
+        let res = do_compile(root, true);
+        let Some(_plan) = res.plans.iter().find(|p| p.name == plan_name) else {
+            let available = res
+                .plans
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!("error: plan '{plan_name}' not found");
+            if !available.is_empty() {
+                eprintln!("available plans: {available}");
+            }
+            process::exit(1);
+        };
+
+        let json = render_ctx_for_plan(&res, plan_name).unwrap_or_else(|| {
+            eprintln!("error: plan '{plan_name}' not found");
+            process::exit(1);
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json).unwrap_or_else(|e| {
+                eprintln!("error: failed to encode asm json: {e}");
+                process::exit(1);
+            })
+        );
+    });
 }
 
 fn cmd_lsp_start() {

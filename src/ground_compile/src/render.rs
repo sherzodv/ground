@@ -58,6 +58,16 @@ pub struct RenderRes {
     pub errors: Vec<CompileError>,
 }
 
+pub fn render_ctx_for_plan(res: &CompileRes, plan_name: &str) -> Option<Value> {
+    let plan = res.plans.iter().find(|p| p.name == plan_name)?;
+    let plans: Vec<&PlanRoot> = res
+        .plans
+        .iter()
+        .filter(|p| p.pack_path == plan.pack_path)
+        .collect();
+    Some(render_ctx_for_plans(res, &plans))
+}
+
 pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit]) -> RenderRes {
     let mut errors = Vec::new();
     let mut out = Vec::new();
@@ -98,25 +108,7 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
 
         let units = collect_all_templates(templates);
 
-        let defs_json: Vec<Value> = plans
-            .iter()
-            .map(|p| def_to_json(&res.defs[p.def_idx], &res.defs))
-            .collect();
-
-        let plans_json: Vec<Value> = plans
-            .iter()
-            .map(|p| {
-                json!({
-                    "name": p.name,
-                    "pack": p.pack_path,
-                })
-            })
-            .collect();
-
-        let ctx = json!({
-            "defs": defs_json,
-            "plans": plans_json,
-        });
+        let ctx = render_ctx_for_plans(res, plans);
 
         match gen_render(
             &RenderReq {
@@ -172,6 +164,28 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
     }
 
     RenderRes { units: out, errors }
+}
+
+fn render_ctx_for_plans(res: &CompileRes, plans: &[&PlanRoot]) -> Value {
+    let defs_json: Vec<Value> = plans
+        .iter()
+        .map(|p| def_to_json(&res.defs[p.def_idx], &res.defs))
+        .collect();
+
+    let plans_json: Vec<Value> = plans
+        .iter()
+        .map(|p| {
+            json!({
+                "name": p.name,
+                "pack": p.pack_path,
+            })
+        })
+        .collect();
+
+    json!({
+        "defs": defs_json,
+        "plans": plans_json,
+    })
 }
 
 fn collect_all_templates(templates: &[TemplateUnit]) -> Vec<TeraUnit> {
@@ -256,7 +270,8 @@ fn fields_to_obj(
 ) -> Value {
     let mut obj = serde_json::Map::new();
     for field in fields {
-        obj.insert(field.name.clone(), value_to_json(&field.value, defs, seen));
+        let value = value_to_json(&field.value, defs, seen);
+        obj.insert(field.name.clone(), value);
     }
     Value::Object(obj)
 }
@@ -274,7 +289,8 @@ fn value_to_json(
             }
             let Some(target) = defs
                 .iter()
-                .find(|d| d.type_name == r.type_name && d.name == r.name)
+                .filter(|d| d.type_name == r.type_name && d.name == r.name)
+                .max_by_key(|d| d.fields.len())
             else {
                 return asm_value_to_json(v);
             };

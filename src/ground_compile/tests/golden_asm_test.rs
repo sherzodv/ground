@@ -5,6 +5,11 @@
 #[path = "helpers/golden_asm_helpers.rs"]
 mod golden_asm_helpers;
 use golden_asm_helpers::{norm, show, show_multi, show_with_ts};
+use ground_compile::{compile, render_ctx_for_plan, CompileReq, Unit};
+
+fn error_messages(errs: &[ground_compile::CompileError]) -> Vec<String> {
+    errs.iter().map(|e| e.message.clone()).collect()
+}
 
 // ---------------------------------------------------------------------------
 // Basic
@@ -273,6 +278,117 @@ fn mapper_005() {
 }
 
 #[test]
+fn mapper_inherits_explicit_base_mapper_001() {
+    let grd = r#"
+        pack test
+
+        def thing {
+          name = string
+          tags = ([ string -> string ])
+        }
+
+        def platform {
+          items = [ thing ]
+        } = make_platform
+
+        item = thing {
+          name: "main"
+          tags: [ "Name" -> "main" ]
+        }
+
+        plan infra = platform {
+          items: [ item ]
+        }
+    "#;
+    let ts = r#"
+        function make_platform(input) {
+            return {
+                items: (input.items || []).map((it) => ({
+                    ...it,
+                    tags: {
+                        ...(it.tags || {}),
+                        "ground-managed": "true",
+                    },
+                })),
+            };
+        }
+    "#;
+
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: grd.into(),
+            ts_src: Some(ts.into()),
+        }],
+    });
+    assert!(res.errors.is_empty(), "{:#?}", error_messages(&res.errors));
+
+    let ctx = render_ctx_for_plan(&res, "infra").expect("render ctx");
+    let item = &ctx["defs"][0]["as_obj"]["items"][0];
+    assert_eq!(
+        item["as_obj"]["tags"]["ground-managed"].as_str(),
+        Some("true")
+    );
+}
+
+#[test]
+fn render_ctx_prefers_local_named_instance_over_base_def_001() {
+    let std_src = r#"
+        pack std:aws:tf
+
+        def subnet {
+          cidr_block = string
+        }
+
+        def platform {
+          subnets = [ subnet ]
+        } = make_platform
+    "#;
+    let std_ts = r#"
+        function make_platform(input) {
+            return input;
+        }
+    "#;
+    let test_src = r#"
+        pack test
+
+        use std:aws
+
+        subnet = aws:tf:subnet {
+          cidr_block: "10.0.1.0/24"
+        }
+
+        plan infra = aws:tf:platform {
+          subnets: [ subnet ]
+        }
+    "#;
+
+    let res = compile(CompileReq {
+        units: vec![
+            Unit {
+                name: "aws".into(),
+                path: vec!["std".into()],
+                src: std_src.into(),
+                ts_src: Some(std_ts.into()),
+            },
+            Unit {
+                name: "test".into(),
+                path: vec![],
+                src: test_src.into(),
+                ts_src: None,
+            },
+        ],
+    });
+    assert!(res.errors.is_empty(), "{:#?}", error_messages(&res.errors));
+
+    let ctx = render_ctx_for_plan(&res, "infra").expect("render ctx");
+    let subnet = &ctx["defs"][0]["as_obj"]["subnets"][0];
+    assert_eq!(subnet["name"].as_str(), Some("subnet"));
+    assert_eq!(subnet["as_obj"]["cidr_block"].as_str(), Some("10.0.1.0/24"));
+}
+
+#[test]
 fn mapper_006() {
     let grd = r#"
         deploy = { region = [ string ] }
@@ -362,9 +478,9 @@ fn mapper_008() {
         function map_deploy(i) {
             return {
                 stack_names: JSON.stringify(i.stack._),
-                service_name: JSON.stringify(i.services[0].service._name),
+                service_name: JSON.stringify(i.services[0].service.__ground_name),
                 service_access_0: JSON.stringify(i.services[0].service.access[0]),
-                database_name: JSON.stringify(i.databases[0].database._name),
+                database_name: JSON.stringify(i.databases[0].database.__ground_name),
             };
         }
     "#;
@@ -372,7 +488,7 @@ fn mapper_008() {
         show_with_ts(grd, ts),
         norm(
             r##"
-            Def[prd = deploy { stack: DefRef(stack, all), services: List[Def[_ = service_config { service: DefRef(service, api), size: Variant(size, "medium"), scaling: Def[_ = scaling { min: Int(1), max: Int(2) }] }]], databases: List[Def[_ = database_config { database: DefRef(database, main), size: Variant(size, "medium"), storage: Int(20) }]], stack_names: Str("[{\"_name\":\"api\",\"port\":\"http\",\"access\":[{\"_name\":\"main\",\"engine\":\"pg\"},[{\"_name\":\"media-bucket\",\"name\":\"media-content\",\"access\":\"write\"},\"write\"],{\"_name\":\"media-secret\"}]},{\"_name\":\"main\",\"engine\":\"pg\"},{\"_name\":\"media-bucket\",\"name\":\"media-content\",\"access\":\"write\"},{\"_name\":\"media-secret\"}]"), service_name: Str("\"api\""), service_access_0: Str("{\"_name\":\"main\",\"engine\":\"pg\"}"), database_name: Str("\"main\"") }]
+            Def[prd = deploy { stack: DefRef(stack, all), services: List[Def[_ = service_config { service: DefRef(service, api), size: Variant(size, "medium"), scaling: Def[_ = scaling { min: Int(1), max: Int(2) }] }]], databases: List[Def[_ = database_config { database: DefRef(database, main), size: Variant(size, "medium"), storage: Int(20) }]], stack_names: Str("[{\"__ground_name\":\"api\",\"port\":\"http\",\"access\":[{\"__ground_name\":\"main\",\"engine\":\"pg\"},[{\"__ground_name\":\"media-bucket\",\"name\":\"media-content\",\"access\":\"write\"},\"write\"],{\"__ground_name\":\"media-secret\"}]},{\"__ground_name\":\"main\",\"engine\":\"pg\"},{\"__ground_name\":\"media-bucket\",\"name\":\"media-content\",\"access\":\"write\"},{\"__ground_name\":\"media-secret\"}]"), service_name: Str("\"api\""), service_access_0: Str("{\"__ground_name\":\"main\",\"engine\":\"pg\"}"), database_name: Str("\"main\"") }]
         "##
         ),
     );
@@ -413,7 +529,7 @@ fn mapper_009() {
         show_with_ts(grd, ts),
         norm(
             r##"
-            Def[prd = deploy { region: List[Str("eu-central:1")], stack: DefRef(stack, all), services: List[Def[_ = service_config { service: DefRef(service, api), size: Variant(size, "medium"), scaling: Def[_ = scaling { min: Int(1), max: Int(2) }] }]], seen_resolved: Str("[{\"_name\":\"_\",\"service\":{\"_name\":\"api\",\"type_name\":\"service\"},\"size\":\"medium\",\"scaling\":{\"_name\":\"_\",\"min\":1,\"max\":2}}]"), seen_stack: Str("null"), seen_input: Str("null") }]
+            Def[prd = deploy { region: List[Str("eu-central:1")], stack: DefRef(stack, all), services: List[Def[_ = service_config { service: DefRef(service, api), size: Variant(size, "medium"), scaling: Def[_ = scaling { min: Int(1), max: Int(2) }] }]], seen_resolved: Str("[{\"__ground_name\":\"_\",\"service\":{\"__ground_name\":\"api\",\"__ground_type\":\"service\"},\"size\":\"medium\",\"scaling\":{\"__ground_name\":\"_\",\"min\":1,\"max\":2}}]"), seen_stack: Str("null"), seen_input: Str("null") }]
         "##
         ),
     );

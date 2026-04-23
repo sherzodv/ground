@@ -11,7 +11,7 @@ pub use asm::{asm_value_to_json, AsmDef, AsmDefRef, AsmField, AsmValue, AsmVaria
 pub use ast::UnitId;
 pub use fmt::format_source;
 pub use ir::ScopeId;
-pub use render::{render, RenderRes, RenderTarget, RenderUnit, TemplateUnit};
+pub use render::{render, render_ctx_for_plan, RenderRes, RenderTarget, RenderUnit, TemplateUnit};
 
 // ---------------------------------------------------------------------------
 // Public input shapes

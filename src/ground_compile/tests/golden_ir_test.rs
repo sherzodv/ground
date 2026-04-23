@@ -564,7 +564,11 @@ fn import_005() {
     assert_eq!(
         show_multi(vec![
             ("", vec!["lib".into()], "service = { image = reference }"),
-            ("test", vec![], "use lib\napi = lib:service { image: nginx }"),
+            (
+                "test",
+                vec![],
+                "use lib\napi = lib:service { image: nginx }"
+            ),
         ]),
         norm(
             r##"

@@ -199,7 +199,7 @@ fn ts_gen_mapper_output_keeps_named_objects() {
                 function make_platform(_i) {
                     return {
                         services: [
-                            { _name: "api", type_name: "service", port: "http" }
+                            { __ground_name: "api", __ground_type: "service", port: "http" }
                         ]
                     };
                 }

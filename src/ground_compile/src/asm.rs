@@ -9,6 +9,9 @@ use ground_ts::exec::{call_hook, call_hook_args};
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 
+const GROUND_NAME_KEY: &str = "__ground_name";
+const GROUND_TYPE_KEY: &str = "__ground_type";
+
 // ---------------------------------------------------------------------------
 // Data shapes
 // ---------------------------------------------------------------------------
@@ -208,19 +211,35 @@ fn resolve_def_with_overrides(
     }
 
     if let Some(mapper_fn) = &def.mapper_fn {
-        let input_json = build_input_json(&effective_fields, &def.inputs, ir, cache);
+        let mapper_input_defs = mapper_input_defs(def, None);
+        let input_json = build_input_json(&effective_fields, mapper_input_defs, ir, cache);
         apply_mapper_output(&mut fields, ts_src, mapper_fn, &[input_json]);
     } else if let (Some(base_id), Some(resolved)) = (def.base_def, base_def.as_ref()) {
-        let ascent_fn = ir.defs[base_id.0 as usize].name.clone();
-        if has_ts_fn(ts_src, &ascent_fn) {
-            let resolved_json = asm_def_to_json(resolved).to_string();
-            let input_json = build_input_json(&effective_fields, &def.inputs, ir, cache);
-            apply_mapper_output(
-                &mut fields,
-                ts_src,
-                &ascent_fn,
-                &[resolved_json, input_json],
-            );
+        let base_ir_def = &ir.defs[base_id.0 as usize];
+        let own_name_hook = has_ts_fn(ts_src, &base_ir_def.name);
+        let explicit_mapper_fallback = if own_name_hook {
+            None
+        } else {
+            base_ir_def
+                .mapper_fn
+                .clone()
+                .filter(|fn_name| has_ts_fn(ts_src, fn_name))
+        };
+        if own_name_hook || explicit_mapper_fallback.is_some() {
+            if own_name_hook {
+                let resolved_json = asm_def_to_json(resolved).to_string();
+                let input_json = build_input_json(&effective_fields, &def.inputs, ir, cache);
+                apply_mapper_output(
+                    &mut fields,
+                    ts_src,
+                    &base_ir_def.name,
+                    &[resolved_json, input_json],
+                );
+            } else if let Some(mapper_fn) = explicit_mapper_fallback {
+                let mapper_input_defs = mapper_input_defs(def, Some(base_ir_def));
+                let input_json = build_input_json(&effective_fields, mapper_input_defs, ir, cache);
+                apply_mapper_output(&mut fields, ts_src, &mapper_fn, &[input_json]);
+            }
         }
     }
 
@@ -229,6 +248,20 @@ fn resolve_def_with_overrides(
         name,
         type_hint,
         fields,
+    }
+}
+
+fn mapper_input_defs<'a>(def: &'a IrDef, base_def: Option<&'a IrDef>) -> &'a [IrStructFieldDef] {
+    if !def.inputs.is_empty() {
+        &def.inputs
+    } else if let Some(base) = base_def {
+        if !base.inputs.is_empty() {
+            &base.inputs
+        } else {
+            &def.outputs
+        }
+    } else {
+        &def.outputs
     }
 }
 
@@ -534,9 +567,9 @@ fn ir_value_to_json(v: &IrValue, ir: &IrRes) -> serde_json::Value {
         IrValue::Inst(fid) => {
             let child = &ir.defs[fid.0 as usize];
             let mut map = serde_json::Map::new();
-            // Expose the mapping name as "_name" so parent mappers can use it.
+            // Expose Ground metadata in a reserved transport namespace.
             map.insert(
-                "_name".into(),
+                GROUND_NAME_KEY.into(),
                 serde_json::Value::String(child.name.clone()),
             );
             for f in &child.fields {
@@ -602,7 +635,7 @@ fn ir_value_to_json_typed(
                                 let child = &ir.defs[fid.0 as usize];
                                 let mut map = serde_json::Map::new();
                                 map.insert(
-                                    "_name".into(),
+                                    GROUND_NAME_KEY.into(),
                                     serde_json::Value::String(child.name.clone()),
                                 );
                                 for field in &child.fields {
@@ -740,7 +773,10 @@ fn ir_value_to_json_via(
 
 fn asm_def_to_json(def: &AsmDef) -> serde_json::Value {
     let mut map = serde_json::Map::new();
-    map.insert("_name".into(), serde_json::Value::String(def.name.clone()));
+    map.insert(
+        GROUND_NAME_KEY.into(),
+        serde_json::Value::String(def.name.clone()),
+    );
     for f in &def.fields {
         map.insert(f.name.clone(), asm_value_to_json(&f.value));
     }
@@ -757,7 +793,9 @@ pub fn asm_value_to_json(v: &AsmValue) -> serde_json::Value {
             Some(p) => serde_json::json!({ gv.value.clone(): asm_value_to_json(p) }),
             None => serde_json::Value::String(gv.value.clone()),
         },
-        AsmValue::DefRef(r) => serde_json::json!({ "_name": r.name, "type_name": r.type_name }),
+        AsmValue::DefRef(r) => {
+            serde_json::json!({ GROUND_NAME_KEY: r.name, GROUND_TYPE_KEY: r.type_name })
+        }
         AsmValue::Def(i) => asm_def_to_json(i),
         AsmValue::Path(segs) => {
             serde_json::Value::Array(segs.iter().map(asm_value_to_json).collect())
@@ -796,18 +834,18 @@ fn json_val_to_asm_value(v: &serde_json::Value) -> AsmValue {
         }
         serde_json::Value::Object(map) => {
             let name = map
-                .get("_name")
+                .get(GROUND_NAME_KEY)
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("_")
                 .to_string();
             let type_name = map
-                .get("type_name")
+                .get(GROUND_TYPE_KEY)
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
                 .to_string();
             let fields = map
                 .iter()
-                .filter(|(k, _)| k.as_str() != "_name" && k.as_str() != "type_name")
+                .filter(|(k, _)| k.as_str() != GROUND_NAME_KEY && k.as_str() != GROUND_TYPE_KEY)
                 .map(|(k, v)| AsmField {
                     name: k.clone(),
                     value: json_val_to_asm_value(v),
