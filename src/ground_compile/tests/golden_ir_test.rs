@@ -564,7 +564,7 @@ fn import_005() {
     assert_eq!(
         show_multi(vec![
             ("", vec!["lib".into()], "service = { image = reference }"),
-            ("test", vec![], "api = lib:service { image: nginx }"),
+            ("test", vec![], "use lib\napi = lib:service { image: nginx }"),
         ]),
         norm(
             r##"
@@ -742,6 +742,7 @@ fn import_010() {
                 "test",
                 vec![],
                 r##"
+                use std
                 deploy = { backend = std:aws:tf:def:backend_s3 }
             "##,
             ),
@@ -782,6 +783,7 @@ fn import_011() {
                 "test",
                 vec![],
                 r##"
+                use std
                 deploy = {
                   backend = std:aws:tf:def:backend_s3
                 }

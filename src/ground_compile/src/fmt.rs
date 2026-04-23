@@ -442,6 +442,19 @@ fn render_value_list(items: &[crate::ast::AstNode<AstValue>], indent: usize) -> 
     if items.len() == 1 {
         return format!("[ {} ]", render_value(&items[0].inner, indent));
     }
+    if let Some(widths) = tuple_value_column_widths(items, indent + 2) {
+        let parts: Vec<String> = items
+            .iter()
+            .map(|i| {
+                format!(
+                    "{}{}",
+                    spaces(indent + 2),
+                    render_value_aligned(&i.inner, indent + 2, Some(&widths))
+                )
+            })
+            .collect();
+        return format!("[\n{}\n{}]", parts.join("\n"), spaces(indent));
+    }
     let parts: Vec<String> = items
         .iter()
         .map(|i| {
@@ -453,6 +466,65 @@ fn render_value_list(items: &[crate::ast::AstNode<AstValue>], indent: usize) -> 
         })
         .collect();
     format!("[\n{}\n{}]", parts.join("\n"), spaces(indent))
+}
+
+fn render_value_aligned(value: &AstValue, indent: usize, tuple_widths: Option<&[usize]>) -> String {
+    match (value, tuple_widths) {
+        (AstValue::Tuple(items), Some(widths)) if widths.len() + 1 == items.len() => {
+            let parts: Vec<String> = items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    let rendered = render_value(&item.inner, indent);
+                    if idx + 1 == items.len() || rendered.contains('\n') {
+                        rendered
+                    } else {
+                        format!(
+                            "{}{}",
+                            rendered,
+                            spaces(widths[idx].saturating_sub(rendered.len()))
+                        )
+                    }
+                })
+                .collect();
+            parts.join(" -> ")
+        }
+        _ => render_value(value, indent),
+    }
+}
+
+fn tuple_value_column_widths(
+    items: &[crate::ast::AstNode<AstValue>],
+    indent: usize,
+) -> Option<Vec<usize>> {
+    let tuple_len = match items.first() {
+        Some(AstNode {
+            inner: AstValue::Tuple(parts),
+            ..
+        }) => parts.len(),
+        _ => return None,
+    };
+    if tuple_len < 2 {
+        return None;
+    }
+
+    let mut widths = vec![0; tuple_len - 1];
+    for item in items {
+        let AstValue::Tuple(parts) = &item.inner else {
+            return None;
+        };
+        if parts.len() != tuple_len {
+            return None;
+        }
+        for (idx, part) in parts.iter().take(tuple_len - 1).enumerate() {
+            let rendered = render_value(&part.inner, indent);
+            if rendered.contains('\n') {
+                return None;
+            }
+            widths[idx] = widths[idx].max(rendered.len());
+        }
+    }
+    Some(widths)
 }
 
 fn render_value_fields(fields: &[crate::ast::AstNode<AstField>], indent: usize) -> String {
@@ -705,6 +777,20 @@ cidr_block = string
         assert_eq!(
             got,
             "def aws_vpc {\n  cidr_block = string\n} = make_aws_vpc {}"
+        );
+    }
+
+    #[test]
+    fn fmt_aligns_tuples_in_multiline_lists() {
+        let src = r#"
+main = vpc {
+tags: [ "Name" -> "main" "Environment" -> "test" ]
+}
+"#;
+        let got = format_source(src).unwrap();
+        assert_eq!(
+            got,
+            "main = vpc { tags: [\n    \"Name\"        -> \"main\"\n    \"Environment\" -> \"test\"\n  ] }"
         );
     }
 }

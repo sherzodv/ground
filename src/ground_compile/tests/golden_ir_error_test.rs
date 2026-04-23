@@ -5,7 +5,7 @@
 
 #[path = "helpers/golden_ir_helpers.rs"]
 mod golden_ir_helpers;
-use golden_ir_helpers::show;
+use golden_ir_helpers::{show, show_multi};
 
 // ---------------------------------------------------------------------------
 // Type resolution errors
@@ -113,6 +113,33 @@ fn error_unknown_instance_ref() {
     assert!(
         out.contains("ghost"),
         "error should mention the unknown instance: {out}"
+    );
+}
+
+#[test]
+fn error_cross_pack_ref_requires_use() {
+    let out = show_multi(vec![
+        (
+            "aws",
+            vec!["std"],
+            r#"
+            pack std:aws:tf
+            def vpc
+        "#,
+        ),
+        (
+            "test",
+            vec![],
+            r#"
+            pack test
+            main = std:aws:tf:vpc {}
+        "#,
+        ),
+    ]);
+    assert!(out.contains("ERR:"), "expected error, got: {out}");
+    assert!(
+        out.contains("std:aws:tf:vpc") || out.contains("unknown def"),
+        "error should mention the unresolved cross-pack ref: {out}"
     );
 }
 

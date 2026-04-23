@@ -795,16 +795,27 @@ fn json_val_to_asm_value(v: &serde_json::Value) -> AsmValue {
             AsmValue::List(arr.iter().map(json_val_to_asm_value).collect())
         }
         serde_json::Value::Object(map) => {
+            let name = map
+                .get("_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("_")
+                .to_string();
+            let type_name = map
+                .get("type_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let fields = map
                 .iter()
+                .filter(|(k, _)| k.as_str() != "_name" && k.as_str() != "type_name")
                 .map(|(k, v)| AsmField {
                     name: k.clone(),
                     value: json_val_to_asm_value(v),
                 })
                 .collect();
             AsmValue::Def(Box::new(AsmDef {
-                type_name: String::new(),
-                name: "_".into(),
+                type_name,
+                name,
                 type_hint: None,
                 fields,
             }))

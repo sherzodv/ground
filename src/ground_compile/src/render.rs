@@ -283,7 +283,13 @@ fn value_to_json(
             seen.remove(&key);
             out
         }
-        crate::asm::AsmValue::Def(d) => def_to_json_inner(d, defs, seen),
+        crate::asm::AsmValue::Def(d) => {
+            if d.name == "_" && d.type_name.is_empty() {
+                fields_to_obj(&d.fields, defs, seen)
+            } else {
+                def_to_json_inner(d, defs, seen)
+            }
+        }
         crate::asm::AsmValue::List(items) => list_to_json(items, defs, seen),
         crate::asm::AsmValue::Path(items) => Value::Array(
             items

@@ -227,6 +227,20 @@ impl Ctx {
         s.parent.and_then(|p| self.lookup_pack(p, name))
     }
 
+    fn lookup_pack_visible(&self, scope: ScopeId, name: &str) -> Option<ScopeId> {
+        let s = &self.scopes[scope.0 as usize];
+        if s.ambiguous.contains(name) {
+            return None;
+        }
+        if let Some(&id) = s.packs.get(name) {
+            return Some(id);
+        }
+        match s.parent {
+            Some(parent) if parent != ScopeId(0) => self.lookup_pack_visible(parent, name),
+            _ => None,
+        }
+    }
+
     fn is_planned_name(&self, scope: ScopeId, name: &str) -> bool {
         let s = &self.scopes[scope.0 as usize];
         if let Some(ids) = s.defs.get(name) {
@@ -565,7 +579,7 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
             Some("pack") => ctx
-                .lookup_pack(cur_scope, val)
+                .lookup_pack_visible(cur_scope, val)
                 .map(IrRefSegValue::Pack)
                 .unwrap_or_else(|| IrRefSegValue::Plain(val.to_string())),
 
@@ -575,7 +589,7 @@ fn resolve_ref(segments: &[AstNode<AstRefSeg>], ctx: &Ctx, scope: ScopeId) -> Ir
                     IrRefSegValue::Shape(id)
                 } else if let Some(id) = ctx.lookup_def(cur_scope, val) {
                     IrRefSegValue::Def(id)
-                } else if let Some(id) = ctx.lookup_pack(cur_scope, val) {
+                } else if let Some(id) = ctx.lookup_pack_visible(cur_scope, val) {
                     IrRefSegValue::Pack(id)
                 } else {
                     IrRefSegValue::Plain(val.to_string())
@@ -1575,7 +1589,7 @@ fn lookup_pack_path_qualified(
         return None;
     }
 
-    let mut cur = ctx.lookup_pack(scope, first)?;
+    let mut cur = ctx.lookup_pack_visible(scope, first)?;
     for (qual, name) in &parts[1..] {
         if *qual == Some("def") {
             return None;
@@ -1611,7 +1625,7 @@ fn split_pack_prefix<'a>(
         let Some(name) = segs[i].inner.as_plain() else {
             break;
         };
-        let Some(next) = ctx.lookup_pack(cur, name) else {
+        let Some(next) = ctx.lookup_pack_visible(cur, name) else {
             break;
         };
         cur = next;
@@ -1652,7 +1666,7 @@ fn pass4_register_defs(parse_scopes: &[AstScope], ctx: &mut Ctx) {
                                 None => {
                                     let ref_name = ref_to_repr(&mapper.inner);
                                     ctx.errors.push(IrError {
-                                        message: format!("unknown shape '{}'", ref_name),
+                                        message: format!("unknown def '{}'", ref_name),
                                         loc: ir_loc(&mapper.loc),
                                     });
                                     continue;
@@ -2262,7 +2276,7 @@ fn resolve_value(
                                     }
                                 } else if hint_name != expected {
                                     ctx.push_error(
-                                        format!("unknown shape '{}' in type hint", hint_name),
+                                        format!("unknown def '{}' in type hint", hint_name),
                                         loc.clone(),
                                     );
                                 }
@@ -2322,7 +2336,7 @@ fn resolve_value(
                             {
                                 None => {
                                     ctx.push_error(
-                                        format!("unknown shape '{}' in type hint", hint_name),
+                                        format!("unknown def '{}' in type hint", hint_name),
                                         loc.clone(),
                                     );
                                     return IrValue::Ref(String::new());
@@ -2793,7 +2807,7 @@ fn resolve_list_item(
             });
         } else {
             ctx.errors.push(IrError {
-                message: format!("unknown shape '{}' in def: qualifier", type_name),
+                message: format!("unknown def '{}' in def: qualifier", type_name),
                 loc: loc.clone(),
             });
         }

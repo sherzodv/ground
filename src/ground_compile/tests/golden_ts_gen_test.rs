@@ -182,6 +182,56 @@ fn ts_gen_tuple_input() {
 }
 
 #[test]
+fn ts_gen_mapper_output_keeps_named_objects() {
+    let res = compile(CompileReq {
+        units: vec![Unit {
+            name: "test".into(),
+            path: vec![],
+            src: r#"
+                pack test
+                def service { port = string }
+                def platform = make_platform { services = [ service ] }
+                plan main = platform {}
+            "#
+            .into(),
+            ts_src: Some(
+                r#"
+                function make_platform(_i) {
+                    return {
+                        services: [
+                            { _name: "api", type_name: "service", port: "http" }
+                        ]
+                    };
+                }
+            "#
+                .into(),
+            ),
+        }],
+    });
+
+    assert!(
+        res.errors.is_empty(),
+        "compile errors: {:?}",
+        res.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+
+    let def = res
+        .defs
+        .iter()
+        .find(|d| d.name == "main")
+        .expect("main def missing");
+    let field = def
+        .fields
+        .iter()
+        .find(|f| f.name == "services")
+        .expect("services field missing");
+    assert_eq!(
+        format!("{:?}", field.value),
+        r#"List([Def(AsmDef { type_name: "service", name: "api", type_hint: None, fields: [AsmField { name: "port", value: Str("http") }] })])"#
+    );
+}
+
+#[test]
 fn ts_gen_type_units_include_named_shapes() {
     let res = compile(CompileReq {
         units: vec![Unit {
