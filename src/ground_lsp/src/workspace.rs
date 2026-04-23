@@ -570,7 +570,11 @@ pub fn location_uri_for_loc(analysis: &WorkspaceAnalysis, loc: IrLoc) -> Option<
 fn error_uri(analysis: &WorkspaceAnalysis, loc: Option<&ErrorLoc>) -> Option<String> {
     let loc = loc?;
     let file = analysis.files.iter().find(|f| f.unit_id == loc.unit)?;
-    Some(if loc.in_ts { file.ts_uri.clone() } else { file.uri.clone() })
+    Some(if loc.in_ts {
+        file.ts_uri.clone()
+    } else {
+        file.uri.clone()
+    })
 }
 
 fn text_for_analysis_uri<'a>(analysis: &'a WorkspaceAnalysis, uri: &str) -> Option<&'a str> {

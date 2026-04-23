@@ -915,8 +915,6 @@ dependencies = [
 name = "ground_be_terra"
 version = "0.0.1-alpha"
 dependencies = [
- "ground_compile",
- "ground_gen",
  "ground_run",
  "serde_json",
 ]
@@ -925,6 +923,7 @@ dependencies = [
 name = "ground_compile"
 version = "0.0.1-alpha"
 dependencies = [
+ "ground_gen",
  "ground_ts",
  "serde_json",
 ]
@@ -954,11 +953,7 @@ version = "0.0.1-alpha"
 name = "ground_test"
 version = "0.0.1-alpha"
 dependencies = [
- "ground_be_terra",
  "ground_compile",
- "ground_gen",
- "serde_json",
- "tera",
 ]
 
 [[package]]

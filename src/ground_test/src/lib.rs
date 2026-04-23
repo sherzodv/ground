@@ -1,129 +1,33 @@
-/// Golden render tests: .grd + .ts (optional) + one entry .tera + helper .tera files
+/// Golden render tests: exercise the full compiler pipeline through
+/// `ground_compile::render` against on-disk fixtures.
 ///
 /// Each sub-directory of `fixtures/` is one test case containing:
-///   test.grd    — Ground source
-///   test.ts     — TypeScript hooks (optional)
-///   manifest.json.tera — entry Tera template to render/assert
-///   *.tera      — helper templates loaded together into one Tera instance
-///   test.golden — expected rendered output
+///   test.grd              — Ground source
+///   test.ts               — optional TypeScript hooks
+///   main.<backend>.<type>.tera — manifest entry for the pack
+///   *.tera                — helper templates loaded with the manifest
+///   expected/<file>       — expected rendered output tree
 ///
-/// The template receives a `defs` array (see `compile_res_to_ctx`).
+/// The test harness picks `<backend>` and `<type>` from the single
+/// `main.*.*.tera` file in the fixture. Templates live in the (empty) root
+/// pack, which matches the plan's pack.
 ///
 /// To (re)generate golden files:
 ///   UPDATE_GOLDENS=1 cargo test -p ground_test
 #[cfg(test)]
 mod golden {
-    use ground_compile::{
-        asm_value_to_json, compile, AsmDef, AsmField, CompileReq, CompileRes, Unit,
-    };
-    use ground_gen::{render as render_units, RenderReq, TeraUnit};
-    use serde_json::{json, Value};
+    use ground_compile::{compile, render, CompileReq, RenderTarget, TemplateUnit, Unit};
     use std::{fs, path::Path};
-    use tera::Tera;
-
-    // -----------------------------------------------------------------------
-    // Context builder
-    // -----------------------------------------------------------------------
-
-    fn def_to_json(def: &AsmDef) -> Value {
-        json!({
-            "type_name": def.type_name,
-            "name":      def.name,
-            "type_hint": def.type_hint,
-            "fields":    fields_to_json(&def.fields),
-        })
-    }
-
-    fn fields_to_json(fields: &[AsmField]) -> Vec<Value> {
-        fields
-            .iter()
-            .map(|f| {
-                json!({
-                    "name":  f.name,
-                    "value": asm_value_to_json(&f.value),
-                })
-            })
-            .collect()
-    }
-
-    fn compile_res_to_ctx(res: &CompileRes) -> Value {
-        json!({
-            "defs": res.defs.iter().map(def_to_json).collect::<Vec<_>>(),
-        })
-    }
-
-    // -----------------------------------------------------------------------
-    // Per-fixture runner
-    // -----------------------------------------------------------------------
-
-    /// Load all `*.tera` files from `dir` into one Tera instance keyed by
-    /// filename, so `{% include "helper.tera" %}` and friends work naturally.
-    fn load_tera_dir(dir: &Path) -> Result<Tera, String> {
-        let mut tera = Tera::default();
-        let mut units = Vec::new();
-        for item in fs::read_dir(dir).map_err(|e| e.to_string())? {
-            let path = item.map_err(|e| e.to_string())?.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("tera") {
-                continue;
-            }
-            let src = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            units.push((name, src));
-        }
-        tera.add_raw_templates(
-            units
-                .iter()
-                .map(|(name, src)| (name.as_str(), src.as_str()))
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(tera)
-    }
-
-    fn load_units(dir: &Path) -> Result<Vec<TeraUnit>, String> {
-        let mut units = Vec::new();
-        let mut entries: Vec<_> = fs::read_dir(dir)
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("tera"))
-            .collect();
-        entries.sort();
-
-        for path in entries {
-            let file = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            let template = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            units.push(TeraUnit { file, template });
-        }
-
-        Ok(units)
-    }
-
-    fn render_dir(dir: &Path, ctx: &Value) -> Result<String, String> {
-        let tera = load_tera_dir(dir)?;
-        let tera_ctx = tera::Context::from_value(ctx.clone()).map_err(|e| e.to_string())?;
-        tera.render("manifest.json.tera", &tera_ctx)
-            .map_err(|e| e.to_string())
-    }
 
     fn run_fixture(dir: &Path) -> Result<(), String> {
         let grd_path = dir.join("test.grd");
         let src =
             fs::read_to_string(&grd_path).map_err(|e| format!("{}: {e}", grd_path.display()))?;
-
         let ts_src = fs::read_to_string(dir.join("test.ts")).ok();
 
         let res = compile(CompileReq {
             units: vec![Unit {
-                name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+                name: String::new(),
                 path: vec![],
                 src,
                 ts_src,
@@ -139,46 +43,41 @@ mod golden {
             ));
         }
 
-        let ctx = compile_res_to_ctx(&res);
-        let actual =
-            render_dir(dir, &ctx).map_err(|e| format!("{}: render error: {e}", dir.display()))?;
+        let (templates, target) = load_templates(dir)?;
 
-        let golden_path = dir.join("test.golden");
-
-        if std::env::var("UPDATE_GOLDENS").is_ok() {
-            fs::write(&golden_path, &actual)
-                .map_err(|e| format!("{}: {e}", golden_path.display()))?;
-            return Ok(());
-        }
-
-        let expected = fs::read_to_string(&golden_path).map_err(|_| {
-            format!(
-                "{}: test.golden missing — run with UPDATE_GOLDENS=1 to generate",
-                dir.display()
-            )
-        })?;
-
-        if actual != expected {
+        let rres = render(&res, &target, &templates);
+        if !rres.errors.is_empty() {
+            let msgs: Vec<_> = rres.errors.iter().map(|e| e.message.as_str()).collect();
             return Err(format!(
-                "{}: output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                "{}: render errors: {}",
                 dir.display(),
-                expected,
-                actual,
+                msgs.join("; ")
             ));
         }
 
-        let units =
-            load_units(dir).map_err(|e| format!("{}: load units error: {e}", dir.display()))?;
-        let rendered = render_units(
-            &RenderReq {
-                entry: "manifest.json.tera".into(),
-                units,
-            },
-            &ctx,
-        )
-        .map_err(|e| format!("{}: render engine error: {e}", dir.display()))?;
+        let mut actual_files: Vec<(String, String)> = rres
+            .units
+            .into_iter()
+            .map(|u| (format!("{}/{}", u.plan, u.file), u.content))
+            .collect();
+        actual_files.sort_by(|a, b| a.0.cmp(&b.0));
 
         let expected_root = dir.join("expected");
+
+        if std::env::var("UPDATE_GOLDENS").is_ok() {
+            if expected_root.exists() {
+                let _ = fs::remove_dir_all(&expected_root);
+            }
+            for (name, content) in &actual_files {
+                let out = expected_root.join(name);
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+                }
+                fs::write(&out, content).map_err(|e| format!("{}: {e}", out.display()))?;
+            }
+            return Ok(());
+        }
+
         let mut expected_files = Vec::new();
         if expected_root.exists() {
             collect_expected_files(&expected_root, &expected_root, &mut expected_files)
@@ -186,18 +85,8 @@ mod golden {
         }
         expected_files.sort();
 
-        let mut actual_files: Vec<(String, String)> =
-            rendered.into_iter().map(|u| (u.file, u.content)).collect();
-        actual_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let expected_names: Vec<String> = expected_files
-            .iter()
-            .map(|(name, _content): &(String, String)| name.clone())
-            .collect();
-        let actual_names: Vec<String> = actual_files
-            .iter()
-            .map(|(name, _content): &(String, String)| name.clone())
-            .collect();
+        let expected_names: Vec<&str> = expected_files.iter().map(|(n, _)| n.as_str()).collect();
+        let actual_names: Vec<&str> = actual_files.iter().map(|(n, _)| n.as_str()).collect();
         if actual_names != expected_names {
             return Err(format!(
                 "{}: rendered files mismatch\n--- expected ---\n{:?}\n--- actual ---\n{:?}",
@@ -220,6 +109,95 @@ mod golden {
         }
 
         Ok(())
+    }
+
+    fn load_templates(dir: &Path) -> Result<(Vec<TemplateUnit>, RenderTarget), String> {
+        let mut templates = Vec::new();
+        let mut entry: Option<(String, String)> = None;
+        collect_templates(dir, dir, &mut templates, &mut entry)?;
+
+        let (_, target_str) = entry.ok_or_else(|| {
+            format!(
+                "{}: no manifest (main.<backend>.<type>.tera) found",
+                dir.display()
+            )
+        })?;
+
+        let target = RenderTarget::parse(&target_str).map_err(|e| e.to_string())?;
+        Ok((templates, target))
+    }
+
+    fn collect_templates(
+        root: &Path,
+        dir: &Path,
+        out: &mut Vec<TemplateUnit>,
+        entry: &mut Option<(String, String)>,
+    ) -> Result<(), String> {
+        for item in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let path = item.map_err(|e| e.to_string())?.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some("expected") {
+                continue;
+            }
+            if path.is_dir() {
+                collect_templates(root, &path, out, entry)?;
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("tera") {
+                continue;
+            }
+
+            let rel = path.strip_prefix(root).map_err(|e| e.to_string())?;
+            let file = rel
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let pack_path: Vec<String> = rel
+                .parent()
+                .map(|p| {
+                    p.components()
+                        .filter_map(|c| match c {
+                            std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let content =
+                fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+
+            if let Some((backend, out_type)) = parse_manifest_name(&file) {
+                if let Some((prev, _)) = entry {
+                    return Err(format!(
+                        "{}: multiple manifests in fixture ({prev}, {file})",
+                        root.display()
+                    ));
+                }
+                *entry = Some((file.clone(), format!("{backend}:{out_type}")));
+            }
+
+            out.push(TemplateUnit {
+                path: pack_path,
+                file,
+                content,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Parse `main.<backend>.<out_type>.tera` → `Some((backend, out_type))`.
+    fn parse_manifest_name(file: &str) -> Option<(&str, &str)> {
+        let rest = file.strip_prefix("main.")?;
+        let rest = rest.strip_suffix(".tera")?;
+        let (backend, out_type) = rest.split_once('.')?;
+        if backend.is_empty() || out_type.is_empty() {
+            return None;
+        }
+        if backend.contains('.') || out_type.contains('.') {
+            return None;
+        }
+        Some((backend, out_type))
     }
 
     fn collect_expected_files(
@@ -245,10 +223,6 @@ mod golden {
     fn normalize_trailing_newlines(s: &str) -> &str {
         s.trim_end_matches('\n')
     }
-
-    // -----------------------------------------------------------------------
-    // Test entry point
-    // -----------------------------------------------------------------------
 
     #[test]
     fn golden_tests() {

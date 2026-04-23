@@ -11,6 +11,7 @@ pub struct TeraUnit {
 pub struct JsonUnit {
     pub file: String,
     pub content: String,
+    pub attrs: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,12 @@ pub fn render(req: &RenderReq, ctx: &Value) -> Result<Vec<JsonUnit>, GenError> {
     files
         .iter()
         .map(|file| {
+            let attrs = file
+                .as_object()
+                .cloned()
+                .ok_or_else(|| GenError::Manifest {
+                    cause: "file entry must be an object".into(),
+                })?;
             let path =
                 file.get("file")
                     .and_then(Value::as_str)
@@ -92,6 +99,7 @@ pub fn render(req: &RenderReq, ctx: &Value) -> Result<Vec<JsonUnit>, GenError> {
             Ok(JsonUnit {
                 file: path.into(),
                 content,
+                attrs,
             })
         })
         .collect()
@@ -188,10 +196,20 @@ region={{ deploy.region }}
                 JsonUnit {
                     file: "services/api/summary.txt".into(),
                     content: "name=api\nenabled=true".into(),
+                    attrs: serde_json::from_value(json!({
+                        "file": "services/api/summary.txt",
+                        "template": "summary.txt.tera"
+                    }))
+                    .unwrap(),
                 },
                 JsonUnit {
                     file: "services/api/values.txt".into(),
                     content: "port=8080\nregion=eu-central-1".into(),
+                    attrs: serde_json::from_value(json!({
+                        "file": "services/api/values.txt",
+                        "template": "values.txt.tera"
+                    }))
+                    .unwrap(),
                 },
             ]
         );

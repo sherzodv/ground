@@ -2095,16 +2095,19 @@ fn resolve_value(
                                     .or_else(|| ctx.lookup_shape(scope, hint_name))
                                 {
                                     if hint_tid != shape_id {
-                                        ctx.push_error(format!(
+                                        ctx.push_error(
+                                            format!(
                                             "shape hint '{}' does not match expected shape '{}'",
                                             hint_name, expected
-                                        ), loc.clone());
+                                        ),
+                                            loc.clone(),
+                                        );
                                     }
                                 } else if hint_name != expected {
-                                    ctx.push_error(format!(
-                                        "unknown shape '{}' in type hint",
-                                        hint_name
-                                    ), loc.clone());
+                                    ctx.push_error(
+                                        format!("unknown shape '{}' in type hint", hint_name),
+                                        loc.clone(),
+                                    );
                                 }
                                 Some(hint_name.to_string())
                             } else {
@@ -2136,10 +2139,10 @@ fn resolve_value(
                                         .name
                                         .as_deref()
                                         .unwrap_or("?");
-                                    ctx.push_error(format!(
-                                        "shape hint required for enum '{}'",
-                                        enum_name
-                                    ), loc.clone());
+                                    ctx.push_error(
+                                        format!("shape hint required for enum '{}'", enum_name),
+                                        loc.clone(),
+                                    );
                                     return IrValue::Ref(String::new());
                                 }
                                 Some(h) => h,
@@ -2154,10 +2157,10 @@ fn resolve_value(
                                 .or_else(|| ctx.lookup_shape(scope, hint_name))
                             {
                                 None => {
-                                    ctx.push_error(format!(
-                                        "unknown shape '{}' in type hint",
-                                        hint_name
-                                    ), loc.clone());
+                                    ctx.push_error(
+                                        format!("unknown shape '{}' in type hint", hint_name),
+                                        loc.clone(),
+                                    );
                                     return IrValue::Ref(String::new());
                                 }
                                 Some(t) => t,
@@ -2178,10 +2181,13 @@ fn resolve_value(
                                         .name
                                         .as_deref()
                                         .unwrap_or("?");
-                                    ctx.push_error(format!(
-                                        "'{}' is not a variant of '{}'",
-                                        hint_name, enum_name
-                                    ), loc.clone());
+                                    ctx.push_error(
+                                        format!(
+                                            "'{}' is not a variant of '{}'",
+                                            hint_name, enum_name
+                                        ),
+                                        loc.clone(),
+                                    );
                                     return IrValue::Ref(String::new());
                                 }
                                 Some(i) => i,
@@ -2190,10 +2196,10 @@ fn resolve_value(
                                 match ctx.shapes.get(hint_tid.0 as usize).map(|t| t.body.clone()) {
                                     Some(IrShapeBody::Struct(fields)) => fields,
                                     _ => {
-                                        ctx.push_error(format!(
-                                            "variant '{}' is not a struct type",
-                                            hint_name
-                                        ), loc.clone());
+                                        ctx.push_error(
+                                            format!("variant '{}' is not a struct type", hint_name),
+                                            loc.clone(),
+                                        );
                                         return IrValue::Ref(String::new());
                                     }
                                 };

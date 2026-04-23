@@ -1,6 +1,0 @@
-{
-  "alias": "{{ deploy.alias }}",
-  "kind": "{{ deploy.kind | default(value="deploy") }}",
-  "state": {% if deploy.state is defined %}{{ deploy.state | json_encode() }}{% else %}null{% endif %},
-  "backend_present": {{ (deploy.backend is defined) | json_encode() }}
-}

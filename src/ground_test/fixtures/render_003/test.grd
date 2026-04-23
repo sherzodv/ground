@@ -1,0 +1,9 @@
+pack shared {
+  def helper
+}
+
+use shared
+
+def service {} = shared:helper {}
+
+plan service

@@ -1,0 +1,4 @@
+{% import "_shared.tera" as shared -%}
+{% for def in defs -%}
+{{ shared::line(def=def) }}
+{% endfor %}

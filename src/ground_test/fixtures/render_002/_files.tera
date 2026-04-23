@@ -1,5 +1,6 @@
-{% macro unit(path, template) -%}
+{% macro unit(plan, path, template) -%}
 {
+  "plan": "{{ plan }}",
   "file": "{{ path }}",
   "template": "{{ template }}"
 }

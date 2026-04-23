@@ -1,7 +1,0 @@
-{% if deploy is defined and deploy.root is defined %}
-{% if deploy.kind | default(value="") == "network" %}
-{% include "network.json.tera" %}
-{% else %}
-{% include "root.json.tera" %}
-{% endif %}
-{% endif %}

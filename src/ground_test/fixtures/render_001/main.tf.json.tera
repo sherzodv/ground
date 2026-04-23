@@ -2,7 +2,8 @@
   "files": [
     {% for def in defs -%}
     {
-      "file": "plans/{{ def.name }}.txt",
+      "plan": "{{ def.name }}",
+      "file": "plan.txt",
       "template": "plan.txt.tera"
     }
     {%- endfor %}

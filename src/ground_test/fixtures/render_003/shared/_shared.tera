@@ -1,0 +1,3 @@
+{% macro line(def) -%}
+helper-from={{ def.type_name }}
+{%- endmacro line %}

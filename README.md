@@ -44,6 +44,8 @@ UPDATE_GOLDENS=1 cargo test -p ground_test
 
 ## Future Ideas
 
+- Introduce pack versioning
+- Introduce github imports with vendoring (golang style)
 - Split vendor derivation into explicit node-level and edge-level transforms.
   A node transform would derive resources intrinsic to one entity (`service`, `database`, `bucket`, ...). An edge transform would derive resources produced by relationships between entities, especially `access` links.
 - Make cross-entity effects first-class, especially for access links.

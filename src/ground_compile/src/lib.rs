@@ -3,12 +3,15 @@ pub mod ast;
 pub mod fmt;
 pub mod ir;
 pub mod parse;
+pub mod render;
 pub mod resolve;
 mod ts_gen;
 
 pub use asm::{asm_value_to_json, AsmDef, AsmDefRef, AsmField, AsmValue, AsmVariant};
 pub use ast::UnitId;
 pub use fmt::format_source;
+pub use ir::ScopeId;
+pub use render::{render, RenderRes, RenderTarget, RenderUnit, TemplateUnit};
 
 // ---------------------------------------------------------------------------
 // Public input shapes
@@ -47,8 +50,24 @@ pub struct ErrorLoc {
 pub struct CompileRes {
     pub units: Vec<UnitId>,
     pub defs: Vec<AsmDef>,
+    pub plans: Vec<PlanRoot>,
+    pub scopes: Vec<ir::IrScope>,
     pub type_units: Vec<TypeUnit>,
     pub errors: Vec<CompileError>,
+}
+
+/// A planned root — one per `plan` declaration in the source. `def_idx`
+/// indexes `CompileRes::defs`. `pack_path` is the pack where the `plan`
+/// statement was written; it drives render-manifest lookup.
+#[derive(Debug, Clone)]
+pub struct PlanRoot {
+    pub name: String,
+    pub def_idx: usize,
+    pub pack_path: Vec<String>,
+    pub scope: ScopeId,
+    /// Source unit where the `plan` declaration lives. Useful for error
+    /// locations; optional to let non-source-driven callers omit it.
+    pub unit: Option<UnitId>,
 }
 
 pub struct AnalysisRes {
@@ -257,15 +276,42 @@ pub fn compile(req: CompileReq) -> CompileRes {
         return CompileRes {
             units: prepared.unit_ids,
             defs: vec![],
+            plans: vec![],
+            scopes: vec![],
             type_units: prepared.type_units,
             errors: prepared.errors,
         };
     }
 
     let ctx = asm::lower(&prepared.ir, &prepared.full_ts);
+
+    // `asm::lower` iterates `ir.defs` in order and keeps planned defs only, so
+    // the i-th planned IR def corresponds to `ctx.defs[i]`.
+    let plans: Vec<PlanRoot> = prepared
+        .ir
+        .defs
+        .iter()
+        .filter(|d| d.planned)
+        .enumerate()
+        .map(|(idx, ir_def)| {
+            let unit = ir_def.loc.unit;
+            let scope = ir_def.scope;
+            let pack_path = scope_pack_path(&prepared.ir.scopes, scope);
+            PlanRoot {
+                name: ir_def.name.clone(),
+                def_idx: idx,
+                pack_path,
+                scope,
+                unit: Some(unit),
+            }
+        })
+        .collect();
+
     CompileRes {
         units: prepared.unit_ids,
         defs: ctx.defs,
+        plans,
+        scopes: prepared.ir.scopes,
         type_units: prepared.type_units,
         errors: prepared.errors,
     }
@@ -281,6 +327,26 @@ fn offset_to_line_col(src: &str, offset: u32) -> (u32, u32) {
     let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
     let col = before.rfind('\n').map_or(offset, |p| offset - p - 1) as u32 + 1;
     (line, col)
+}
+
+fn scope_pack_path(scopes: &[ir::IrScope], mut scope: ScopeId) -> Vec<String> {
+    let mut out = Vec::new();
+    loop {
+        let Some(sc) = scopes.get(scope.0 as usize) else {
+            break;
+        };
+        if matches!(sc.kind, ir::ScopeKind::Pack) {
+            if let Some(name) = &sc.name {
+                out.push(name.clone());
+            }
+        }
+        let Some(parent) = sc.parent else {
+            break;
+        };
+        scope = parent;
+    }
+    out.reverse();
+    out
 }
 
 /// Map a TypeScript diagnostic back to a per-unit (UnitId, line, col) using

@@ -4,7 +4,5 @@ version = "0.0.1-alpha"
 edition = "2021"
 
 [dependencies]
-ground_compile = { path = "../ground_compile" }
-ground_gen   = { path = "../ground_gen" }
 ground_run   = { path = "../ground_run" }
 serde_json   = "1"

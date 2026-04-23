@@ -7,9 +7,9 @@ use std::{
 };
 
 use ground_be_terra::terra_ops::{self, Action, AttrVal, OpsEvent};
-use ground_be_terra::JsonUnit;
 use ground_compile::{
-    compile, format_source, AsmDef, AsmDefRef, AsmValue, CompileReq, CompileRes, Unit,
+    compile, format_source, render as compile_render, AsmDef, AsmDefRef, AsmValue, CompileReq,
+    CompileRes, RenderTarget, RenderUnit, TemplateUnit, Unit,
 };
 use ground_run::RunEvent;
 use ops_display::{Op, TerraEnricher};
@@ -26,12 +26,13 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     match args.as_slice() {
-        [cmd, sub] if cmd == "tf" && sub == "init" => cmd_tf_init(false),
-        [cmd, sub, flag] if cmd == "tf" && sub == "init" && flag == "--git-ignore" => {
-            cmd_tf_init(true)
-        }
+        [cmd] if cmd == "init" => cmd_init(false),
+        [cmd, flag] if cmd == "init" && flag == "--git-ignore" => cmd_init(true),
+        [cmd, sub, key] if cmd == "config" && sub == "target" => cmd_config_set_target(key),
+        [cmd, sub] if cmd == "config" && sub == "target" => cmd_config_get_target(),
         [cmd, sub] if cmd == "tf" && sub == "migrate" => cmd_tf_migrate(),
-        [cmd, sub] if cmd == "gen" && sub == "terra" => cmd_gen_terra(),
+        [cmd] if cmd == "gen" => cmd_gen(None),
+        [cmd, flag, val] if cmd == "gen" && flag == "--target" => cmd_gen(Some(val.as_str())),
         [cmd, sub] if cmd == "gen" && sub == "types" => cmd_gen_types(),
         [cmd] if cmd == "fmt" => cmd_fmt(),
         [cmd, ..] if cmd == "fmt" => cmd_fmt(),
@@ -50,10 +51,11 @@ fn main() {
         }
         _ => {
             eprintln!("usage:");
-            eprintln!("  ground tf init [--git-ignore]");
-            eprintln!("  ground tf migrate");
-            eprintln!("  ground gen terra");
+            eprintln!("  ground init [--git-ignore]");
+            eprintln!("  ground config target [<backend>:<type>]");
+            eprintln!("  ground gen [--target <backend>:<type>]");
             eprintln!("  ground gen types");
+            eprintln!("  ground tf migrate");
             eprintln!("  ground fmt");
             eprintln!("  ground status");
             eprintln!("  ground lsp start");
@@ -66,7 +68,7 @@ fn main() {
     }
 }
 
-fn cmd_tf_init(git_ignore: bool) {
+fn cmd_init(git_ignore: bool) {
     if let Err(e) = fs::create_dir(".ground") {
         if e.kind() != std::io::ErrorKind::AlreadyExists {
             eprintln!("error: {e}");
@@ -75,20 +77,21 @@ fn cmd_tf_init(git_ignore: bool) {
     }
 
     let settings_path = ".ground/settings.json";
-    let settings = "{\n  \"provider\": \"aws\"\n}\n";
-
-    if let Err(e) = fs::write(settings_path, settings) {
-        eprintln!("error: {settings_path}: {e}");
-        process::exit(1);
+    if !Path::new(settings_path).exists() {
+        if let Err(e) = fs::write(settings_path, "{}\n") {
+            eprintln!("error: {settings_path}: {e}");
+            process::exit(1);
+        }
     }
 
     println!("initialized .ground/");
+    println!("run `ground config target <backend>:<type>` to set the render target");
 
     if git_ignore {
         let needed = [
-            ".ground/terra/**/.terraform/",
-            ".ground/terra/**/terraform.tfstate",
-            ".ground/terra/**/terraform.tfstate.backup",
+            ".ground/**/.terraform/",
+            ".ground/**/terraform.tfstate",
+            ".ground/**/terraform.tfstate.backup",
         ];
 
         let existing = fs::read_to_string(".gitignore").unwrap_or_default();
@@ -119,6 +122,72 @@ fn cmd_tf_init(git_ignore: bool) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settings + target
+// ---------------------------------------------------------------------------
+
+fn settings_path(root: &Path) -> PathBuf {
+    root.join(".ground/settings.json")
+}
+
+fn read_settings(root: &Path) -> Value {
+    match fs::read_to_string(settings_path(root)) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or(Value::Object(Default::default())),
+        Err(_) => Value::Object(Default::default()),
+    }
+}
+
+fn write_settings(root: &Path, value: &Value) {
+    let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".into());
+    let mut out = pretty;
+    out.push('\n');
+    if let Err(e) = fs::write(settings_path(root), out) {
+        eprintln!("error: {}: {e}", settings_path(root).display());
+        process::exit(1);
+    }
+}
+
+fn read_target(root: &Path) -> RenderTarget {
+    let settings = read_settings(root);
+    let Some(raw) = settings.get("target").and_then(Value::as_str) else {
+        eprintln!("error: no target set — run `ground config target <backend>:<type>`");
+        process::exit(1);
+    };
+    RenderTarget::parse(raw).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        process::exit(1);
+    })
+}
+
+fn cmd_config_get_target() {
+    with_project_root(|root| {
+        let settings = read_settings(root);
+        match settings.get("target").and_then(Value::as_str) {
+            Some(v) => println!("{v}"),
+            None => {
+                eprintln!("error: no target set");
+                process::exit(1);
+            }
+        }
+    });
+}
+
+fn cmd_config_set_target(value: &str) {
+    if let Err(e) = RenderTarget::parse(value) {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
+    with_project_root(|root| {
+        let mut settings = read_settings(root);
+        let obj = settings
+            .as_object_mut()
+            .expect("settings.json must be a JSON object");
+        obj.insert("target".into(), Value::String(value.into()));
+        write_settings(root, &settings);
+        println!("target = {value}");
+    });
+}
+
 struct PlanStamp {
     alias: String,
     kind: String,
@@ -128,17 +197,13 @@ struct PlanStamp {
 
 fn cmd_tf_migrate() {
     with_project_root(|root| {
-        let res = do_compile(root, true);
-        let outputs = match ground_be_terra::generate_each(&res) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
-        };
-        write_plan_units(root, &outputs);
+        let target = read_target(root);
+        ensure_tf_backend(&target, "ground tf migrate");
 
-        let stamps = read_plan_stamps(&root.join(".ground/terra"));
+        let outputs = do_render(root, &do_compile(root, true), &target);
+        write_render_units(root, &target, &outputs);
+
+        let stamps = read_plan_stamps(&root.join(render_out_dir(&target)));
         let migratable: Vec<&PlanStamp> = stamps
             .iter()
             .filter(|stamp| {
@@ -175,12 +240,12 @@ fn cmd_tf_migrate() {
             process::exit(1);
         }
 
-        let (res, outputs, plan_name) = compile_and_gen(root, &stamp.alias);
+        let (res, outputs, target, plan_name) = compile_and_gen(root, &stamp.alias);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
-        write_plan_units(root, &outputs);
+        write_render_units(root, &target, &outputs);
 
-        let dir = root.join(".ground/terra").join(&plan_name);
+        let dir = root.join(render_out_dir(&target)).join(&plan_name);
         let Some(rx) = terra_ops::migrate_state(&dir).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             process::exit(1);
@@ -335,12 +400,109 @@ fn collect_grd_recursive(root: &Path, dir: &Path, units: &mut Vec<Unit>) {
     }
 }
 
+fn resolve_project_path(root: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
+}
+
+fn source_root(root: &Path) -> PathBuf {
+    let settings = read_settings(root);
+    if let Some(raw) = settings.get("src").and_then(Value::as_str) {
+        return resolve_project_path(root, raw);
+    }
+
+    let default_src = root.join("src");
+    if default_src.is_dir() {
+        default_src
+    } else {
+        root.to_path_buf()
+    }
+}
+
+fn templates_root(root: &Path) -> PathBuf {
+    let settings = read_settings(root);
+    if let Some(raw) = settings.get("templates").and_then(Value::as_str) {
+        return resolve_project_path(root, raw);
+    }
+    source_root(root)
+}
+
+fn collect_templates(root: &Path) -> Vec<TemplateUnit> {
+    let templates_root = templates_root(root);
+    let mut units = Vec::new();
+    collect_templates_recursive(&templates_root, &templates_root, &mut units);
+    units
+}
+
+fn collect_templates_recursive(root: &Path, dir: &Path, units: &mut Vec<TemplateUnit>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("warning: cannot read {:?}: {e}", dir);
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_hidden = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'));
+
+        if path.is_dir() && !is_hidden {
+            collect_templates_recursive(root, &path, units);
+            continue;
+        }
+
+        if path.extension().and_then(|e| e.to_str()) != Some("tera") {
+            continue;
+        }
+
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let pack_path: Vec<String> = rel
+            .parent()
+            .map(|p| {
+                p.components()
+                    .filter_map(|c| match c {
+                        std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let file = rel
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        match fs::read_to_string(&path) {
+            Ok(content) => units.push(TemplateUnit {
+                path: pack_path,
+                file,
+                content,
+            }),
+            Err(e) => {
+                eprintln!("error: {}: {e}", path.display());
+                process::exit(1);
+            }
+        }
+    }
+}
+
 /// Compile all .grd files under `root`, print errors and exit on failure.
 fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
-    let units = collect_grd_files(root);
+    let src_root = source_root(root);
+    let units = collect_grd_files(&src_root);
 
     if units.is_empty() {
-        eprintln!("no .grd files found in project");
+        eprintln!("no .grd files found in {}", src_root.display());
         process::exit(1);
     }
 
@@ -363,7 +525,7 @@ fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
         process::exit(1);
     }
 
-    if require_plans && res.defs.is_empty() {
+    if require_plans && res.plans.is_empty() {
         eprintln!("no plan declarations found — nothing to generate");
         process::exit(1);
     }
@@ -371,22 +533,20 @@ fn do_compile(root: &Path, require_plans: bool) -> CompileRes {
     res
 }
 
-fn compile_and_gen(root: &Path, plan_name: &str) -> (CompileRes, Vec<JsonUnit>, String) {
+fn compile_and_gen(
+    root: &Path,
+    plan_name: &str,
+) -> (CompileRes, Vec<RenderUnit>, RenderTarget, String) {
     let res = do_compile(root, true);
+    let target = read_target(root);
+    ensure_tf_backend(&target, "ground plan/apply");
+    let outputs = do_render(root, &res, &target);
 
-    let outputs = match ground_be_terra::generate_each(&res) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
-
-    let Some(def) = res.defs.iter().find(|d| d.name == plan_name) else {
+    let Some(plan) = res.plans.iter().find(|p| p.name == plan_name) else {
         let available = res
-            .defs
+            .plans
             .iter()
-            .map(|d| d.name.as_str())
+            .map(|p| p.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
         eprintln!("error: plan '{plan_name}' not found");
@@ -396,18 +556,45 @@ fn compile_and_gen(root: &Path, plan_name: &str) -> (CompileRes, Vec<JsonUnit>, 
         process::exit(1);
     };
 
-    let selected_plan = def.name.clone();
-    let plan_outputs: Vec<JsonUnit> = outputs
+    let selected_plan = plan.name.clone();
+    let plan_outputs: Vec<RenderUnit> = outputs
         .into_iter()
-        .filter(|u| u.file.starts_with(&format!("{selected_plan}/")))
+        .filter(|u| u.plan == selected_plan)
         .collect();
 
-    (res, plan_outputs, selected_plan)
+    (res, plan_outputs, target, selected_plan)
 }
 
-fn write_plan_units(root: &Path, outputs: &[JsonUnit]) {
+fn do_render(_root: &Path, res: &CompileRes, target: &RenderTarget) -> Vec<RenderUnit> {
+    let templates = collect_templates(_root);
+    let rres = compile_render(res, target, &templates);
+    if !rres.errors.is_empty() {
+        for e in &rres.errors {
+            eprintln!("error: {}", e.message);
+        }
+        process::exit(1);
+    }
+    rres.units
+}
+
+fn render_out_dir(target: &RenderTarget) -> String {
+    format!(".ground/{}", target.backend)
+}
+
+fn ensure_tf_backend(target: &RenderTarget, cmd: &str) {
+    if target.backend != "tf" {
+        eprintln!(
+            "error: {cmd} currently supports only target backend \"tf\", found \"{}\"",
+            target.backend
+        );
+        process::exit(1);
+    }
+}
+
+fn write_render_units(root: &Path, target: &RenderTarget, outputs: &[RenderUnit]) {
+    let base = root.join(render_out_dir(target));
     for output in outputs {
-        let out_path = root.join(".ground/terra").join(&output.file);
+        let out_path = base.join(&output.plan).join(&output.file);
         if let Some(parent) = out_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 eprintln!("error: {}: {e}", parent.display());
@@ -421,21 +608,22 @@ fn write_plan_units(root: &Path, outputs: &[JsonUnit]) {
     }
 }
 
-fn cmd_gen_terra() {
+fn cmd_gen(target_override: Option<&str>) {
     with_project_root(|root| {
         let res = do_compile(root, true);
-
-        let outputs = match ground_be_terra::generate_each(&res) {
-            Ok(o) => o,
-            Err(e) => {
+        let target = match target_override {
+            Some(raw) => RenderTarget::parse(raw).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 process::exit(1);
-            }
+            }),
+            None => read_target(root),
         };
+        let outputs = do_render(root, &res, &target);
+        let out_dir = render_out_dir(&target);
 
         for output in &outputs {
-            write_plan_units(root, std::slice::from_ref(output));
-            println!("wrote .ground/terra/{}", output.file);
+            write_render_units(root, &target, std::slice::from_ref(output));
+            println!("wrote {out_dir}/{}/{}", output.plan, output.file);
         }
     });
 }
@@ -443,8 +631,8 @@ fn cmd_gen_terra() {
 fn cmd_plan_ls() {
     with_project_root(|root| {
         let res = do_compile(root, true);
-        for def in &res.defs {
-            println!("{}", def.name);
+        for plan in &res.plans {
+            println!("{}", plan.name);
         }
     });
 }
@@ -499,14 +687,15 @@ fn with_project_root(action: impl FnOnce(&Path)) {
 
 fn cmd_fmt() {
     with_project_root(|root| {
-        let files = collect_grd_paths_recursive(root);
+        let src_root = source_root(root);
+        let files = collect_grd_paths_recursive(&src_root);
         if files.is_empty() {
-            eprintln!("warning: no .grd files found in project");
+            eprintln!("warning: no .grd files found in {}", src_root.display());
             return;
         }
 
         for rel in files {
-            let path = root.join(&rel);
+            let path = src_root.join(&rel);
             let src = match fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -903,13 +1092,13 @@ fn cmd_apply(plan_name: &str, verbose: bool) {
     use ground_be_terra::terra_ops;
 
     with_project_root(|root| {
-        let (res, outputs, plan_name) = compile_and_gen(root, plan_name);
+        let (res, outputs, target, plan_name) = compile_and_gen(root, plan_name);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
 
-        write_plan_units(root, &outputs);
+        write_render_units(root, &target, &outputs);
 
-        let dir = root.join(".ground/terra").join(&plan_name);
+        let dir = root.join(render_out_dir(&target)).join(&plan_name);
         run_init_if_needed(&dir, &plan_name, &provider, verbose);
 
         let rx = terra_ops::apply(&dir).unwrap_or_else(|e| {
@@ -935,13 +1124,13 @@ fn cmd_plan(plan_name: &str, verbose: bool) {
     use ground_be_terra::terra_ops;
 
     with_project_root(|root| {
-        let (res, outputs, plan_name) = compile_and_gen(root, plan_name);
+        let (res, outputs, target, plan_name) = compile_and_gen(root, plan_name);
         let provider = "aws".to_string();
         let lookup = build_lookup(&res);
 
-        write_plan_units(root, &outputs);
+        write_render_units(root, &target, &outputs);
 
-        let dir = root.join(".ground/terra").join(&plan_name);
+        let dir = root.join(render_out_dir(&target)).join(&plan_name);
         run_init_if_needed(&dir, &plan_name, &provider, verbose);
 
         let rx = terra_ops::plan(&dir).unwrap_or_else(|e| {
