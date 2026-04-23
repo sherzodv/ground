@@ -131,6 +131,7 @@ pub fn render(res: &CompileRes, target: &RenderTarget, templates: &[TemplateUnit
             &RenderReq {
                 entry: manifest_name.clone(),
                 units,
+                pretty_print: target.out_type == "json",
             },
             &ctx,
         ) {

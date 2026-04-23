@@ -18,6 +18,7 @@ pub struct JsonUnit {
 pub struct RenderReq {
     pub entry: String,
     pub units: Vec<TeraUnit>,
+    pub pretty_print: bool,
 }
 
 #[derive(Debug)]
@@ -96,6 +97,17 @@ pub fn render(req: &RenderReq, ctx: &Value) -> Result<Vec<JsonUnit>, GenError> {
                 .map_err(|e| GenError::Render {
                     cause: format!("{e:?}"),
                 })?;
+            let content = if req.pretty_print && path.ends_with(".json") {
+                let value: Value =
+                    serde_json::from_str(&content).map_err(|e| GenError::Render {
+                        cause: format!("pretty-print json parse error: {e}: {content}"),
+                    })?;
+                serde_json::to_string_pretty(&value).map_err(|e| GenError::Render {
+                    cause: format!("pretty-print json encode error: {e}"),
+                })?
+            } else {
+                content
+            };
             Ok(JsonUnit {
                 file: path.into(),
                 content,
@@ -175,6 +187,7 @@ region={{ deploy.region }}
                     template: r#"{% import "_shared.tera" as shared -%}{{ shared::values(deploy=deploy) }}"#.into(),
                 },
             ],
+            pretty_print: false,
         };
 
         let out = render(
@@ -212,6 +225,33 @@ region={{ deploy.region }}
                     .unwrap(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn render_pretty_prints_json_when_requested() {
+        let req = RenderReq {
+            entry: "manifest.json.tera".into(),
+            units: vec![
+                TeraUnit {
+                    file: "manifest.json.tera".into(),
+                    template:
+                        r#"{ "files": [ { "file": "main.json", "template": "main.json.tera" } ] }"#
+                            .into(),
+                },
+                TeraUnit {
+                    file: "main.json.tera".into(),
+                    template: r#"{"b":1,"a":{"x":true}}"#.into(),
+                },
+            ],
+            pretty_print: true,
+        };
+
+        let out = render(&req, &json!({})).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].content,
+            "{\n  \"b\": 1,\n  \"a\": {\n    \"x\": true\n  }\n}"
         );
     }
 }
