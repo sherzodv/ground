@@ -46,6 +46,7 @@ UPDATE_GOLDENS=1 cargo test -p ground_test
 
 - Introduce pack versioning
 - Introduce github imports with vendoring (golang style)
+- Someday maybe find a way to let Ground reason about generated IDs or Terraform outputs without collapsing everything back into low-level Terraform thinking.
 - Split vendor derivation into explicit node-level and edge-level transforms.
   A node transform would derive resources intrinsic to one entity (`service`, `database`, `bucket`, ...). An edge transform would derive resources produced by relationships between entities, especially `access` links.
 - Make cross-entity effects first-class, especially for access links.
@@ -71,4 +72,3 @@ UPDATE_GOLDENS=1 cargo test -p ground_test
     network: prod-vpc
   }
   ```
-
