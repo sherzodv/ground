@@ -2330,6 +2330,17 @@ fn resolve_value(
 
         IrFieldType::Ref(pattern) => {
             if let Some(shape_id) = target_shape_from_ir_ref(pattern) {
+                if let Some(IrShapeBody::Primitive(p)) =
+                    ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
+                {
+                    return resolve_value(
+                        v,
+                        &IrFieldType::Primitive(p.clone()),
+                        ctx,
+                        scope,
+                        loc,
+                    );
+                }
                 if let Some(IrShapeBody::Tuple(items)) =
                     ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
                 {
@@ -2599,6 +2610,13 @@ fn resolve_value_against_ref(
     scope: ScopeId,
     loc: &IrLoc,
 ) -> IrValue {
+    if let Some(shape_id) = target_shape_from_ir_ref(pattern) {
+        if let Some(IrShapeBody::Primitive(p)) = ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
+        {
+            return resolve_value(v, &IrFieldType::Primitive(p.clone()), ctx, scope, loc);
+        }
+    }
+
     let segs = match v {
         AstValue::Ref(r) => {
             if has_group(r) {
@@ -2835,6 +2853,25 @@ fn resolve_list_item(
     scope: ScopeId,
     loc: &IrLoc,
 ) -> IrValue {
+    if !matches!(v, AstValue::Ref(_)) {
+        if let Some(pattern) = patterns.first() {
+            if pattern.segments.len() == 1 {
+                if let IrRefSegValue::Shape(tid) = &pattern.segments[0].value {
+                    if let Some(IrShapeBody::Primitive(_)) =
+                        ctx.shapes.get(tid.0 as usize).map(|t| &t.body)
+                    {
+                        return resolve_value(
+                            v,
+                            &IrFieldType::Ref(pattern.clone()),
+                            ctx,
+                            scope,
+                            loc,
+                        );
+                    }
+                }
+            }
+        }
+    }
     if let AstValue::Tuple(_) = v {
         if let Some(pattern) = patterns.first() {
             return resolve_value(v, &IrFieldType::Ref(pattern.clone()), ctx, scope, loc);

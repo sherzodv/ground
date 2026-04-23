@@ -138,6 +138,23 @@ fn tuple_list_001() {
 }
 
 #[test]
+fn primitive_list_string_literals_001() {
+    assert_eq!(
+        show(
+            r##"
+            sg = { cidr_blocks = [ ipv4net ] }
+            plan app = sg { cidr_blocks: [ "10.0.0.0/16"  "10.1.0.0/16" ] }
+        "##
+        ),
+        norm(
+            r##"
+            Def[app = sg { cidr_blocks: List[Str("10.0.0.0/16"), Str("10.1.0.0/16")] }]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn nested_enum_cross_pack_composition_001() {
     assert_eq!(
         show_multi(vec![
