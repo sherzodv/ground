@@ -727,6 +727,14 @@ fn ir_value_to_json_typed(
                 }
             }
         },
+        IrFieldType::Union(items) => {
+            for item in items {
+                if let Some(json) = ir_value_to_json_typed_if_matches(v, item, ir, cache, via) {
+                    return json;
+                }
+            }
+            ir_value_to_json(v, ir)
+        }
         IrFieldType::Tuple(item_types) => match v {
             IrValue::Tuple(items) => serde_json::Value::Array(
                 item_types
@@ -748,6 +756,36 @@ fn ir_value_to_json_typed(
             }
         },
         IrFieldType::Optional(inner) => ir_value_to_json_typed(v, inner, ir, cache, via),
+    }
+}
+
+fn ir_value_to_json_typed_if_matches(
+    v: &IrValue,
+    field_type: &IrFieldType,
+    ir: &IrRes,
+    cache: &HashMap<DefId, AsmDef>,
+    via: bool,
+) -> Option<serde_json::Value> {
+    match unwrap_optional_field_type(field_type) {
+        IrFieldType::Primitive(IrPrimitive::Ipv4) if matches!(v, IrValue::Str(_)) => {
+            Some(ir_value_to_json_typed(v, field_type, ir, cache, via))
+        }
+        IrFieldType::Primitive(IrPrimitive::Ipv4Net) if matches!(v, IrValue::Str(_)) => {
+            Some(ir_value_to_json_typed(v, field_type, ir, cache, via))
+        }
+        IrFieldType::Primitive(IrPrimitive::String) if matches!(v, IrValue::Str(_)) => {
+            Some(ir_value_to_json_typed(v, field_type, ir, cache, via))
+        }
+        IrFieldType::Primitive(IrPrimitive::Integer) if matches!(v, IrValue::Int(_)) => {
+            Some(ir_value_to_json_typed(v, field_type, ir, cache, via))
+        }
+        IrFieldType::Primitive(IrPrimitive::Boolean) if matches!(v, IrValue::Bool(_)) => {
+            Some(ir_value_to_json_typed(v, field_type, ir, cache, via))
+        }
+        IrFieldType::Primitive(IrPrimitive::Reference) if matches!(v, IrValue::Ref(_)) => {
+            Some(ir_value_to_json_typed(v, field_type, ir, cache, via))
+        }
+        _ => None,
     }
 }
 

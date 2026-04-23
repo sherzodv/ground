@@ -204,6 +204,115 @@ fn tuple_list_001() {
 }
 
 #[test]
+fn primitive_union_integer_or_string_001() {
+    assert_eq!(
+        show(
+            r##"
+            rule = {
+                protocol = integer | string
+            }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[rule, Struct[Field#0[protocol, Union[Prim(integer) | Prim(string)]]]],
+                Def#0[rule, Shape#0],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn primitive_union_integer_or_string_values_001() {
+    assert_eq!(
+        show(
+            r##"
+            rule = {
+                protocol = integer | string
+            }
+            tcp = rule { protocol: "tcp" }
+            number = rule { protocol: 6 }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[rule, Struct[Field#0[protocol, Union[Prim(integer) | Prim(string)]]]],
+                Def#0[rule, Shape#0],
+                Def#1[tcp, Shape#0, base=Def#0, Set[Field#0, Str("tcp")]],
+                Def#2[number, Shape#0, base=Def#0, Set[Field#0, Int(6)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn primitive_union_with_enum_ref_values_001() {
+    assert_eq!(
+        show(
+            r##"
+            protocol = udp | grpc
+            rule = {
+                port = protocol | integer
+            }
+            named = rule { port: udp }
+            numbered = rule { port: 53 }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[protocol, Enum[udp|grpc]],
+                Shape#1[rule, Struct[Field#0[port, Union[IrRef[Enum(Shape#0)] | Prim(integer)]]]],
+                Def#0[protocol, Shape#0],
+                Def#1[rule, Shape#1],
+                Def#2[named, Shape#1, base=Def#1, Set[Field#0, Variant(Shape#0, "udp")]],
+                Def#3[numbered, Shape#1, base=Def#1, Set[Field#0, Int(53)]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn primitive_union_with_enum_ref_in_inline_struct_list_001() {
+    assert_eq!(
+        show(
+            r##"
+            protocol = tcp | all
+            sg = {
+                def rule {
+                    protocol = protocol | integer
+                }
+                ingress = [ def:rule ]
+            }
+            app = sg { ingress: [ { protocol: tcp } { protocol: 6 } ] }
+        "##,
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Shape#0[protocol, Enum[tcp|all]],
+                Shape#1[sg, Struct[Field#0[ingress, List[IrRef[Struct(Shape#2)]]]]],
+                Def#0[protocol, Shape#0],
+                Def#1[sg, Shape#1],
+                Def#2[app, Shape#1, base=Def#1, Set[Field#0, List[Inst(Def#4), Inst(Def#5)]]],
+                Def#4[_, Shape#2, Set[Field#0, Variant(Shape#0, "tcp")]],
+                Def#5[_, Shape#2, Set[Field#0, Int(6)]],
+                Scope[struct:sg,
+                    Shape#2[rule, Struct[Field#0[protocol, Union[IrRef[Enum(Shape#0)] | Prim(integer)]]]],
+                    Def#3[rule, Shape#2],
+                ],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn def_004() {
     assert_eq!(
         show(

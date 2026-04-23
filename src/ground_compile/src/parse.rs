@@ -75,6 +75,10 @@ impl<'a> Parser<'a> {
             return None;
         }
         match r.segments[0].inner.as_plain()? {
+            "string" => Some(AstPrimitive::String),
+            "integer" => Some(AstPrimitive::Integer),
+            "boolean" => Some(AstPrimitive::Boolean),
+            "reference" => Some(AstPrimitive::Reference),
             "ipv4" => Some(AstPrimitive::Ipv4),
             "ipv4net" => Some(AstPrimitive::Ipv4Net),
             _ => None,
@@ -290,9 +294,9 @@ impl<'a> Parser<'a> {
 
     // -- type expressions (link bodies, list elements) -------------------
 
-    /// `type-def | "[" type-expr "]" | ref ("|" ref)*`
+    /// `type-def | "[" type-expr "]" | ref`
     ///
-    /// Always returns a pure type expression; a union of refs desugars to `Enum`.
+    /// Always returns a pure type expression.
     fn parse_base_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
         let start = self.pos;
 
@@ -337,36 +341,84 @@ impl<'a> Parser<'a> {
             return Some(self.node(start, expr));
         }
 
-        // Ref or sugar enum: ref ("|" ref)*
-        let first = self.parse_ref()?;
-        let mut refs = vec![first];
-        loop {
-            let saved = self.pos;
-            self.skip_ws();
-            if self.eat("|") {
-                self.skip_ws();
-                if let Some(r) = self.parse_ref() {
-                    refs.push(r);
-                    continue;
-                }
+        let r = self.parse_ref()?;
+        match Self::primitive_from_ref(&r.inner) {
+            Some(AstPrimitive::Ipv4) => {
+                Some(self.node(start, AstTypeExpr::Primitive(AstPrimitive::Ipv4)))
             }
-            self.pos = saved;
-            break;
-        }
-
-        if refs.len() == 1 {
-            let r = refs.remove(0);
-            if let Some(prim) = Self::primitive_from_ref(&r.inner) {
-                Some(self.node(start, AstTypeExpr::Primitive(prim)))
-            } else {
-                Some(self.node(start, AstTypeExpr::Ref(r.inner)))
+            Some(AstPrimitive::Ipv4Net) => {
+                Some(self.node(start, AstTypeExpr::Primitive(AstPrimitive::Ipv4Net)))
             }
-        } else {
-            Some(self.node(start, AstTypeExpr::Enum(refs)))
+            _ => Some(self.node(start, AstTypeExpr::Ref(r.inner))),
         }
     }
 
     fn parse_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
+        let start = self.pos;
+        let first = self.parse_tuple_type_expr()?;
+        let mut items = vec![first];
+
+        loop {
+            let saved = self.pos;
+            self.skip_ws();
+            if !self.eat("|") {
+                self.pos = saved;
+                break;
+            }
+            self.skip_ws();
+            let Some(next) = self.parse_tuple_type_expr() else {
+                self.pos = saved;
+                break;
+            };
+            items.push(next);
+        }
+
+        if items.len() == 1 {
+            return Some(items.remove(0));
+        }
+
+        let has_primitive_ref = items.iter().any(|item| match &item.inner {
+            AstTypeExpr::Ref(r) => Self::primitive_from_ref(r).is_some(),
+            _ => false,
+        });
+        if has_primitive_ref {
+            let union_items = items
+                .into_iter()
+                .map(|item| {
+                    let AstNode { loc, inner } = item;
+                    let inner = match inner {
+                        AstTypeExpr::Ref(r) => Self::primitive_from_ref(&r)
+                            .map(AstTypeExpr::Primitive)
+                            .unwrap_or(AstTypeExpr::Ref(r)),
+                        other => other,
+                    };
+                    AstNode { loc, inner }
+                })
+                .collect();
+            return Some(self.node(start, AstTypeExpr::Union(union_items)));
+        }
+
+        if items
+            .iter()
+            .all(|item| matches!(item.inner, AstTypeExpr::Ref(_)))
+        {
+            let refs = items
+                .into_iter()
+                .map(|item| AstNode {
+                    loc: item.loc,
+                    inner: match item.inner {
+                        AstTypeExpr::Ref(r) => r,
+                        _ => unreachable!(),
+                    },
+                })
+                .collect();
+            return Some(self.node(start, AstTypeExpr::Enum(refs)));
+        }
+
+        Some(self.node(start, AstTypeExpr::Union(items)))
+    }
+
+    fn parse_tuple_type_expr(&mut self) -> Option<AstNode<AstTypeExpr>> {
         let start = self.pos;
         let first = self.parse_base_type_expr()?;
         let mut items = vec![first];

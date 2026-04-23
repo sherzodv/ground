@@ -155,6 +155,49 @@ fn primitive_list_string_literals_001() {
 }
 
 #[test]
+fn primitive_union_integer_or_string_values_001() {
+    assert_eq!(
+        show(
+            r##"
+            rule = {
+                protocol = integer | string
+            }
+            plan tcp = rule { protocol: "tcp" }
+            plan number = rule { protocol: 6 }
+        "##,
+        ),
+        norm(
+            r##"
+            Def[tcp = rule { protocol: Str("tcp") }]
+            Def[number = rule { protocol: Int(6) }]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn primitive_union_with_enum_ref_values_001() {
+    assert_eq!(
+        show(
+            r##"
+            protocol = udp | grpc
+            rule = {
+                port = protocol | integer
+            }
+            plan named = rule { port: udp }
+            plan numbered = rule { port: 53 }
+        "##,
+        ),
+        norm(
+            r##"
+            Def[named = rule { port: Variant(protocol, "udp") }]
+            Def[numbered = rule { port: Int(53) }]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn recursive_nested_rule_security_groups_001() {
     assert_eq!(
         show(

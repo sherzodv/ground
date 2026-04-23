@@ -360,6 +360,11 @@ fn collect_type_tokens(
                 collect_ref_tokens(&r.inner, RefContext::Type, unit, src, ir, scope, out);
             }
         }
+        AstTypeExpr::Union(items) => {
+            for item in items {
+                collect_type_tokens(&item.inner, unit, src, ir, scope, out);
+            }
+        }
         AstTypeExpr::Struct(items) => {
             for item in items {
                 collect_struct_item_tokens(&item.inner, unit, src, ir, scope, out);

@@ -249,6 +249,11 @@ fn collect_preferred_names_from_field_type(
                 collect_preferred_names_from_ref(r, ir, out, candidate);
             }
         }
+        IrFieldType::Union(items) => {
+            for item in items {
+                collect_preferred_names_from_field_type(item, ir, out, candidate);
+            }
+        }
         IrFieldType::Tuple(items) => {
             for item in items {
                 collect_preferred_names_from_field_type(item, ir, out, candidate);
@@ -292,6 +297,11 @@ fn collect_shapes_from_field_type(field_type: &IrFieldType, ir: &IrRes, out: &mu
         IrFieldType::List(rs) => {
             for r in rs {
                 collect_shapes_from_ref(r, ir, out);
+            }
+        }
+        IrFieldType::Union(items) => {
+            for item in items {
+                collect_shapes_from_field_type(item, ir, out);
             }
         }
         IrFieldType::Tuple(items) => {
@@ -401,6 +411,14 @@ fn field_type_to_ts_with_names(
                 item_types.join(" | ")
             };
             format!("({union})[]")
+        }
+        IrFieldType::Union(items) => {
+            let mut item_types: Vec<String> = items
+                .iter()
+                .map(|item| field_type_to_ts_with_names(item, ir, preferred_names))
+                .collect();
+            item_types.dedup();
+            item_types.join(" | ")
         }
         IrFieldType::Tuple(items) => {
             let parts: Vec<_> = items

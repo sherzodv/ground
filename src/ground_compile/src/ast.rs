@@ -158,8 +158,10 @@ pub enum AstTypeExpr {
     Primitive(AstPrimitive),
     /// Single reference to an existing type: `postgresql`, `type:region:type:zone`
     Ref(AstRef),
-    /// Union of refs: `self | provider | cloud`
+    /// Enum of refs: `self | provider | cloud`
     Enum(Vec<AstNode<AstRef>>),
+    /// Union of type expressions: `integer | string`
+    Union(Vec<AstNode<AstTypeExpr>>),
     /// Struct body: `{ field … }` — field items
     Struct(Vec<AstNode<AstStructItem>>),
     /// List whose element type is described by the inner `AstTypeExpr`: `[ … ]`

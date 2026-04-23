@@ -48,6 +48,10 @@ pub fn show_field_type(lt: &IrFieldType, ir: &IrRes) -> String {
                 .collect();
             format!("List[{}]", parts.join(" | "))
         }
+        IrFieldType::Union(items) => {
+            let parts: Vec<_> = items.iter().map(|item| show_field_type(item, ir)).collect();
+            format!("Union[{}]", parts.join(" | "))
+        }
         IrFieldType::Tuple(items) => {
             let parts: Vec<_> = items.iter().map(|item| show_field_type(item, ir)).collect();
             format!("Tuple[{}]", parts.join(" -> "))

@@ -1414,6 +1414,14 @@ fn resolve_type_body(body: &AstNode<AstTypeExpr>, ctx: &mut Ctx, scope: ScopeId)
             });
             IrShapeBody::Unit
         }
+
+        AstTypeExpr::Union(_) => {
+            ctx.errors.push(IrError {
+                message: "union body not valid for a named type definition".into(),
+                loc: ir_loc(&body.loc),
+            });
+            IrShapeBody::Unit
+        }
     }
 }
 
@@ -1566,6 +1574,13 @@ fn resolve_field_type(td: &AstTypeExpr, ctx: &mut Ctx, scope: ScopeId, loc: &IrL
             }
             IrFieldType::List(ir_refs)
         }
+
+        AstTypeExpr::Union(items) => IrFieldType::Union(
+            items
+                .iter()
+                .map(|item| resolve_field_type(&item.inner, ctx, scope, &ir_loc(&item.loc)))
+                .collect(),
+        ),
 
         AstTypeExpr::Tuple(items) => IrFieldType::Tuple(
             items
@@ -2333,13 +2348,7 @@ fn resolve_value(
                 if let Some(IrShapeBody::Primitive(p)) =
                     ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
                 {
-                    return resolve_value(
-                        v,
-                        &IrFieldType::Primitive(p.clone()),
-                        ctx,
-                        scope,
-                        loc,
-                    );
+                    return resolve_value(v, &IrFieldType::Primitive(p.clone()), ctx, scope, loc);
                 }
                 if let Some(IrShapeBody::Tuple(items)) =
                     ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
@@ -2559,6 +2568,26 @@ fn resolve_value(
                 IrValue::List(vec![])
             }
         },
+        IrFieldType::Union(items) => {
+            for item in items {
+                if let Some(value) = try_resolve_plain_enum_union_value(v, item, ctx) {
+                    return value;
+                }
+                let error_len = ctx.errors.len();
+                let def_len = ctx.defs.len();
+                let value = resolve_value(v, item, ctx, scope, loc);
+                if ctx.errors.len() == error_len {
+                    return value;
+                }
+                ctx.errors.truncate(error_len);
+                ctx.defs.truncate(def_len);
+            }
+            ctx.errors.push(IrError {
+                message: "value does not match union type".into(),
+                loc: loc.clone(),
+            });
+            IrValue::Ref(String::new())
+        }
         IrFieldType::Tuple(item_types) => match v {
             AstValue::Tuple(items) => {
                 if items.len() != item_types.len() {
@@ -2603,6 +2632,36 @@ fn resolve_value(
     }
 }
 
+fn try_resolve_plain_enum_union_value(
+    v: &AstValue,
+    field_type: &IrFieldType,
+    ctx: &Ctx,
+) -> Option<IrValue> {
+    let IrFieldType::Ref(pattern) = unwrap_optional_field_type(field_type) else {
+        return None;
+    };
+    let shape_id = target_shape_from_ir_ref(pattern)?;
+    let Some(IrShapeBody::Enum(variants)) = ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
+    else {
+        return None;
+    };
+    let AstValue::Ref(r) = v else {
+        return None;
+    };
+    let raw = r.segments.last()?.inner.as_plain()?;
+    variants.iter().enumerate().find_map(|(idx, variant_ref)| {
+        let [seg] = variant_ref.segments.as_slice() else {
+            return None;
+        };
+        match &seg.value {
+            IrRefSegValue::Plain(name) if name == raw => {
+                Some(IrValue::Variant(shape_id, idx as u32, None))
+            }
+            _ => None,
+        }
+    })
+}
+
 fn resolve_value_against_ref(
     v: &AstValue,
     pattern: &IrRef,
@@ -2611,7 +2670,8 @@ fn resolve_value_against_ref(
     loc: &IrLoc,
 ) -> IrValue {
     if let Some(shape_id) = target_shape_from_ir_ref(pattern) {
-        if let Some(IrShapeBody::Primitive(p)) = ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
+        if let Some(IrShapeBody::Primitive(p)) =
+            ctx.shapes.get(shape_id.0 as usize).map(|t| &t.body)
         {
             return resolve_value(v, &IrFieldType::Primitive(p.clone()), ctx, scope, loc);
         }

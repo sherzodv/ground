@@ -299,6 +299,11 @@ fn render_type_expr(ty: &AstTypeExpr, indent: usize, nested: bool) -> String {
             .map(|r| render_ref(&r.inner))
             .collect::<Vec<_>>()
             .join(" | "),
+        AstTypeExpr::Union(items) => items
+            .iter()
+            .map(|item| render_type_expr(&item.inner, indent, false))
+            .collect::<Vec<_>>()
+            .join(" | "),
         AstTypeExpr::Struct(items) => {
             if items.is_empty() {
                 "{}".into()

@@ -127,6 +127,48 @@ fn enum_003() {
 }
 
 #[test]
+fn primitive_union_001() {
+    assert_eq!(
+        show(
+            r##"
+            rule = {
+                protocol = integer | string
+            }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[rule, _, unit, Struct[FieldDef[protocol, Type[_, Union[Type[_, Primitive(integer)] | Type[_, Primitive(string)]]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
+fn primitive_union_with_enum_ref_001() {
+    assert_eq!(
+        show(
+            r##"
+            protocol = udp | grpc
+            rule = {
+                port = protocol | integer
+            }
+        "##
+        ),
+        norm(
+            r##"
+            Scope[pack:test,
+                Def[protocol, _, unit, Enum[Ref(udp) | Ref(grpc)]],
+                Def[rule, _, unit, Struct[FieldDef[port, Type[_, Union[Type[_, Ref(protocol)] | Type[_, Primitive(integer)]]]]]],
+            ]
+        "##
+        ),
+    );
+}
+
+#[test]
 fn tuple_001() {
     assert_eq!(
         show(

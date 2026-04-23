@@ -83,6 +83,13 @@ pub fn show_type_expr(body: &AstTypeExpr) -> String {
                 .collect();
             format!("Enum[{}]", parts.join(" | "))
         }
+        AstTypeExpr::Union(items) => {
+            let parts: Vec<_> = items
+                .iter()
+                .map(|item| show_nested_type_expr(&item.inner))
+                .collect();
+            format!("Union[{}]", parts.join(" | "))
+        }
         AstTypeExpr::Struct(items) => {
             let parts: Vec<_> = items.iter().map(|i| show_struct_item(&i.inner)).collect();
             format!("Struct[{}]", parts.join(", "))
